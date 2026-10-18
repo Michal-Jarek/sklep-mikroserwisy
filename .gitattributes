@@ -1,0 +1,14 @@
+# Jednakowe końce linii na Macu i Windowsie (inaczej skrypty .sh i mvnw psują się na Windowsie)
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Pliki binarne
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.jar binary

@@ -1,0 +1,23 @@
+# Kto zatwierdza zmiany w którym folderze.
+# Zamień każde @LOGIN-... na login GitHub (ze znakiem @).
+# Każda osoba stąd musi mieć w repo dostęp Write.
+# Jeśli kilka linii pasuje do pliku, liczy się OSTATNIA pasująca.
+
+*                                @Michal-Jarek
+
+/services/api-gateway/           @Michal-Jarek
+/services/auth-service/          @Michal-Jarek
+/services/user-service/          @LOGIN-USER @Michal-Jarek
+/services/product-service/       @LOGIN-PRODUCT @Michal-Jarek
+/services/inventory-service/     @LOGIN-INVENTORY @Michal-Jarek
+/services/cart-service/          @LOGIN-CART @Michal-Jarek
+/services/order-service/         @LOGIN-ORDER @Michal-Jarek
+/services/notification-service/  @LOGIN-NOTIFICATION @Michal-Jarek
+/services/review-service/        @LOGIN-REVIEW @Michal-Jarek
+/services/shipping-service/      @LOGIN-SHIPPING @Michal-Jarek
+
+/frontend/                       @Michal-Jarek
+/deploy/                         @Michal-Jarek
+/.github/                        @Michal-Jarek
+/postman/                        @Michal-Jarek
+/docs/                           @Michal-Jarek
