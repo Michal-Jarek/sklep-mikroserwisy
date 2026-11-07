@@ -1,0 +1,37 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: user-db-migration
+  namespace: shop
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels: {app: user-service}
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+      containers:
+        - name: migrate
+          image: user-service:0.1.0
+          imagePullPolicy: IfNotPresent
+          command: [alembic, upgrade, head]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          env:
+            - name: DB_HOST
+              value: user-postgres
+            - name: DB_NAME
+              value: user_db
+            - name: DB_USER
+              value: user_service
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: user-db-secret, key: password}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: '1', memory: 512Mi}

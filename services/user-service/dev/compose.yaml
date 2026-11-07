@@ -1,0 +1,71 @@
+services:
+  user-postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: user_db
+      POSTGRES_USER: user_service
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Ustaw DB_PASSWORD w pliku .env}
+    ports: ["127.0.0.1:5432:5432"]
+    volumes: ["user-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user_service -d user_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  cart-redis:
+    image: redis:7.4-alpine
+    ports: ["127.0.0.1:6379:6379"]
+    volumes: ["cart-data:/data"]
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  consul:
+    image: hashicorp/consul:1.21
+    environment:
+      NO_PROXY: ${NO_PROXY:-127.0.0.1,localhost},user-service,cart-service,consul
+      no_proxy: ${NO_PROXY:-127.0.0.1,localhost},user-service,cart-service,consul
+    command: ["agent", "-dev", "-client=0.0.0.0"]
+    ports: ["127.0.0.1:8500:8500"]
+    healthcheck:
+      test: ["CMD", "consul", "members"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  user-migrate:
+    build: ..
+    image: user-service:0.1.0
+    command: ["alembic", "upgrade", "head"]
+    environment: &user-env
+      DB_HOST: user-postgres
+      DB_NAME: user_db
+      DB_USER: user_service
+      DB_PASSWORD: ${DB_PASSWORD:?Ustaw DB_PASSWORD}
+      CONSUL_URL: http://consul:8500
+      SERVICE_ADDRESS: user-service
+    depends_on:
+      user-postgres: {condition: service_healthy}
+  user-service:
+    build: ..
+    image: user-service:0.1.0
+    environment: *user-env
+    ports: ["127.0.0.1:8082:8082"]
+    depends_on:
+      user-migrate: {condition: service_completed_successfully}
+      consul: {condition: service_healthy}
+  cart-service:
+    build: ../../cart-service
+    image: cart-service:0.1.0
+    environment:
+      REDIS_URL: redis://cart-redis:6379/0
+      CONSUL_URL: http://consul:8500
+      SERVICE_ADDRESS: cart-service
+    ports: ["127.0.0.1:8085:8085"]
+    depends_on:
+      cart-redis: {condition: service_healthy}
+      consul: {condition: service_healthy}
+volumes:
+  user-data:
+  cart-data:
