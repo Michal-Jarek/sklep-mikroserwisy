@@ -1,0 +1,703 @@
+{
+  "info": {
+    "_postman_id": "72abbc45-4527-4aca-a9b7-916b74d387fe",
+    "name": "review-service",
+    "description": "Kolekcja Review Service (port 8088). Wołamy usługę bezpośrednio (port-forward) z nagłówkami X-User-Id / X-User-Roles jak Gateway. POST /reviews pyta Order Service, czy użytkownik kupił produkt: lokalnie uruchom tests/mock_order_service.py (productId 999 = nie kupił). Uruchamiać po kolei (Runner / newman).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8088"
+    },
+    {
+      "key": "productId",
+      "value": "90001"
+    },
+    {
+      "key": "reviewId",
+      "value": ""
+    },
+    {
+      "key": "reviewId2",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Health live",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+              "pm.test('status UP', function () { const j = pm.response.json(); pm.expect(j.status === 'UP').to.be.true; });"
+            ]
+          }
+        },
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.set('productId', 100000 + Math.floor(Math.random() * 900000));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/health/live",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "health",
+            "live"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Health ready",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+              "pm.test('MongoDB dostępny', function () { const j = pm.response.json(); pm.expect(j.status === 'UP').to.be.true; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/health/ready",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "health",
+            "ready"
+          ]
+        }
+      }
+    },
+    {
+      "name": "GET /reviews bez productId -> 400",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 400', function () { pm.response.to.have.status(400); });",
+              "pm.test('format błędu zespołu', function () { const j = pm.response.json(); pm.expect(j.error === 'VALIDATION_ERROR' && 'requestId' in j).to.be.true; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/reviews",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "reviews"
+          ]
+        }
+      }
+    },
+    {
+      "name": "POST bez uwierzytelnienia -> 401",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 401', function () { pm.response.to.have.status(401); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/reviews",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "reviews"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"productId\": \"{{productId}}\",\n  \"rating\": 4,\n  \"comment\": \"Dobry produkt, polecam\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "POST rating=6 -> 400",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 400', function () { pm.response.to.have.status(400); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-User-Id",
+            "value": "postman-user-1"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "CUSTOMER"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/reviews",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "reviews"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"productId\": \"{{productId}}\",\n  \"rating\": 6,\n  \"comment\": \"Dobry produkt, polecam\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "POST opinia kupującego -> 201",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 201', function () { pm.response.to.have.status(201); });",
+              "pm.test('autor i ocena', function () { const j = pm.response.json(); pm.expect(j.rating === 4 && j.userId === 'postman-user-1').to.be.true; });",
+              "pm.collectionVariables.set('reviewId', pm.response.json().id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-User-Id",
+            "value": "postman-user-1"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "CUSTOMER"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/reviews",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "reviews"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"productId\": \"{{productId}}\",\n  \"rating\": 4,\n  \"comment\": \"Dobry produkt, polecam\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "POST druga opinia tego samego użytkownika -> 409",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 409', function () { pm.response.to.have.status(409); });",
+              "pm.test('CONFLICT', function () { const j = pm.response.json(); pm.expect(j.error === 'CONFLICT').to.be.true; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-User-Id",
+            "value": "postman-user-1"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "CUSTOMER"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/reviews",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "reviews"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"productId\": \"{{productId}}\",\n  \"rating\": 4,\n  \"comment\": \"Dobry produkt, polecam\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "POST opinia drugiego użytkownika -> 201",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 201', function () { pm.response.to.have.status(201); });",
+              "pm.collectionVariables.set('reviewId2', pm.response.json().id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-User-Id",
+            "value": "postman-user-2"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "CUSTOMER"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/reviews",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "reviews"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"productId\": \"{{productId}}\",\n  \"rating\": 5,\n  \"comment\": \"Dobry produkt, polecam\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "POST opinia o niekupionym produkcie (999) -> 403",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 403', function () { pm.response.to.have.status(403); });",
+              "pm.test('FORBIDDEN (wymaga atrapy/Ordera: 999 = nie kupił)', function () { const j = pm.response.json(); pm.expect(j.error === 'FORBIDDEN').to.be.true; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-User-Id",
+            "value": "postman-user-1"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "CUSTOMER"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/reviews",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "reviews"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"productId\": 999,\n  \"rating\": 4,\n  \"comment\": \"Dobry produkt, polecam\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "GET /reviews?productId -> 200",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+              "pm.test('dwie opinie', function () { const j = pm.response.json(); pm.expect(j.total === 2 && j.items.length === 2).to.be.true; });",
+              "pm.test('najnowsza pierwsza', function () { const j = pm.response.json(); pm.expect(j.items[0].rating === 5).to.be.true; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/reviews?productId={{productId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "reviews"
+          ],
+          "query": [
+            {
+              "key": "productId",
+              "value": "{{productId}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "GET summary -> 200",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+              "pm.test('średnia 4.5 z 2 opinii', function () { const j = pm.response.json(); pm.expect(j.reviewCount === 2 && j.averageRating === 4.5).to.be.true; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/reviews/summary/{{productId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "reviews",
+            "summary",
+            "{{productId}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "DELETE cudzej opinii -> 403",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 403', function () { pm.response.to.have.status(403); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-User-Id",
+            "value": "postman-user-2"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "CUSTOMER"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/reviews/{{reviewId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "reviews",
+            "{{reviewId}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "DELETE własnej opinii -> 204",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 204', function () { pm.response.to.have.status(204); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-User-Id",
+            "value": "postman-user-1"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "CUSTOMER"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/reviews/{{reviewId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "reviews",
+            "{{reviewId}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "DELETE jako ADMIN -> 204",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 204', function () { pm.response.to.have.status(204); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-User-Id",
+            "value": "postman-admin"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "ADMIN"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/reviews/{{reviewId2}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "reviews",
+            "{{reviewId2}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "DELETE nieistniejącej -> 404",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 404', function () { pm.response.to.have.status(404); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-User-Id",
+            "value": "postman-admin"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "ADMIN"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/reviews/{{reviewId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "reviews",
+            "{{reviewId}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "GET summary po usunięciu -> brak oceny",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+              "pm.test('brak opinii, ocena null', function () { const j = pm.response.json(); pm.expect(j.reviewCount === 0 && j.averageRating === null).to.be.true; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/reviews/summary/{{productId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "reviews",
+            "summary",
+            "{{productId}}"
+          ]
+        }
+      }
+    }
+  ]
+}

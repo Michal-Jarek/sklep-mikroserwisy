@@ -4,7 +4,7 @@ Oceny i opinie o produktach.
 
 | | |
 |---|---|
-| Właściciel | _wpisz imię i login GitHub_ |
+| Właściciel | Aleksandra Krzeszewska|
 | Technologia | Python · FastAPI (sugerowana) |
 | Port | 8088 |
 | Nazwa w Consulu, Kubernetesie i obrazie Docker | `review-service` |

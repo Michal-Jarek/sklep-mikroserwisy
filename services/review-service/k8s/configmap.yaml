@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: review-service-config
+  namespace: shop
+  labels:
+    app: review-service
+data:
+  SERVICE_NAME: "review-service"
+  SERVICE_PORT: "8088"
+  LOG_LEVEL: "INFO"
+  MONGODB_DATABASE: "review_db"
+  ORDER_SERVICE_NAME: "order-service"
+  HTTP_TIMEOUT_SECONDS: "2"
+  CONSUL_ENABLED: "true"
+  CONSUL_HOST: "consul"
+  CONSUL_PORT: "8500"
+  JWT_JWKS_URL: "http://auth-service:8081/.well-known/jwks.json"
+  # do uzupełnienia po ustaleniu z Michałem (Auth Service); puste = nie sprawdzamy iss/aud
+  JWT_ISSUER: ""
+  JWT_AUDIENCE: ""
