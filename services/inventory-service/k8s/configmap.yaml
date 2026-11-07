@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: inventory-service-config
+  namespace: shop
+  labels:
+    app: inventory-service
+data:
+  SERVICE_NAME: "inventory-service"
+  SERVICE_PORT: "8084"
+  LOG_LEVEL: "INFO"
+  RABBITMQ_EXCHANGE: "shop.events"
+  RABBITMQ_QUEUE: "inventory.q"
+  RABBITMQ_PREFETCH: "10"
+  RABBITMQ_MAX_ATTEMPTS: "3"
+  CONSUL_ENABLED: "true"
+  CONSUL_HOST: "consul"
+  CONSUL_PORT: "8500"
+  JWT_JWKS_URL: "http://auth-service:8081/.well-known/jwks.json"
+  # do uzupełnienia po ustaleniu z Michałem? (Auth Service); puste = nie sprawdzamy iss/aud
+  JWT_ISSUER: ""
+  JWT_AUDIENCE: ""

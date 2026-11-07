@@ -4,7 +4,7 @@ Stany magazynowe i rezerwacje.
 
 | | |
 |---|---|
-| Właściciel | _wpisz imię i login GitHub_ |
+| Właściciel | Aleksandra Krzeszewska |
 | Technologia | Python · FastAPI (sugerowana) |
 | Port | 8084 |
 | Nazwa w Consulu, Kubernetesie i obrazie Docker | `inventory-service` |

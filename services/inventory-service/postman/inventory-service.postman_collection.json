@@ -1,0 +1,743 @@
+{
+  "info": {
+    "_postman_id": "43b33be6-0fe6-4411-9703-3fe2c5c7056c",
+    "name": "inventory-service",
+    "description": "Kolekcja Inventory Service (port 8084). Domyślnie wołamy usługę bezpośrednio (port-forward) i podajemy nagłówki X-User-Id / X-User-Roles tak, jak robi to Gateway. Uruchom po kolei (Runner / newman).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8084"
+    },
+    {
+      "key": "productId",
+      "value": "90001"
+    },
+    {
+      "key": "orderId",
+      "value": "postman-order"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health live",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+              "pm.test('status UP', function () { const j = pm.response.json(); pm.expect(j.status === 'UP').to.be.true; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/health/live",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "health",
+            "live"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Health ready",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+              "pm.test('baza dostępna', function () { const j = pm.response.json(); pm.expect(j.status === 'UP').to.be.true; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/health/ready",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "health",
+            "ready"
+          ]
+        }
+      }
+    },
+    {
+      "name": "GET stan nieznanego produktu -> 404",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 404', function () { pm.response.to.have.status(404); });",
+              "pm.test('format błędu zespołu', function () { const j = pm.response.json(); pm.expect(j.error === 'NOT_FOUND' && j.status === 404 && 'requestId' in j).to.be.true; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/inventory/99999999",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "inventory",
+            "99999999"
+          ]
+        }
+      }
+    },
+    {
+      "name": "PUT stan bez uwierzytelnienia -> 401",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 401', function () { pm.response.to.have.status(401); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/inventory/{{productId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "inventory",
+            "{{productId}}"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"quantity\": 10\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "PUT stan jako CUSTOMER -> 403",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 403', function () { pm.response.to.have.status(403); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-User-Id",
+            "value": "2"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "CUSTOMER"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/inventory/{{productId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "inventory",
+            "{{productId}}"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"quantity\": 10\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "PUT stan jako ADMIN -> 200 (10 szt.)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+              "pm.test('stan 10, dostępne 10', function () { const j = pm.response.json(); pm.expect(j.quantity === 10 && j.available === 10 && j.inStock === true).to.be.true; });"
+            ]
+          }
+        },
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.set('orderId', 'postman-' + Date.now());"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-User-Id",
+            "value": "1"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "ADMIN"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/inventory/{{productId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "inventory",
+            "{{productId}}"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"quantity\": 10\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "PUT stan ujemny -> 400",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 400', function () { pm.response.to.have.status(400); });",
+              "pm.test('VALIDATION_ERROR', function () { const j = pm.response.json(); pm.expect(j.error === 'VALIDATION_ERROR').to.be.true; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-User-Id",
+            "value": "1"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "ADMIN"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/inventory/{{productId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "inventory",
+            "{{productId}}"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"quantity\": -1\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "GET stan -> 200",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+              "pm.test('dostępne 10', function () { const j = pm.response.json(); pm.expect(j.available === 10).to.be.true; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/inventory/{{productId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "inventory",
+            "{{productId}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "POST rezerwacja jako CUSTOMER -> 403",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 403', function () { pm.response.to.have.status(403); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-User-Id",
+            "value": "2"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "CUSTOMER"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/inventory/reservations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "inventory",
+            "reservations"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"orderId\": \"{{orderId}}\",\n  \"items\": [\n    {\n      \"productId\": \"{{productId}}\",\n      \"quantity\": 3\n    }\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "POST rezerwacja jako SERVICE -> 201",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 201', function () { pm.response.to.have.status(201); });",
+              "pm.test('rezerwacja ACTIVE', function () { const j = pm.response.json(); pm.expect(j.status === 'ACTIVE' && j.items[0].quantity === 3).to.be.true; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "SERVICE"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/inventory/reservations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "inventory",
+            "reservations"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"orderId\": \"{{orderId}}\",\n  \"items\": [\n    {\n      \"productId\": \"{{productId}}\",\n      \"quantity\": 3\n    }\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "POST ta sama rezerwacja -> 200 (idempotentna)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () { pm.response.to.have.status(200); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "SERVICE"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/inventory/reservations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "inventory",
+            "reservations"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"orderId\": \"{{orderId}}\",\n  \"items\": [\n    {\n      \"productId\": \"{{productId}}\",\n      \"quantity\": 3\n    }\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "GET stan po rezerwacji",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+              "pm.test('zarezerwowane 3, dostępne 7', function () { const j = pm.response.json(); pm.expect(j.reserved === 3 && j.available === 7).to.be.true; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/inventory/{{productId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "inventory",
+            "{{productId}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "POST rezerwacja ponad stan -> 409",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 409', function () { pm.response.to.have.status(409); });",
+              "pm.test('INSUFFICIENT_STOCK', function () { const j = pm.response.json(); pm.expect(j.error === 'INSUFFICIENT_STOCK').to.be.true; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "SERVICE"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/inventory/reservations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "inventory",
+            "reservations"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"orderId\": \"{{orderId}}-duza\",\n  \"items\": [\n    {\n      \"productId\": \"{{productId}}\",\n      \"quantity\": 100\n    }\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "POST rezerwacja z quantity=0 -> 400",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 400', function () { pm.response.to.have.status(400); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "SERVICE"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/inventory/reservations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "inventory",
+            "reservations"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"orderId\": \"{{orderId}}-zero\",\n  \"items\": [\n    {\n      \"productId\": \"{{productId}}\",\n      \"quantity\": 0\n    }\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "DELETE rezerwacja -> 204",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 204', function () { pm.response.to.have.status(204); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "SERVICE"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/inventory/reservations/{{orderId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "inventory",
+            "reservations",
+            "{{orderId}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "GET stan po zwolnieniu",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+              "pm.test('zarezerwowane 0, dostępne 10', function () { const j = pm.response.json(); pm.expect(j.reserved === 0 && j.available === 10).to.be.true; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/inventory/{{productId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "inventory",
+            "{{productId}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "DELETE rezerwacja ponownie -> 204 (idempotentne)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 204', function () { pm.response.to.have.status(204); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "SERVICE"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/inventory/reservations/{{orderId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "inventory",
+            "reservations",
+            "{{orderId}}"
+          ]
+        }
+      }
+    }
+  ]
+}
