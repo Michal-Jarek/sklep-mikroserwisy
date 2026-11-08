@@ -1,0 +1,980 @@
+{
+  "info": {
+    "name": "auth-service",
+    "description": "Auth Service called directly (without the Gateway). Set baseUrl in the environment, e.g. http://localhost:8081 when the service runs from VS Code. Run the folders in order; at most one run per minute (login limit per IP).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "health",
+      "item": [
+        {
+          "name": "Liveness",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('X-Request-Id header is set', () => pm.expect(pm.response.headers.get('X-Request-Id')).to.be.a('string').and.not.empty);",
+                  "pm.test('X-Instance-Id header starts with auth-service-', () => pm.expect(pm.response.headers.get('X-Instance-Id')).to.match(/^auth-service-/));",
+                  "pm.test('body is {\"status\":\"UP\"}', () => pm.expect(pm.response.json()).to.eql({ status: 'UP' }));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health/live",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health",
+                "live"
+              ]
+            },
+            "description": "The process is alive; dependencies are not checked."
+          }
+        },
+        {
+          "name": "Readiness",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('X-Request-Id header is set', () => pm.expect(pm.response.headers.get('X-Request-Id')).to.be.a('string').and.not.empty);",
+                  "pm.test('X-Instance-Id header starts with auth-service-', () => pm.expect(pm.response.headers.get('X-Instance-Id')).to.match(/^auth-service-/));",
+                  "pm.test('body is {\"status\":\"UP\"}', () => pm.expect(pm.response.json()).to.eql({ status: 'UP' }));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health/ready",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health",
+                "ready"
+              ]
+            },
+            "description": "Ready for traffic when the database answers SELECT 1; otherwise 503 SERVICE_UNAVAILABLE."
+          }
+        }
+      ]
+    },
+    {
+      "name": "errors",
+      "item": [
+        {
+          "name": "Unknown path returns 404 NOT_FOUND",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 404', () => pm.response.to.have.status(404));",
+                  "pm.test('X-Request-Id header is set', () => pm.expect(pm.response.headers.get('X-Request-Id')).to.be.a('string').and.not.empty);",
+                  "pm.test('X-Instance-Id header starts with auth-service-', () => pm.expect(pm.response.headers.get('X-Instance-Id')).to.match(/^auth-service-/));",
+                  "const body = pm.response.json();",
+                  "pm.test('error format', () => {",
+                  "  pm.expect(body.status).to.eql(404);",
+                  "  pm.expect(body.error).to.eql('NOT_FOUND');",
+                  "  pm.expect(body.message).to.be.a('string');",
+                  "  pm.expect(body).to.not.have.property('stack');",
+                  "});",
+                  "pm.test('requestId is the one sent by the client', () => {",
+                  "  pm.expect(body.requestId).to.eql('postman-404');",
+                  "  pm.expect(pm.response.headers.get('X-Request-Id')).to.eql('postman-404');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Request-Id",
+                "value": "postman-404"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/no-such-path",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "no-such-path"
+              ]
+            },
+            "description": "Every error uses the team format {status, error, message, requestId}. A valid X-Request-Id from the client is kept."
+          }
+        }
+      ]
+    },
+    {
+      "name": "jwks",
+      "item": [
+        {
+          "name": "JWKS returns the public key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('X-Request-Id header is set', () => pm.expect(pm.response.headers.get('X-Request-Id')).to.be.a('string').and.not.empty);",
+                  "pm.test('X-Instance-Id header starts with auth-service-', () => pm.expect(pm.response.headers.get('X-Instance-Id')).to.match(/^auth-service-/));",
+                  "const keys = pm.response.json().keys;",
+                  "pm.test('one RSA signing key', () => {",
+                  "  pm.expect(keys).to.have.lengthOf(1);",
+                  "  pm.expect(keys[0]).to.include({ kty: 'RSA', alg: 'RS256', use: 'sig' });",
+                  "});",
+                  "pm.test('only public members', () => pm.expect(Object.keys(keys[0]).sort()).to.eql(['alg', 'e', 'kid', 'kty', 'n', 'use']));",
+                  "pm.collectionVariables.set('jwksKid', keys[0].kid);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/.well-known/jwks.json",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                ".well-known",
+                "jwks.json"
+              ]
+            },
+            "description": "Public key for verifying access tokens (used by the Gateway). Only kty, n, e, kid, alg, use; never private members."
+          }
+        }
+      ]
+    },
+    {
+      "name": "register",
+      "item": [
+        {
+          "name": "Register a new account (201)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A new email on every run, so the collection can be run many times.",
+                  "const email = `postman-${Date.now()}-${Math.floor(Math.random() * 1e6)}@example.com`;",
+                  "pm.collectionVariables.set('email', email);",
+                  "pm.collectionVariables.set('emailMixedCase', email.toUpperCase());",
+                  "pm.collectionVariables.set('password', 'Postman-Pass-123');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.test('X-Request-Id header is set', () => pm.expect(pm.response.headers.get('X-Request-Id')).to.be.a('string').and.not.empty);",
+                  "pm.test('X-Instance-Id header starts with auth-service-', () => pm.expect(pm.response.headers.get('X-Instance-Id')).to.match(/^auth-service-/));",
+                  "const body = pm.response.json();",
+                  "pm.test('account in the response, email in lower case', () => {",
+                  "  pm.expect(body.id).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);",
+                  "  pm.expect(body.email).to.eql(pm.collectionVariables.get('email'));",
+                  "  pm.expect(body.firstName).to.eql('Postman');",
+                  "  pm.expect(body.lastName).to.eql('Tester');",
+                  "  pm.expect(body.roles).to.eql(['CUSTOMER']);",
+                  "});",
+                  "pm.test('no other fields (no password hash, no tokens)', () => pm.expect(Object.keys(body).sort()).to.eql(['email', 'firstName', 'id', 'lastName', 'roles']));",
+                  "pm.collectionVariables.set('accountId', body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "register"
+              ]
+            },
+            "description": "Creates a CUSTOMER account. The email is trimmed and stored in lower case. Run Auth with USER_SERVICE_ENABLED=false when User Service is not running. Does not log in (no tokens).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"  {{emailMixedCase}}  \",\n  \"password\": \"{{password}}\",\n  \"firstName\": \"Postman\",\n  \"lastName\": \"Tester\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Register the same email again (409 EMAIL_TAKEN)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 409', () => pm.response.to.have.status(409));",
+                  "pm.test('X-Request-Id header is set', () => pm.expect(pm.response.headers.get('X-Request-Id')).to.be.a('string').and.not.empty);",
+                  "pm.test('X-Instance-Id header starts with auth-service-', () => pm.expect(pm.response.headers.get('X-Instance-Id')).to.match(/^auth-service-/));",
+                  "const body = pm.response.json();",
+                  "pm.test('error format', () => {",
+                  "  pm.expect(body.status).to.eql(409);",
+                  "  pm.expect(body.error).to.eql('EMAIL_TAKEN');",
+                  "  pm.expect(body.message).to.be.a('string');",
+                  "  pm.expect(body.requestId).to.eql(pm.response.headers.get('X-Request-Id'));",
+                  "  pm.expect(body).to.not.have.property('stack');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "register"
+              ]
+            },
+            "description": "The email is compared after normalization, so a different letter case is the same account.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{emailMixedCase}}\",\n  \"password\": \"{{password}}\",\n  \"firstName\": \"Other\",\n  \"lastName\": \"Person\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Register with a too short password (400 VALIDATION_ERROR)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('X-Request-Id header is set', () => pm.expect(pm.response.headers.get('X-Request-Id')).to.be.a('string').and.not.empty);",
+                  "pm.test('X-Instance-Id header starts with auth-service-', () => pm.expect(pm.response.headers.get('X-Instance-Id')).to.match(/^auth-service-/));",
+                  "const body = pm.response.json();",
+                  "pm.test('error format', () => {",
+                  "  pm.expect(body.status).to.eql(400);",
+                  "  pm.expect(body.error).to.eql('VALIDATION_ERROR');",
+                  "  pm.expect(body.message).to.be.a('string');",
+                  "  pm.expect(body.requestId).to.eql(pm.response.headers.get('X-Request-Id'));",
+                  "  pm.expect(body).to.not.have.property('stack');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "register"
+              ]
+            },
+            "description": "Password must be 10-72 bytes in UTF-8. Unknown fields (e.g. roles) are rejected the same way.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"short-password@example.com\",\n  \"password\": \"short\",\n  \"firstName\": \"A\",\n  \"lastName\": \"B\"\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "login",
+      "description": "Three login requests per run (two here, one in session): Auth allows 5 login requests per minute from one IP address, so run the collection again only after 60 s.",
+      "item": [
+        {
+          "name": "Log in (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('X-Request-Id header is set', () => pm.expect(pm.response.headers.get('X-Request-Id')).to.be.a('string').and.not.empty);",
+                  "pm.test('X-Instance-Id header starts with auth-service-', () => pm.expect(pm.response.headers.get('X-Instance-Id')).to.match(/^auth-service-/));",
+                  "const body = pm.response.json();",
+                  "pm.test('token response', () => {",
+                  "  pm.expect(body.tokenType).to.eql('Bearer');",
+                  "  pm.expect(body.expiresIn).to.eql(900);",
+                  "  pm.expect(body.accessToken.split('.')).to.have.lengthOf(3);",
+                  "});",
+                  "const decode = (part) => {",
+                  "  const base64 = part.replace(/-/g, '+').replace(/_/g, '/');",
+                  "  return JSON.parse(atob(base64 + '='.repeat((4 - (base64.length % 4)) % 4)));",
+                  "};",
+                  "const [header, payload] = body.accessToken.split('.').map((part, i) => (i < 2 ? decode(part) : part));",
+                  "pm.test('header: RS256 and the kid from JWKS', () => {",
+                  "  pm.expect(header.alg).to.eql('RS256');",
+                  "  pm.expect(header.kid).to.eql(pm.collectionVariables.get('jwksKid'));",
+                  "});",
+                  "pm.test('claims: sub, roles, 900 s lifetime, no email', () => {",
+                  "  pm.expect(payload.sub).to.eql(pm.collectionVariables.get('accountId'));",
+                  "  pm.expect(payload.roles).to.eql(['CUSTOMER']);",
+                  "  pm.expect(payload.exp - payload.iat).to.eql(900);",
+                  "  pm.expect(payload).to.not.have.property('email');",
+                  "});",
+                  "pm.collectionVariables.set('accessToken', body.accessToken);",
+                  "const parseCookie = () => {",
+                  "  const header = pm.response.headers.get('Set-Cookie') || '';",
+                  "  const [first, ...attributes] = header.split(';').map((part) => part.trim());",
+                  "  const separator = first.indexOf('=');",
+                  "  const cookie = { name: first.slice(0, separator), value: first.slice(separator + 1) };",
+                  "  for (const attribute of attributes) {",
+                  "    const [name, ...value] = attribute.split('=');",
+                  "    cookie[name.toLowerCase()] = value.join('=');",
+                  "  }",
+                  "  return cookie;",
+                  "};",
+                  "const cookie = parseCookie();",
+                  "pm.test('Set-Cookie: refresh_token with HttpOnly, Secure, SameSite=Strict, Path=/api/v1/auth, Max-Age=604800', () => {",
+                  "  pm.expect(cookie.name).to.eql('refresh_token');",
+                  "  pm.expect(cookie.value).to.match(/^[A-Za-z0-9_-]{43}$/);",
+                  "  pm.expect(cookie['max-age']).to.eql('604800');",
+                  "  pm.expect(cookie.path).to.eql('/api/v1/auth');",
+                  "  pm.expect(cookie).to.have.property('httponly');",
+                  "  pm.expect(cookie).to.have.property('secure');",
+                  "  pm.expect(cookie.samesite).to.eql('Strict');",
+                  "});",
+                  "pm.test('refresh token is not in the body', () => pm.expect(pm.response.text()).to.not.include(cookie.value));",
+                  "// The cookie has Path=/api/v1/auth (the Gateway path), so Postman would not send it to /auth/refresh by itself:",
+                  "// the value is kept in a variable and sent in a Cookie header.",
+                  "pm.collectionVariables.set('refreshToken', cookie.value);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Returns an RS256 access token valid for 900 s (saved as accessToken) and sets the refresh_token cookie (HttpOnly, Secure, SameSite=Strict, Path=/api/v1/auth, 7 days). The token has sub (account id), roles, iss, aud, iat, exp and no email. The cookie value is saved as refreshToken.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Log in with a wrong password (401 INVALID_CREDENTIALS)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('X-Request-Id header is set', () => pm.expect(pm.response.headers.get('X-Request-Id')).to.be.a('string').and.not.empty);",
+                  "pm.test('X-Instance-Id header starts with auth-service-', () => pm.expect(pm.response.headers.get('X-Instance-Id')).to.match(/^auth-service-/));",
+                  "const body = pm.response.json();",
+                  "pm.test('error format', () => {",
+                  "  pm.expect(body.status).to.eql(401);",
+                  "  pm.expect(body.error).to.eql('INVALID_CREDENTIALS');",
+                  "  pm.expect(body.message).to.be.a('string');",
+                  "  pm.expect(body.requestId).to.eql(pm.response.headers.get('X-Request-Id'));",
+                  "  pm.expect(body).to.not.have.property('stack');",
+                  "});",
+                  "pm.test('no refresh token cookie', () => pm.expect(pm.response.headers.has('Set-Cookie')).to.be.false);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "description": "A wrong password and an unknown email give the same answer.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"wrong-password-123\"\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "session",
+      "description": "Refresh token rotation, reuse detection and logout. Uses the account and the refresh token from the register and login folders.",
+      "item": [
+        {
+          "name": "Refresh the session (200, rotation)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('X-Request-Id header is set', () => pm.expect(pm.response.headers.get('X-Request-Id')).to.be.a('string').and.not.empty);",
+                  "pm.test('X-Instance-Id header starts with auth-service-', () => pm.expect(pm.response.headers.get('X-Instance-Id')).to.match(/^auth-service-/));",
+                  "const body = pm.response.json();",
+                  "pm.test('token response', () => {",
+                  "  pm.expect(Object.keys(body).sort()).to.eql(['accessToken', 'expiresIn', 'tokenType']);",
+                  "  pm.expect(body.tokenType).to.eql('Bearer');",
+                  "  pm.expect(body.expiresIn).to.eql(900);",
+                  "  pm.expect(body.accessToken.split('.')).to.have.lengthOf(3);",
+                  "});",
+                  "const decode = (part) => {",
+                  "  const base64 = part.replace(/-/g, '+').replace(/_/g, '/');",
+                  "  return JSON.parse(atob(base64 + '='.repeat((4 - (base64.length % 4)) % 4)));",
+                  "};",
+                  "const payload = decode(body.accessToken.split('.')[1]);",
+                  "pm.test('new access token for the same account, roles from the database', () => {",
+                  "  pm.expect(payload.sub).to.eql(pm.collectionVariables.get('accountId'));",
+                  "  pm.expect(payload.roles).to.eql(['CUSTOMER']);",
+                  "});",
+                  "const parseCookie = () => {",
+                  "  const header = pm.response.headers.get('Set-Cookie') || '';",
+                  "  const [first, ...attributes] = header.split(';').map((part) => part.trim());",
+                  "  const separator = first.indexOf('=');",
+                  "  const cookie = { name: first.slice(0, separator), value: first.slice(separator + 1) };",
+                  "  for (const attribute of attributes) {",
+                  "    const [name, ...value] = attribute.split('=');",
+                  "    cookie[name.toLowerCase()] = value.join('=');",
+                  "  }",
+                  "  return cookie;",
+                  "};",
+                  "const cookie = parseCookie();",
+                  "pm.test('Set-Cookie: refresh_token with HttpOnly, Secure, SameSite=Strict, Path=/api/v1/auth, Max-Age=604800', () => {",
+                  "  pm.expect(cookie.name).to.eql('refresh_token');",
+                  "  pm.expect(cookie.value).to.match(/^[A-Za-z0-9_-]{43}$/);",
+                  "  pm.expect(cookie['max-age']).to.eql('604800');",
+                  "  pm.expect(cookie.path).to.eql('/api/v1/auth');",
+                  "  pm.expect(cookie).to.have.property('httponly');",
+                  "  pm.expect(cookie).to.have.property('secure');",
+                  "  pm.expect(cookie.samesite).to.eql('Strict');",
+                  "});",
+                  "pm.test('refresh token is not in the body', () => pm.expect(pm.response.text()).to.not.include(cookie.value));",
+                  "pm.test('new refresh token (rotation)', () => pm.expect(cookie.value).to.not.eql(pm.collectionVariables.get('refreshToken')));",
+                  "pm.collectionVariables.set('previousRefreshToken', pm.collectionVariables.get('refreshToken'));",
+                  "// The cookie has Path=/api/v1/auth (the Gateway path), so Postman would not send it to /auth/refresh by itself:",
+                  "// the value is kept in a variable and sent in a Cookie header.",
+                  "pm.collectionVariables.set('refreshToken', cookie.value);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Cookie",
+                "value": "refresh_token={{refreshToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "refresh"
+              ]
+            },
+            "description": "Sends the refresh token from the login (Cookie header, empty body). Returns a new access token and a new refresh_token cookie; the old token is revoked."
+          }
+        },
+        {
+          "name": "Refresh with the replaced token (401 UNAUTHORIZED, reuse)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('X-Request-Id header is set', () => pm.expect(pm.response.headers.get('X-Request-Id')).to.be.a('string').and.not.empty);",
+                  "pm.test('X-Instance-Id header starts with auth-service-', () => pm.expect(pm.response.headers.get('X-Instance-Id')).to.match(/^auth-service-/));",
+                  "const body = pm.response.json();",
+                  "pm.test('error format', () => {",
+                  "  pm.expect(body.status).to.eql(401);",
+                  "  pm.expect(body.error).to.eql('UNAUTHORIZED');",
+                  "  pm.expect(body.message).to.be.a('string');",
+                  "  pm.expect(body.requestId).to.eql(pm.response.headers.get('X-Request-Id'));",
+                  "  pm.expect(body).to.not.have.property('stack');",
+                  "});",
+                  "const parseCookie = () => {",
+                  "  const header = pm.response.headers.get('Set-Cookie') || '';",
+                  "  const [first, ...attributes] = header.split(';').map((part) => part.trim());",
+                  "  const separator = first.indexOf('=');",
+                  "  const cookie = { name: first.slice(0, separator), value: first.slice(separator + 1) };",
+                  "  for (const attribute of attributes) {",
+                  "    const [name, ...value] = attribute.split('=');",
+                  "    cookie[name.toLowerCase()] = value.join('=');",
+                  "  }",
+                  "  return cookie;",
+                  "};",
+                  "const cookie = parseCookie();",
+                  "pm.test('Set-Cookie clears refresh_token (empty value, Max-Age=0, same path)', () => {",
+                  "  pm.expect(cookie.name).to.eql('refresh_token');",
+                  "  pm.expect(cookie.value).to.eql('');",
+                  "  pm.expect(cookie['max-age']).to.eql('0');",
+                  "  pm.expect(cookie.path).to.eql('/api/v1/auth');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Cookie",
+                "value": "refresh_token={{previousRefreshToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "refresh"
+              ]
+            },
+            "description": "Using a token that was already replaced means it was copied: the whole token family is revoked, the answer is 401 and the cookie is cleared."
+          }
+        },
+        {
+          "name": "Refresh with the newest token after the reuse (401 UNAUTHORIZED)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('X-Request-Id header is set', () => pm.expect(pm.response.headers.get('X-Request-Id')).to.be.a('string').and.not.empty);",
+                  "pm.test('X-Instance-Id header starts with auth-service-', () => pm.expect(pm.response.headers.get('X-Instance-Id')).to.match(/^auth-service-/));",
+                  "const body = pm.response.json();",
+                  "pm.test('error format', () => {",
+                  "  pm.expect(body.status).to.eql(401);",
+                  "  pm.expect(body.error).to.eql('UNAUTHORIZED');",
+                  "  pm.expect(body.message).to.be.a('string');",
+                  "  pm.expect(body.requestId).to.eql(pm.response.headers.get('X-Request-Id'));",
+                  "  pm.expect(body).to.not.have.property('stack');",
+                  "});",
+                  "const parseCookie = () => {",
+                  "  const header = pm.response.headers.get('Set-Cookie') || '';",
+                  "  const [first, ...attributes] = header.split(';').map((part) => part.trim());",
+                  "  const separator = first.indexOf('=');",
+                  "  const cookie = { name: first.slice(0, separator), value: first.slice(separator + 1) };",
+                  "  for (const attribute of attributes) {",
+                  "    const [name, ...value] = attribute.split('=');",
+                  "    cookie[name.toLowerCase()] = value.join('=');",
+                  "  }",
+                  "  return cookie;",
+                  "};",
+                  "const cookie = parseCookie();",
+                  "pm.test('Set-Cookie clears refresh_token (empty value, Max-Age=0, same path)', () => {",
+                  "  pm.expect(cookie.name).to.eql('refresh_token');",
+                  "  pm.expect(cookie.value).to.eql('');",
+                  "  pm.expect(cookie['max-age']).to.eql('0');",
+                  "  pm.expect(cookie.path).to.eql('/api/v1/auth');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Cookie",
+                "value": "refresh_token={{refreshToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "refresh"
+              ]
+            },
+            "description": "The newest token of the family was revoked together with the reused one."
+          }
+        },
+        {
+          "name": "Refresh without a cookie (401 UNAUTHORIZED)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('X-Request-Id header is set', () => pm.expect(pm.response.headers.get('X-Request-Id')).to.be.a('string').and.not.empty);",
+                  "pm.test('X-Instance-Id header starts with auth-service-', () => pm.expect(pm.response.headers.get('X-Instance-Id')).to.match(/^auth-service-/));",
+                  "const body = pm.response.json();",
+                  "pm.test('error format', () => {",
+                  "  pm.expect(body.status).to.eql(401);",
+                  "  pm.expect(body.error).to.eql('UNAUTHORIZED');",
+                  "  pm.expect(body.message).to.be.a('string');",
+                  "  pm.expect(body.requestId).to.eql(pm.response.headers.get('X-Request-Id'));",
+                  "  pm.expect(body).to.not.have.property('stack');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "refresh"
+              ]
+            },
+            "description": "No refresh_token cookie."
+          }
+        },
+        {
+          "name": "Log in again (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('X-Request-Id header is set', () => pm.expect(pm.response.headers.get('X-Request-Id')).to.be.a('string').and.not.empty);",
+                  "pm.test('X-Instance-Id header starts with auth-service-', () => pm.expect(pm.response.headers.get('X-Instance-Id')).to.match(/^auth-service-/));",
+                  "const body = pm.response.json();",
+                  "pm.test('token response', () => {",
+                  "  pm.expect(Object.keys(body).sort()).to.eql(['accessToken', 'expiresIn', 'tokenType']);",
+                  "  pm.expect(body.tokenType).to.eql('Bearer');",
+                  "  pm.expect(body.expiresIn).to.eql(900);",
+                  "  pm.expect(body.accessToken.split('.')).to.have.lengthOf(3);",
+                  "});",
+                  "const parseCookie = () => {",
+                  "  const header = pm.response.headers.get('Set-Cookie') || '';",
+                  "  const [first, ...attributes] = header.split(';').map((part) => part.trim());",
+                  "  const separator = first.indexOf('=');",
+                  "  const cookie = { name: first.slice(0, separator), value: first.slice(separator + 1) };",
+                  "  for (const attribute of attributes) {",
+                  "    const [name, ...value] = attribute.split('=');",
+                  "    cookie[name.toLowerCase()] = value.join('=');",
+                  "  }",
+                  "  return cookie;",
+                  "};",
+                  "const cookie = parseCookie();",
+                  "pm.test('Set-Cookie: refresh_token with HttpOnly, Secure, SameSite=Strict, Path=/api/v1/auth, Max-Age=604800', () => {",
+                  "  pm.expect(cookie.name).to.eql('refresh_token');",
+                  "  pm.expect(cookie.value).to.match(/^[A-Za-z0-9_-]{43}$/);",
+                  "  pm.expect(cookie['max-age']).to.eql('604800');",
+                  "  pm.expect(cookie.path).to.eql('/api/v1/auth');",
+                  "  pm.expect(cookie).to.have.property('httponly');",
+                  "  pm.expect(cookie).to.have.property('secure');",
+                  "  pm.expect(cookie.samesite).to.eql('Strict');",
+                  "});",
+                  "pm.test('refresh token is not in the body', () => pm.expect(pm.response.text()).to.not.include(cookie.value));",
+                  "// The cookie has Path=/api/v1/auth (the Gateway path), so Postman would not send it to /auth/refresh by itself:",
+                  "// the value is kept in a variable and sent in a Cookie header.",
+                  "pm.collectionVariables.set('refreshToken', cookie.value);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "description": "A new session (a new token family) for the logout requests.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Log out (204)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 204', () => pm.response.to.have.status(204));",
+                  "pm.test('X-Request-Id header is set', () => pm.expect(pm.response.headers.get('X-Request-Id')).to.be.a('string').and.not.empty);",
+                  "pm.test('X-Instance-Id header starts with auth-service-', () => pm.expect(pm.response.headers.get('X-Instance-Id')).to.match(/^auth-service-/));",
+                  "pm.test('empty body', () => pm.expect(pm.response.text()).to.eql(''));",
+                  "const parseCookie = () => {",
+                  "  const header = pm.response.headers.get('Set-Cookie') || '';",
+                  "  const [first, ...attributes] = header.split(';').map((part) => part.trim());",
+                  "  const separator = first.indexOf('=');",
+                  "  const cookie = { name: first.slice(0, separator), value: first.slice(separator + 1) };",
+                  "  for (const attribute of attributes) {",
+                  "    const [name, ...value] = attribute.split('=');",
+                  "    cookie[name.toLowerCase()] = value.join('=');",
+                  "  }",
+                  "  return cookie;",
+                  "};",
+                  "const cookie = parseCookie();",
+                  "pm.test('Set-Cookie clears refresh_token (empty value, Max-Age=0, same path)', () => {",
+                  "  pm.expect(cookie.name).to.eql('refresh_token');",
+                  "  pm.expect(cookie.value).to.eql('');",
+                  "  pm.expect(cookie['max-age']).to.eql('0');",
+                  "  pm.expect(cookie.path).to.eql('/api/v1/auth');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Cookie",
+                "value": "refresh_token={{refreshToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/logout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "logout"
+              ]
+            },
+            "description": "Revokes the token family and clears the cookie (Max-Age=0, Path=/api/v1/auth)."
+          }
+        },
+        {
+          "name": "Refresh after logout (401 UNAUTHORIZED)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('X-Request-Id header is set', () => pm.expect(pm.response.headers.get('X-Request-Id')).to.be.a('string').and.not.empty);",
+                  "pm.test('X-Instance-Id header starts with auth-service-', () => pm.expect(pm.response.headers.get('X-Instance-Id')).to.match(/^auth-service-/));",
+                  "const body = pm.response.json();",
+                  "pm.test('error format', () => {",
+                  "  pm.expect(body.status).to.eql(401);",
+                  "  pm.expect(body.error).to.eql('UNAUTHORIZED');",
+                  "  pm.expect(body.message).to.be.a('string');",
+                  "  pm.expect(body.requestId).to.eql(pm.response.headers.get('X-Request-Id'));",
+                  "  pm.expect(body).to.not.have.property('stack');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Cookie",
+                "value": "refresh_token={{refreshToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "refresh"
+              ]
+            },
+            "description": "The token from before the logout no longer works."
+          }
+        },
+        {
+          "name": "Log out without a cookie (204)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 204', () => pm.response.to.have.status(204));",
+                  "pm.test('X-Request-Id header is set', () => pm.expect(pm.response.headers.get('X-Request-Id')).to.be.a('string').and.not.empty);",
+                  "pm.test('X-Instance-Id header starts with auth-service-', () => pm.expect(pm.response.headers.get('X-Instance-Id')).to.match(/^auth-service-/));",
+                  "const parseCookie = () => {",
+                  "  const header = pm.response.headers.get('Set-Cookie') || '';",
+                  "  const [first, ...attributes] = header.split(';').map((part) => part.trim());",
+                  "  const separator = first.indexOf('=');",
+                  "  const cookie = { name: first.slice(0, separator), value: first.slice(separator + 1) };",
+                  "  for (const attribute of attributes) {",
+                  "    const [name, ...value] = attribute.split('=');",
+                  "    cookie[name.toLowerCase()] = value.join('=');",
+                  "  }",
+                  "  return cookie;",
+                  "};",
+                  "const cookie = parseCookie();",
+                  "pm.test('Set-Cookie clears refresh_token (empty value, Max-Age=0, same path)', () => {",
+                  "  pm.expect(cookie.name).to.eql('refresh_token');",
+                  "  pm.expect(cookie.value).to.eql('');",
+                  "  pm.expect(cookie['max-age']).to.eql('0');",
+                  "  pm.expect(cookie.path).to.eql('/api/v1/auth');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/logout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "logout"
+              ]
+            },
+            "description": "Logout always answers 204, also without a cookie or with an unknown token."
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "jwksKid",
+      "value": ""
+    },
+    {
+      "key": "email",
+      "value": ""
+    },
+    {
+      "key": "emailMixedCase",
+      "value": ""
+    },
+    {
+      "key": "password",
+      "value": ""
+    },
+    {
+      "key": "accountId",
+      "value": ""
+    },
+    {
+      "key": "accessToken",
+      "value": ""
+    },
+    {
+      "key": "refreshToken",
+      "value": ""
+    },
+    {
+      "key": "previousRefreshToken",
+      "value": ""
+    }
+  ]
+}

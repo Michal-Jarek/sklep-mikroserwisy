@@ -1,0 +1,51 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+/// Login account. The user profile (name, addresses) lives in User Service under the same id.
+model Account {
+  id           String   @id @db.Uuid
+  /// Trimmed, lower case.
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  roles        String[] @default(["CUSTOMER"])
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  refreshTokens RefreshToken[]
+
+  @@map("accounts")
+}
+
+/// Refresh token from the refresh_token cookie. Only the SHA-256 hash (hex) of the value is stored.
+/// Every refresh replaces the token with a new one in the same family; reuse of a replaced token revokes the family.
+model RefreshToken {
+  id           String    @id @db.Uuid
+  accountId    String    @map("account_id") @db.Uuid
+  account      Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  familyId     String    @map("family_id") @db.Uuid
+  tokenHash    String    @unique @map("token_hash")
+  expiresAt    DateTime  @map("expires_at") @db.Timestamptz
+  revokedAt    DateTime? @map("revoked_at") @db.Timestamptz
+  /// Id of the token that replaced this one (no foreign key).
+  replacedById String?   @map("replaced_by_id") @db.Uuid
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([familyId])
+  @@map("refresh_tokens")
+}
+
+/// Failed logins per normalized email, also for emails without an account.
+/// Written with raw SQL (login-attempts.service.ts), so updated_at is set there.
+model LoginFailure {
+  email       String    @id
+  failedCount Int       @default(0) @map("failed_count")
+  lockedUntil DateTime? @map("locked_until") @db.Timestamptz
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("login_failures")
+}
