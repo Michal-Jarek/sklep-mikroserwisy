@@ -15,14 +15,14 @@ Wspólna infrastruktura usług sklepu uruchamiana w Docker Compose: Consul (reje
 
 Pliki w folderze:
 - `compose.yaml` – opis kontenerów;
-- `create-secrets.sh` – tworzy lokalne hasła (`deploy/.env`) i klucze JWT (`deploy/secrets/`);
+- `create-secrets.sh` – tworzy lokalne hasła (`deploy/.env`, także hasło pierwszego administratora Auth) i klucze JWT (`deploy/secrets/`);
 - `.env.example` – lista nazw haseł (bez wartości, tylko dla informacji);
 - `consul/config/<usługa>.yaml` – konfiguracja usług wgrywana do Consula;
 - `consul/seed-kv.sh` – skrypt, którym `consul-kv-seed` wgrywa konfigurację (nie uruchamia się go ręcznie);
 - `postgres/init/01-service-databases.sh` – tworzy bazy i użytkowników przy pierwszym starcie;
 - `k8s/`, `rabbitmq/` – na później. Kubernetes to ostatni etap projektu; do tego czasu infrastruktura i usługi działają w Docker Compose.
 
-Usługi sklepu dojdą do tego samego `compose.yaml` w grupach (tzw. profilach): od etapu 2 profil `platform` (Auth, potem Gateway), w etapie 5 profil `full-shop` (cały sklep, w tym usługi z `platform`). Na razie startuje tylko infrastruktura z tabeli.
+Usługi sklepu są w tym samym `compose.yaml` w grupach (tzw. profilach): profil `platform` (od etapu 2 Auth Service, w etapie 3 Gateway), w etapie 5 profil `full-shop` (cały sklep, w tym usługi z `platform`). Polecenie bez `--profile` uruchamia tylko infrastrukturę z tabeli; profil `platform` – sekcja „Profil platform (Auth Service)”.
 
 ## Wymagania
 
@@ -42,7 +42,7 @@ bash deploy/create-secrets.sh
 ```
 Wynik przy pierwszym uruchomieniu (komunikaty skryptów są po angielsku: `created` – utworzono, `variables` – zmienne):
 ```
-deploy/.env: created (8 variables)
+deploy/.env: created (9 variables)
 deploy/secrets/jwt-*.pem: created
 Done. Start: docker compose -f deploy/compose.yaml up -d --wait
 ```
@@ -53,6 +53,12 @@ deploy/secrets/jwt-*.pem: unchanged
 Done. Start: docker compose -f deploy/compose.yaml up -d --wait
 ```
 Kopiowanie `.env.example` do `.env` nie jest potrzebne. Jeśli plik został już skopiowany, skrypt sam uzupełni puste hasła (wynik: `deploy/.env: added: …` z nazwami dopisanych zmiennych).
+
+**Po aktualizacji repozytorium** (np. `git pull`) uruchom skrypt ponownie – nowe wersje mogą wymagać nowych zmiennych. Etap 2 dodał `ADMIN_PASSWORD` (hasło pierwszego administratora Auth); wynik przy starym `deploy/.env`:
+```
+deploy/.env: added: ADMIN_PASSWORD
+```
+Bez tego każde polecenie `docker compose -f deploy/compose.yaml …` (także bez profilu) kończy się błędem `required variable ADMIN_PASSWORD is missing a value: Run deploy/create-secrets.sh`.
 
 **Krok 2.** Uruchom infrastrukturę:
 ```bash
@@ -101,7 +107,39 @@ docker compose -f deploy/compose.yaml exec redis-gateway sh -c 'REDISCLI_AUTH="$
 ```
 Wynik: `PONG`. Redis ma hasło, dlatego zwykłe `redis-cli ping` odpowiada `NOAUTH Authentication required.`
 
+## Profil platform (Auth Service)
+
+Infrastruktura razem z Auth Service:
+```bash
+bash deploy/create-secrets.sh
+docker compose -f deploy/compose.yaml --profile platform up -d --wait --build
+```
+`--build` buduje obraz `auth-service:dev` z `services/auth-service` (pierwszy raz kilka minut). Dochodzą dwa kontenery: `auth-migrate` (jednorazowo stosuje migracje bazy `auth_db` i kończy się kodem 0) i `auth-service` (startuje po migracjach). Auth nie ma portu na laptopie – jest dostępny tylko w sieci `sklep_backend` (od etapu 3 przez Gateway). Szczegóły usługi: [services/auth-service/README.md](../services/auth-service/README.md).
+
+W `up`, `stop` i `down` podaje się `--profile platform`, inaczej polecenie pomija kontenery Auth (`stop` zostawia je uruchomione, `down` ich nie usuwa). W `ps` i `logs` profil nie jest potrzebny, ale nie szkodzi:
+```bash
+docker compose -f deploy/compose.yaml --profile platform ps
+```
+Podpowiedź `Done. Start: …` na końcu `create-secrets.sh` dotyczy samej infrastruktury; z Auth użyj polecenia z początku tej sekcji.
+
+Wolumen PostgreSQL utworzony przed etapem 2 nie ma bazy cieni `auth_shadow_db` (potrzebnej tylko do tworzenia migracji Auth). Dodaje ją ponowne uruchomienie skryptu baz, bez utraty danych – polecenie `exec … 01-service-databases.sh` z sekcji „Reset od zera”.
+
+### Logowanie jako ADMIN
+
+Przy pierwszym starcie `auth-service` zakłada konto z rolą `ADMIN`: e-mail `admin@sklep.local` (inny: `ADMIN_EMAIL=…` w `deploy/.env` przed pierwszym startem), hasło – zmienna `ADMIN_PASSWORD` z `deploy/.env`. Późniejsza zmiana `ADMIN_PASSWORD` nie zmienia hasła istniejącego konta. Hasła nie wkleja się do czatu, issue ani do repo.
+
+Sprawdzenie logowania bez wypisywania hasła (hasło trafia do zmiennej, a żądanie idzie przez standardowe wejście):
+```bash
+P=$(docker compose -f deploy/compose.yaml --profile platform exec -T auth-service printenv ADMIN_PASSWORD)
+printf '{"email":"admin@sklep.local","password":"%s"}' "$P" | docker run --rm -i --network sklep_backend --entrypoint curl hashicorp/consul:1.21 \
+  -s -o /dev/null -w '%{http_code}\n' -H 'Content-Type: application/json' --data-binary @- http://auth-service:8081/auth/login
+unset P
+```
+Wynik: `200`. Bez `-o /dev/null -w …` odpowiedź zawiera `accessToken` (token z rolą `ADMIN`, ważny 15 minut) – traktuj go jak hasło.
+
 ## Codzienna praca
+
+Jeśli uruchamiasz też Auth (profil `platform`), dodaj `--profile platform` do każdego polecenia w tej i następnej sekcji (np. `docker compose -f deploy/compose.yaml --profile platform stop`) – inaczej kontenery Auth zostaną pominięte.
 
 Zatrzymanie (kontenery zostają, start jest szybszy):
 ```bash
@@ -122,6 +160,8 @@ docker compose -f deploy/compose.yaml up -d --wait
 
 ## Reset od zera
 
+Z Auth (profil `platform`) oba polecenia z `--profile platform` – inaczej `auth-service` zostaje uruchomiony, a po `up` bez profilu nikt nie założy tabel w nowej, pustej bazie `auth_db` (robi to `auth-migrate`):
+
 ```bash
 docker compose -f deploy/compose.yaml down -v
 docker compose -f deploy/compose.yaml up -d --wait
@@ -135,7 +175,7 @@ Bez utraty danych – zamiast `down -v` ustaw nowe hasła w bazie:
 docker compose -f deploy/compose.yaml up -d --wait
 docker compose -f deploy/compose.yaml exec -T postgres bash /docker-entrypoint-initdb.d/01-service-databases.sh
 ```
-Pierwsze polecenie odtwarza kontener `postgres` z nowymi wartościami z `deploy/.env` (dane zostają). Drugie ustawia użytkownikom hasła według `deploy/.env` i tworzy brakujące bazy; istniejących baz nie rusza. Skrypt wypisuje najpierw linie `SET`, `ALTER ROLE`, `REVOKE` (wyniki kolejnych poleceń SQL), a na końcu `01-service-databases.sh: done (auth user product inventory order shipping)`.
+Pierwsze polecenie odtwarza kontener `postgres` z nowymi wartościami z `deploy/.env` (dane zostają). Drugie ustawia użytkownikom hasła według `deploy/.env` i tworzy brakujące bazy (także `auth_shadow_db`); istniejących baz nie rusza. Skrypt wypisuje najpierw linie `SET`, `ALTER ROLE`, `REVOKE` (wyniki kolejnych poleceń SQL), a na końcu `01-service-databases.sh: done (auth user product inventory order shipping)`.
 
 ## Konwencje
 
@@ -149,7 +189,7 @@ Obowiązują w kolejnych etapach (Auth, Gateway, usługi zespołu).
 | Zmienne usług – baza | `DB_HOST` (`postgres`), `DB_PORT` (`5432`), `DB_NAME` (`<s>_db`), `DB_USER` (`<s>_service`), `DB_PASSWORD` (w compose: `${<S>_DB_PASSWORD}`) |
 | Zmienne Gateway – Redis | `REDIS_HOST` (`redis-gateway`), `REDIS_PORT` (`6379`), `REDIS_PASSWORD` (w compose: `${REDIS_GATEWAY_PASSWORD}`) |
 | Usługa uruchomiona z VS Code (poza kontenerem) | łączy się z infrastrukturą przez `127.0.0.1` i porty z tabeli „Co tu jest” (5432, 8500, 6379); rejestruje się w Consulu z adresem `host.docker.internal` |
-| Klucze JWT | `deploy/secrets/jwt-private.pem` (tylko Auth), `jwt-public.pem` |
+| Klucze JWT | `deploy/secrets/jwt-private.pem` (tylko Auth; w kontenerze `/run/secrets/jwt-private.pem`, tylko do odczytu), `jwt-public.pem` |
 | Konfiguracja w KV | `deploy/consul/config/<usługa>.yaml` → `config/<usługa>/data` |
 
 `<s>` to krótka nazwa usługi, `<S>` – ta sama wielkimi literami. Bazy w PostgreSQL:
@@ -162,8 +202,9 @@ Obowiązują w kolejnych etapach (Auth, Gateway, usługi zespołu).
 | inventory-service | `inventory_db` | `inventory_service` | `INVENTORY_DB_PASSWORD` |
 | order-service | `order_db` | `order_service` | `ORDER_DB_PASSWORD` |
 | shipping-service | `shipping_db` | `shipping_service` | `SHIPPING_DB_PASSWORD` |
+| auth-service (tylko tworzenie migracji) | `auth_shadow_db` | `auth_service` | `AUTH_DB_PASSWORD` |
 
-Każdy użytkownik jest właścicielem tylko swojej bazy i nie może połączyć się z cudzą. Review i Notification dostaną MongoDB, Cart – osobny Redis (etap 5).
+Każdy użytkownik jest właścicielem tylko swoich baz i nie może połączyć się z cudzą. `auth_shadow_db` to baza cieni dla `npx prisma migrate dev` w Auth Service (Prisma sprawdza na niej migracje); usługa jej nie używa. Review i Notification dostaną MongoDB, Cart – osobny Redis (etap 5).
 
 ## Bezpieczeństwo
 
@@ -180,9 +221,14 @@ docker ps --format '{{.Names}}  {{.Ports}}'
 Kontenery o nazwach `k8s_…` to wewnętrzny Kubernetes Rancher Desktop – ich nie należy ruszać; szukaj nazwy z numerem portu (np. `5432`).
 Zatrzymaj tamten zestaw (np. `docker compose -f services/user-service/dev/compose.yaml down`) albo pojedynczy kontener (`docker stop <nazwa>`), potem znowu `up -d --wait`.
 
-**Brak haseł:** `required variable … is missing a value: Run deploy/create-secrets.sh`. Nie ma pliku `deploy/.env` albo ma puste wartości. Rozwiązanie:
+**Brak haseł:** `required variable … is missing a value: Run deploy/create-secrets.sh`. Nie ma pliku `deploy/.env`, ma puste wartości albo brakuje w nim zmiennej dodanej w nowszej wersji repo (np. `ADMIN_PASSWORD`). Rozwiązanie:
 ```bash
 bash deploy/create-secrets.sh
+```
+
+**`01-service-databases.sh: No such file or directory`** przy `docker compose -f deploy/compose.yaml exec -T postgres bash /docker-entrypoint-initdb.d/01-service-databases.sh`. Kontener `postgres` powstał przed przełączeniem gałęzi albo odtworzeniem folderu `deploy/postgres/init`, a montowanie wskazuje stary, pusty katalog. Odtwórz kontener (dane w wolumenie zostają) i powtórz polecenie:
+```bash
+docker compose -f deploy/compose.yaml up -d --wait --force-recreate postgres
 ```
 
 **`Permission denied` (w zsh: `permission denied`) przy `deploy/create-secrets.sh`.** Uruchamiaj zawsze przez `bash`, jak wyżej – wtedy działa także bez prawa wykonywania.

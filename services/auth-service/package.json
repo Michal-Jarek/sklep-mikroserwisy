@@ -1,0 +1,92 @@
+{
+  "name": "auth-service",
+  "version": "0.1.0",
+  "description": "Auth Service: accounts, login, JWT tokens",
+  "private": true,
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=22 <23"
+  },
+  "scripts": {
+    "postinstall": "prisma generate",
+    "build": "nest build",
+    "start": "nest start --env-file .env",
+    "start:dev": "nest start --watch --env-file .env",
+    "start:prod": "node dist/main.js",
+    "lint": "eslint src",
+    "test": "node --experimental-vm-modules --disable-warning=ExperimentalWarning ./node_modules/jest/bin/jest.js",
+    "test:watch": "node --experimental-vm-modules --disable-warning=ExperimentalWarning ./node_modules/jest/bin/jest.js --watch",
+    "test:cov": "node --experimental-vm-modules --disable-warning=ExperimentalWarning ./node_modules/jest/bin/jest.js --coverage"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.1.5",
+    "@fastify/rate-limit": "^11.2.2",
+    "@fastify/static": "^10.1.10",
+    "@nestjs/common": "^12.4.0",
+    "@nestjs/core": "^12.4.0",
+    "@nestjs/platform-fastify": "^12.4.0",
+    "@nestjs/swagger": "^12.1.1",
+    "@prisma/adapter-pg": "7.10.1",
+    "@prisma/client": "7.10.1",
+    "bcrypt": "^6.0.0",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.15.1",
+    "jose": "^6.2.16",
+    "nestjs-pino": "^5.3.1",
+    "opossum": "^10.0.0",
+    "pg": "^8.23.1",
+    "pino": "^10.4.0",
+    "pino-http": "^11.0.0",
+    "prisma": "7.10.1",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "yaml": "^2.9.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@jest/globals": "^30.5.2",
+    "@nestjs/cli": "^12.0.12",
+    "@nestjs/schematics": "^12.0.13",
+    "@nestjs/testing": "^12.4.0",
+    "@types/bcrypt": "^6.0.0",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^22.20.5",
+    "@types/opossum": "^8.1.9",
+    "@types/pg": "^8.23.1",
+    "eslint": "^10.14.0",
+    "globals": "^17.14.0",
+    "jest": "^30.5.2",
+    "source-map-support": "^0.5.21",
+    "ts-jest": "^29.4.15",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.72.1"
+  },
+  "jest": {
+    "moduleFileExtensions": [
+      "js",
+      "json",
+      "ts"
+    ],
+    "rootDir": "src",
+    "testRegex": ".*\\.spec\\.ts$",
+    "extensionsToTreatAsEsm": [
+      ".ts"
+    ],
+    "transform": {
+      "^.+\\.ts$": [
+        "ts-jest",
+        {
+          "useESM": true,
+          "tsconfig": "<rootDir>/../tsconfig.spec.json"
+        }
+      ]
+    },
+    "collectCoverageFrom": [
+      "**/*.ts",
+      "!**/*.spec.ts",
+      "!main.ts"
+    ],
+    "coverageDirectory": "../coverage",
+    "testEnvironment": "node"
+  }
+}

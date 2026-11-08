@@ -2,6 +2,8 @@
 # Creates a PostgreSQL database and user for each service with a relational database:
 # role <s>_service (LOGIN, no administrative privileges) owns database <s>_db.
 # The role password comes from variable <S>_DB_PASSWORD (e.g. AUTH_DB_PASSWORD).
+# Also creates auth_shadow_db (owner auth_service): the shadow database for local
+# "prisma migrate dev" in Auth Service, so the role does not need CREATEDB.
 #
 # Runs automatically on the first container start (empty volume), from
 # /docker-entrypoint-initdb.d. Can be run again, e.g. after changing passwords in deploy/.env:
@@ -52,6 +54,9 @@ SQL
   done
 
   cat <<'SQL'
+SELECT format('CREATE DATABASE %I OWNER %I', 'auth_shadow_db', 'auth_service')
+  WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'auth_shadow_db') \gexec
+REVOKE ALL ON DATABASE auth_shadow_db FROM PUBLIC;
 REVOKE CONNECT ON DATABASE postgres FROM PUBLIC;
 REVOKE CONNECT ON DATABASE template1 FROM PUBLIC;
 SQL

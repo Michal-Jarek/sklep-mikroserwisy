@@ -87,6 +87,67 @@ services:
       timeout: 3s
       retries: 30
 
+  # One-off: applies Auth Service database migrations (prisma migrate deploy), then exits.
+  # auth-service starts only after it succeeds, so with --scale the migration still runs once.
+  auth-migrate:
+    image: auth-service:dev
+    build: ../services/auth-service
+    profiles: [platform, full-shop]
+    user: node
+    # The Prisma CLI is called directly: npx would try to write its cache.
+    command: ["node", "node_modules/prisma/build/index.js", "migrate", "deploy"]
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: auth_db
+      DB_USER: auth_service
+      DB_PASSWORD: ${AUTH_DB_PASSWORD:?Run deploy/create-secrets.sh}
+    networks: [backend]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # No ports: reachable only inside the backend network (from stage 3 through the Gateway).
+  auth-service:
+    image: auth-service:dev
+    build: ../services/auth-service
+    profiles: [platform, full-shop]
+    user: node
+    environment:
+      PORT: "8081"
+      CONSUL_HOST: consul
+      CONSUL_PORT: "8500"
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: auth_db
+      DB_USER: auth_service
+      DB_PASSWORD: ${AUTH_DB_PASSWORD:?Run deploy/create-secrets.sh}
+      JWT_PRIVATE_KEY_FILE: /run/secrets/jwt-private.pem
+      # First admin account, created at startup when it does not exist yet.
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@sklep.local}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Run deploy/create-secrets.sh}
+      # Until stage 5 (User Service in Compose) registration does not call User Service.
+      USER_SERVICE_ENABLED: "false"
+    volumes:
+      - ./secrets/jwt-private.pem:/run/secrets/jwt-private.pem:ro
+    networks: [backend]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      consul:
+        condition: service_healthy
+      consul-kv-seed:
+        condition: service_completed_successfully
+      auth-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8081/health/ready > /dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
 networks:
   # Infrastructure and all services; no outbound access.
   backend: { internal: true }

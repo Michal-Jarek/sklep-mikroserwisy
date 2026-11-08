@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Creates local secrets for Docker Compose:
-#   deploy/.env                  passwords (openssl rand -hex 24)
+#   deploy/.env                  passwords (openssl rand -hex 24), also for the first Auth admin
 #   deploy/secrets/jwt-*.pem     RS256 key pair for Auth (PKCS#8 and SPKI)
 # Never overwrites anything: only adds missing variables and missing keys.
 # A variable with an empty value (e.g. after cp .env.example .env) counts as missing.
@@ -30,7 +30,8 @@ PRODUCT_DB_PASSWORD
 INVENTORY_DB_PASSWORD
 ORDER_DB_PASSWORD
 SHIPPING_DB_PASSWORD
-REDIS_GATEWAY_PASSWORD"
+REDIS_GATEWAY_PASSWORD
+ADMIN_PASSWORD"
 
 umask 077
 
