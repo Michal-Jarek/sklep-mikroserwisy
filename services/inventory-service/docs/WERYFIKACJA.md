@@ -1,7 +1,5 @@
 # Weryfikacja, Testy inventory-service — 8 listopada 2026
 
-Pola w nawiasach kwadratowych uzupełnij własnymi wynikami. Usuń linię, której nie wykonałaś.
-
 * pytest: 25 testów, wszystkie przeszły, 0 pominiętych .
 * Obraz Docker zbudowany z katalogu `services/inventory-service`.
 * Lokalne uruchomienie z PostgreSQL: `/health/live` oraz `/health/ready` — odpowiedź 200.
