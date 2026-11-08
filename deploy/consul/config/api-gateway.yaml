@@ -1,0 +1,5 @@
+# Configuration of api-gateway in Consul KV (key config/api-gateway/data). No credentials here. Environment variables take precedence.
+logLevel: info
+jwt:
+  issuer: sklep-auth
+  audience: sklep-api
