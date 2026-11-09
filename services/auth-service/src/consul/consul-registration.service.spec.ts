@@ -9,6 +9,9 @@ const ENV = {
   DB_NAME: 'auth_db',
   DB_USER: 'auth_service',
   DB_PASSWORD: 'test-password',
+  RABBITMQ_HOST: 'rabbitmq',
+  RABBITMQ_USER: 'auth-service',
+  RABBITMQ_PASSWORD: 'test-rabbitmq-password',
   CONSUL_HOST: 'consul',
   SERVICE_ADDRESS: '10.1.2.3',
 };

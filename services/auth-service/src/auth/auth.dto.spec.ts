@@ -73,6 +73,39 @@ describe('RegisterRequest', () => {
     expect((await register({ lastName: 'x'.repeat(101) })).failed).toEqual(['lastName']);
   });
 
+  it.each([
+    ['NUL', 'A\u0000'],
+    ['CR/LF', 'A\r\nBcc: x@example.com'],
+    ['a tab', 'Anna\tMaria'],
+    ['a lone surrogate', 'A\ud800'],
+  ])('rejects names with %s (control characters, unpaired surrogates)', async (_case, name) => {
+    expect((await register({ firstName: name })).failed).toEqual(['firstName']);
+    expect((await register({ lastName: name })).failed).toEqual(['lastName']);
+  });
+
+  it('says which name is invalid, without the value', async () => {
+    const dto = plainToInstance(RegisterRequest, { ...VALID, firstName: 'A\u0000' });
+    const [error] = await validate(dto, OPTIONS);
+    expect(Object.values(error.constraints ?? {})).toEqual(['firstName must not contain control characters or unpaired surrogates']);
+  });
+
+  it.each([
+    'Zo\u00eb', // "Zoe" with a diaeresis
+    '\u0141ucja', // Polish name starting with "L with stroke"
+    "O'Neil",
+    'Anna-Maria',
+    'Anna Maria',
+    'Ana \u{1F600}', // a character outside the BMP (a valid surrogate pair)
+  ])('accepts the name %s', async (name) => {
+    expect((await register({ firstName: name, lastName: name })).failed).toEqual([]);
+  });
+
+  it('checks the name after trimming: CR/LF around it is removed, not rejected', async () => {
+    const { dto, failed } = await register({ firstName: '\r\nAnna\r\n' });
+    expect(failed).toEqual([]);
+    expect(dto.firstName).toBe('Anna');
+  });
+
   it('requires all fields', async () => {
     const dto = plainToInstance(RegisterRequest, { email: 'anna@example.com', password: 'correct-horse-42', firstName: 'A' });
     const errors = await validate(dto, OPTIONS);

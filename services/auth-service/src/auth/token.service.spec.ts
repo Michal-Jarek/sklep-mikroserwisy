@@ -7,7 +7,15 @@ import { buildConfig, KV_DEFAULTS } from '../config/app-config';
 import { loadSigningKey, type SigningKey } from './signing-key';
 import { ACCESS_TOKEN_TTL_SECONDS, TokenService } from './token.service';
 
-const ENV = { DB_HOST: 'postgres', DB_NAME: 'auth_db', DB_USER: 'auth_service', DB_PASSWORD: 'test-password' };
+const ENV = {
+  DB_HOST: 'postgres',
+  DB_NAME: 'auth_db',
+  DB_USER: 'auth_service',
+  DB_PASSWORD: 'test-password',
+  RABBITMQ_HOST: 'rabbitmq',
+  RABBITMQ_USER: 'auth-service',
+  RABBITMQ_PASSWORD: 'test-rabbitmq-password',
+};
 const ACCOUNT_ID = '0b5f5c1e-7f43-4b3c-9d2e-8a4b6a1c2d3e';
 
 describe('signing key, access tokens and JWKS', () => {

@@ -3,6 +3,7 @@ import { Body, Controller, Get, Post } from '@nestjs/common';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { Test } from '@nestjs/testing';
 import { IsEmail } from 'class-validator';
+import { connect } from 'node:net';
 import { AppException } from './common/app-exception';
 import { createFastifyAdapter } from './common/fastify-adapter';
 import { createOpenApiDocument, setupApp } from './setup-app';
@@ -42,6 +43,17 @@ interface HttpResult {
   headers: Headers;
   text: string;
   body: Record<string, unknown>;
+}
+
+/** Sends raw bytes and returns everything the server wrote until it closed the connection. */
+function rawRequest(url: string, payload: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const socket = connect(Number(new URL(url).port), '127.0.0.1', () => socket.write(payload));
+    const chunks: Buffer[] = [];
+    socket.on('data', (chunk: Buffer) => chunks.push(chunk));
+    socket.on('error', reject);
+    socket.on('close', () => resolve(Buffer.concat(chunks).toString('utf8')));
+  });
 }
 
 // A real HTTP server on a random port (Fastify inject needs an ESM-only package that Jest cannot load on Node 22).
@@ -135,10 +147,16 @@ describe('HTTP layer (headers, validation, error format)', () => {
   });
 
   it('returns 413 PAYLOAD_TOO_LARGE for a body over the 1 MiB limit (Z6)', async () => {
-    const response = await postJson(JSON.stringify({ email: 'x'.repeat(1024 * 1024) }));
-    expect(response.status).toBe(413);
-    expect(response.body).toMatchObject({ status: 413, error: 'PAYLOAD_TOO_LARGE' });
-    expect(response.body.requestId).toBe(response.headers.get('x-request-id'));
+    // Only the headers: Fastify answers from Content-Length and closes the connection, so a client
+    // still sending the body could get EPIPE before reading the answer (the test was flaky with fetch).
+    const response = await rawRequest(
+      baseUrl,
+      `POST /${SAMPLE} HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: ${1024 * 1024 + 1}\r\n\r\n`,
+    );
+    expect(response.startsWith('HTTP/1.1 413 ')).toBe(true);
+    const body = JSON.parse(response.slice(response.indexOf('\r\n\r\n') + 4)) as Record<string, unknown>;
+    expect(body).toMatchObject({ status: 413, error: 'PAYLOAD_TOO_LARGE' });
+    expect(response.toLowerCase()).toContain(`\r\nx-request-id: ${body.requestId as string}\r\n`);
   });
 
   it('returns 415 UNSUPPORTED_MEDIA_TYPE for a Content-Type without a parser (Z6)', async () => {

@@ -1,4 +1,5 @@
-# Shared shop infrastructure: Consul (+ KV seeding), PostgreSQL and Redis for the Gateway.
+# Shared shop infrastructure: Consul (+ KV seeding), PostgreSQL, Redis for the Gateway
+# and RabbitMQ (+ topology and service accounts from deploy/rabbitmq/).
 # Started by default: docker compose -f deploy/compose.yaml up -d --wait
 # Services are added in profiles "platform" (from stage 2) and "full-shop" (stage 5).
 # Ports only on 127.0.0.1. Passwords from deploy/.env (created by deploy/create-secrets.sh).
@@ -37,6 +38,9 @@ services:
     networks: [backend]
     volumes:
       - ./consul:/kv:ro
+    # The image declares VOLUME /consul/data: without tmpfs every new container of this one-off
+    # service leaves an anonymous volume behind.
+    tmpfs: [/consul/data]
     restart: "no"
     depends_on:
       consul:
@@ -69,15 +73,20 @@ services:
     image: redis:7.4-alpine
     # "sh -c" skips the privilege drop in the image, so the user is set explicitly (no root).
     user: redis
-    # "up --wait" fails when the fast consul-kv-seed exits before it is checked.
-    # This dependency makes Compose wait for it, and its failure stops "up".
+    # "up --wait" fails when a fast one-off container (consul-kv-seed, rabbitmq-setup) exits
+    # before it is checked. These dependencies make Compose wait for them, and a failure stops "up".
     depends_on:
       consul-kv-seed:
+        condition: service_completed_successfully
+      rabbitmq-setup:
         condition: service_completed_successfully
     environment:
       REDIS_PASSWORD: ${REDIS_GATEWAY_PASSWORD:?Run deploy/create-secrets.sh}
     # No persistence: rate limit counters are ephemeral.
     command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\" --save \"\" --appendonly no"]
+    # The image declares VOLUME /data: without tmpfs every new container leaves an anonymous
+    # volume behind (nothing is written there, see above).
+    tmpfs: [/data]
     networks: [backend, tools]
     ports:
       - "127.0.0.1:6379:6379"
@@ -86,6 +95,59 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+
+  rabbitmq:
+    image: rabbitmq:4.3-management-alpine
+    # Whole container without root, also for the healthcheck and "docker compose exec":
+    # a CLI tool run as root creates root's .erlang.cookie and the broker fails with eacces.
+    user: rabbitmq
+    # The node name rabbit@<hostname> selects the data directory in the volume,
+    # so a fixed hostname keeps the data when the container is recreated.
+    hostname: rabbitmq
+    # The admin account is created only on an empty volume; no guest account is created.
+    # Topology and service accounts: rabbitmq-setup (not load_definitions, which creates no accounts).
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_ADMIN_PASSWORD:?Run deploy/create-secrets.sh}
+    networks: [backend, tools]
+    # 5672 AMQP, 15672 management UI and HTTP API.
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q check_port_connectivity"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 20s
+
+  # On every "up" imports deploy/rabbitmq/definitions.json and the service accounts (setup.sh).
+  # Adds what is missing and updates policies, accounts and permissions; existing queues and
+  # exchanges are skipped without an error (changing the type or arguments of a queue needs
+  # a clean start). Never deletes.
+  rabbitmq-setup:
+    image: rabbitmq:4.3-management-alpine
+    user: rabbitmq
+    command: ["sh", "/setup/setup.sh"]
+    environment:
+      RABBITMQ_ADMIN_PASSWORD: ${RABBITMQ_ADMIN_PASSWORD:?Run deploy/create-secrets.sh}
+      AUTH_RABBITMQ_PASSWORD: ${AUTH_RABBITMQ_PASSWORD:?Run deploy/create-secrets.sh}
+      NOTIFICATION_RABBITMQ_PASSWORD: ${NOTIFICATION_RABBITMQ_PASSWORD:?Run deploy/create-secrets.sh}
+      INVENTORY_RABBITMQ_PASSWORD: ${INVENTORY_RABBITMQ_PASSWORD:?Run deploy/create-secrets.sh}
+      SHIPPING_RABBITMQ_PASSWORD: ${SHIPPING_RABBITMQ_PASSWORD:?Run deploy/create-secrets.sh}
+      ORDER_RABBITMQ_PASSWORD: ${ORDER_RABBITMQ_PASSWORD:?Run deploy/create-secrets.sh}
+    networks: [backend]
+    volumes:
+      - ./rabbitmq:/setup:ro
+    # The image declares VOLUME /var/lib/rabbitmq: without tmpfs every new container of this one-off
+    # service leaves an anonymous volume behind.
+    tmpfs: [/var/lib/rabbitmq]
+    restart: "no"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
 
   # One-off: applies Auth Service database migrations (prisma migrate deploy), then exits.
   # auth-service starts only after it succeeds, so with --scale the migration still runs once.
@@ -129,6 +191,11 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Run deploy/create-secrets.sh}
       # Until stage 5 (User Service in Compose) registration does not call User Service.
       USER_SERVICE_ENABLED: "false"
+      # Publishing events (outbox relay); Auth starts and registers users without RabbitMQ.
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USER: auth-service
+      RABBITMQ_PASSWORD: ${AUTH_RABBITMQ_PASSWORD:?Run deploy/create-secrets.sh}
     volumes:
       - ./secrets/jwt-private.pem:/run/secrets/jwt-private.pem:ro
     networks: [backend]
@@ -140,6 +207,9 @@ services:
       consul-kv-seed:
         condition: service_completed_successfully
       auth-migrate:
+        condition: service_completed_successfully
+      # Start order only (topology and account exist); not required later.
+      rabbitmq-setup:
         condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8081/health/ready > /dev/null || exit 1"]
@@ -191,3 +261,4 @@ networks:
 volumes:
   consul-data: {}
   postgres-data: {}
+  rabbitmq-data: {}

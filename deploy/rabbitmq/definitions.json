@@ -1,0 +1,257 @@
+{
+  "vhosts": [
+    {
+      "name": "/"
+    }
+  ],
+  "exchanges": [
+    {
+      "name": "shop.events",
+      "vhost": "/",
+      "type": "topic",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "name": "shop.dlx",
+      "vhost": "/",
+      "type": "direct",
+      "durable": true,
+      "auto_delete": false,
+      "internal": true,
+      "arguments": {}
+    }
+  ],
+  "queues": [
+    {
+      "name": "notification.q",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum"
+      }
+    },
+    {
+      "name": "notification.dlq",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum"
+      }
+    },
+    {
+      "name": "inventory.q",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum"
+      }
+    },
+    {
+      "name": "inventory.dlq",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum"
+      }
+    },
+    {
+      "name": "shipping.q",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum"
+      }
+    },
+    {
+      "name": "shipping.dlq",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum"
+      }
+    },
+    {
+      "name": "order.q",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum"
+      }
+    },
+    {
+      "name": "order.dlq",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum"
+      }
+    }
+  ],
+  "bindings": [
+    {
+      "source": "shop.events",
+      "vhost": "/",
+      "destination": "notification.q",
+      "destination_type": "queue",
+      "routing_key": "user.registered",
+      "arguments": {}
+    },
+    {
+      "source": "shop.events",
+      "vhost": "/",
+      "destination": "notification.q",
+      "destination_type": "queue",
+      "routing_key": "order.created",
+      "arguments": {}
+    },
+    {
+      "source": "shop.events",
+      "vhost": "/",
+      "destination": "shipping.q",
+      "destination_type": "queue",
+      "routing_key": "order.created",
+      "arguments": {}
+    },
+    {
+      "source": "shop.events",
+      "vhost": "/",
+      "destination": "notification.q",
+      "destination_type": "queue",
+      "routing_key": "order.cancelled",
+      "arguments": {}
+    },
+    {
+      "source": "shop.events",
+      "vhost": "/",
+      "destination": "inventory.q",
+      "destination_type": "queue",
+      "routing_key": "order.cancelled",
+      "arguments": {}
+    },
+    {
+      "source": "shop.events",
+      "vhost": "/",
+      "destination": "shipping.q",
+      "destination_type": "queue",
+      "routing_key": "order.cancelled",
+      "arguments": {}
+    },
+    {
+      "source": "shop.events",
+      "vhost": "/",
+      "destination": "notification.q",
+      "destination_type": "queue",
+      "routing_key": "shipment.status_changed",
+      "arguments": {}
+    },
+    {
+      "source": "shop.events",
+      "vhost": "/",
+      "destination": "inventory.q",
+      "destination_type": "queue",
+      "routing_key": "shipment.status_changed",
+      "arguments": {}
+    },
+    {
+      "source": "shop.events",
+      "vhost": "/",
+      "destination": "order.q",
+      "destination_type": "queue",
+      "routing_key": "shipment.status_changed",
+      "arguments": {}
+    },
+    {
+      "source": "shop.dlx",
+      "vhost": "/",
+      "destination": "notification.dlq",
+      "destination_type": "queue",
+      "routing_key": "notification.dlq",
+      "arguments": {}
+    },
+    {
+      "source": "shop.dlx",
+      "vhost": "/",
+      "destination": "inventory.dlq",
+      "destination_type": "queue",
+      "routing_key": "inventory.dlq",
+      "arguments": {}
+    },
+    {
+      "source": "shop.dlx",
+      "vhost": "/",
+      "destination": "shipping.dlq",
+      "destination_type": "queue",
+      "routing_key": "shipping.dlq",
+      "arguments": {}
+    },
+    {
+      "source": "shop.dlx",
+      "vhost": "/",
+      "destination": "order.dlq",
+      "destination_type": "queue",
+      "routing_key": "order.dlq",
+      "arguments": {}
+    }
+  ],
+  "policies": [
+    {
+      "vhost": "/",
+      "name": "notification-retry",
+      "pattern": "^notification\\.q$",
+      "apply-to": "queues",
+      "priority": 0,
+      "definition": {
+        "dead-letter-exchange": "shop.dlx",
+        "dead-letter-routing-key": "notification.dlq",
+        "delivery-limit": 2
+      }
+    },
+    {
+      "vhost": "/",
+      "name": "inventory-retry",
+      "pattern": "^inventory\\.q$",
+      "apply-to": "queues",
+      "priority": 0,
+      "definition": {
+        "dead-letter-exchange": "shop.dlx",
+        "dead-letter-routing-key": "inventory.dlq",
+        "delivery-limit": 2
+      }
+    },
+    {
+      "vhost": "/",
+      "name": "shipping-retry",
+      "pattern": "^shipping\\.q$",
+      "apply-to": "queues",
+      "priority": 0,
+      "definition": {
+        "dead-letter-exchange": "shop.dlx",
+        "dead-letter-routing-key": "shipping.dlq",
+        "delivery-limit": 2
+      }
+    },
+    {
+      "vhost": "/",
+      "name": "order-retry",
+      "pattern": "^order\\.q$",
+      "apply-to": "queues",
+      "priority": 0,
+      "definition": {
+        "dead-letter-exchange": "shop.dlx",
+        "dead-letter-routing-key": "order.dlq",
+        "delivery-limit": 2
+      }
+    }
+  ]
+}

@@ -5,7 +5,15 @@ import type { PrismaService } from '../prisma/prisma.service';
 import { AdminAccountInitializer } from './admin-account.service';
 import { PasswordService } from './password.service';
 
-const ENV = { DB_HOST: 'postgres', DB_NAME: 'auth_db', DB_USER: 'auth_service', DB_PASSWORD: 'test-password' };
+const ENV = {
+  DB_HOST: 'postgres',
+  DB_NAME: 'auth_db',
+  DB_USER: 'auth_service',
+  DB_PASSWORD: 'test-password',
+  RABBITMQ_HOST: 'rabbitmq',
+  RABBITMQ_USER: 'auth-service',
+  RABBITMQ_PASSWORD: 'test-rabbitmq-password',
+};
 const ADMIN_ENV = { ...ENV, ADMIN_EMAIL: ' Admin@Sklep.Local ', ADMIN_PASSWORD: 'admin-password-123' };
 
 describe('AdminAccountInitializer', () => {

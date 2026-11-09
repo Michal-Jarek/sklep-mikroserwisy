@@ -3,6 +3,8 @@ import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { randomUUID } from 'node:crypto';
 import { AppException } from '../common/app-exception';
 import { APP_CONFIG, type AppConfig } from '../config/app-config';
+import { userRegisteredEvent } from '../events/event-envelope';
+import { OutboxRelay } from '../events/outbox-relay.service';
 import { isUniqueViolation } from '../prisma/prisma-errors';
 import { PrismaService } from '../prisma/prisma.service';
 import { UserClient } from '../user-client/user-client.service';
@@ -33,6 +35,7 @@ export class AuthService {
     private readonly refreshTokens: RefreshTokenService,
     private readonly loginAttempts: LoginAttemptsService,
     private readonly userClient: UserClient,
+    private readonly outbox: OutboxRelay,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
     @InjectPinoLogger(AuthService.name) private readonly logger: PinoLogger,
   ) {}
@@ -40,6 +43,8 @@ export class AuthService {
   /**
    * Account and user profile in one transaction (decision 13): the account is committed only
    * when User Service created the profile, otherwise it is rolled back and the client gets 503.
+   * The user.registered event goes to the outbox in the same transaction (stage 4) and the relay
+   * publishes it after the commit, so registration never waits for RabbitMQ.
    */
   async register(request: RegisterRequest, requestId: string): Promise<RegisterResponse> {
     const { email, password, firstName, lastName } = request;
@@ -50,6 +55,8 @@ export class AuthService {
         async (tx) => {
           await tx.account.create({ data: { id, email, passwordHash, roles: [ROLE_CUSTOMER] } });
           this.logger.assign({ userId: id });
+          const event = userRegisteredEvent({ userId: id, email, firstName }, requestId);
+          await tx.outboxEvent.create({ data: { id: event.eventId, routingKey: event.type, envelope: event } });
           if (this.config.userServiceEnabled) {
             await this.userClient.createProfile({ id, email, firstName, lastName }, requestId);
           }
@@ -63,6 +70,8 @@ export class AuthService {
       }
       throw error;
     }
+    // Committed: publish now instead of at the next 5 s cycle (does not wait, never throws).
+    this.outbox.wake();
     if (!this.config.userServiceEnabled) {
       this.logger.warn('User Service call is disabled (USER_SERVICE_ENABLED=false), the user profile was not created');
     }

@@ -1,6 +1,6 @@
 # Wspólna infrastruktura sklepu (Docker Compose)
 
-Wspólna infrastruktura usług sklepu uruchamiana w Docker Compose: Consul (rejestr usług i konfiguracja w KV), PostgreSQL i Redis dla API Gateway. Uruchomienie: sekcja „Pierwsze uruchomienie”.
+Wspólna infrastruktura usług sklepu uruchamiana w Docker Compose: Consul (rejestr usług i konfiguracja w KV), PostgreSQL, Redis dla API Gateway i RabbitMQ (zdarzenia między usługami). Uruchomienie: sekcja „Pierwsze uruchomienie”.
 
 **Wszystkie polecenia uruchamia się z katalogu głównego repo** (tam, gdzie jest folder `deploy/`), nie z wnętrza `deploy/`.
 
@@ -12,6 +12,8 @@ Wspólna infrastruktura usług sklepu uruchamiana w Docker Compose: Consul (reje
 | `consul-kv-seed` | Przy każdym starcie wgrywa do Consula pliki z `deploy/consul/config/` i kończy pracę (stan `Exited`). | – |
 | `postgres` | PostgreSQL 17: osobna baza i osobny użytkownik dla 6 usług (lista w sekcji „Konwencje”). | `127.0.0.1:5432` |
 | `redis-gateway` | Redis dla API Gateway (liczniki limitów żądań). Bez zapisu na dysk. | `127.0.0.1:6379` |
+| `rabbitmq` | RabbitMQ 4.3: broker zdarzeń (exchange `shop.events`, kolejki odbiorców). Ma panel WWW. | AMQP `127.0.0.1:5672`, panel http://127.0.0.1:15672 |
+| `rabbitmq-setup` | Przy każdym starcie wgrywa do RabbitMQ topologię z `deploy/rabbitmq/definitions.json` i konta usług, potem kończy pracę (stan `Exited`). | – |
 
 Pliki w folderze:
 - `compose.yaml` – opis kontenerów;
@@ -20,7 +22,9 @@ Pliki w folderze:
 - `consul/config/<usługa>.yaml` – konfiguracja usług wgrywana do Consula;
 - `consul/seed-kv.sh` – skrypt, którym `consul-kv-seed` wgrywa konfigurację (nie uruchamia się go ręcznie);
 - `postgres/init/01-service-databases.sh` – tworzy bazy i użytkowników przy pierwszym starcie;
-- `k8s/`, `rabbitmq/` – na później. Kubernetes to ostatni etap projektu; do tego czasu infrastruktura i usługi działają w Docker Compose.
+- `rabbitmq/definitions.json` – exchange, kolejki, wiązania i polityki RabbitMQ (bez kont i haseł);
+- `rabbitmq/setup.sh` – skrypt, którym `rabbitmq-setup` wgrywa `definitions.json` i zakłada konta usług (nie uruchamia się go ręcznie);
+- `k8s/` – na później. Kubernetes to ostatni etap projektu; do tego czasu infrastruktura i usługi działają w Docker Compose.
 
 Usługi sklepu są w tym samym `compose.yaml` w grupach (tzw. profilach): profil `platform` (API Gateway i Auth Service), w etapie 5 profil `full-shop` (cały sklep, w tym usługi z `platform`). Polecenie bez `--profile` uruchamia tylko infrastrukturę z tabeli; profil `platform` – sekcja „Profil platform (API Gateway i Auth Service)”.
 
@@ -42,7 +46,7 @@ bash deploy/create-secrets.sh
 ```
 Wynik przy pierwszym uruchomieniu (komunikaty skryptów są po angielsku: `created` – utworzono, `variables` – zmienne):
 ```
-deploy/.env: created (9 variables)
+deploy/.env: created (15 variables)
 deploy/secrets/jwt-*.pem: created
 Done. Start: docker compose -f deploy/compose.yaml up -d --wait
 ```
@@ -58,28 +62,33 @@ Kopiowanie `.env.example` do `.env` nie jest potrzebne. Jeśli plik został już
 ```
 deploy/.env: added: ADMIN_PASSWORD
 ```
-Bez tego każde polecenie `docker compose -f deploy/compose.yaml …` (także bez profilu) kończy się błędem `required variable ADMIN_PASSWORD is missing a value: Run deploy/create-secrets.sh`.
+Etap 4 dodał hasła RabbitMQ (konto `admin` i konta usług); wynik przy starym `deploy/.env`:
+```
+deploy/.env: added: RABBITMQ_ADMIN_PASSWORD AUTH_RABBITMQ_PASSWORD NOTIFICATION_RABBITMQ_PASSWORD INVENTORY_RABBITMQ_PASSWORD SHIPPING_RABBITMQ_PASSWORD ORDER_RABBITMQ_PASSWORD
+```
+Bez tego każde polecenie `docker compose -f deploy/compose.yaml …` (także bez profilu) kończy się błędem `required variable … is missing a value: Run deploy/create-secrets.sh` z nazwą brakującej zmiennej.
 
 **Krok 2.** Uruchom infrastrukturę:
 ```bash
 docker compose -f deploy/compose.yaml up -d --wait
 ```
-`-d` – działa w tle, `--wait` – polecenie kończy się dopiero, gdy kontenery są gotowe. Za pierwszym razem pobiera obrazy (kilka minut). Na końcu przy kontenerach jest `Healthy`, a przy `consul-kv-seed` – `Exited` (kontener kończy pracę po wgraniu konfiguracji).
+`-d` – działa w tle, `--wait` – polecenie kończy się dopiero, gdy kontenery są gotowe. Za pierwszym razem pobiera obrazy (kilka minut). Na końcu przy kontenerach jest `Healthy`, a przy `consul-kv-seed` i `rabbitmq-setup` – `Exited` (kontenery kończą pracę po wgraniu konfiguracji). RabbitMQ startuje najdłużej (ok. 10–20 s).
 
 **Krok 3.** Sprawdź stan:
 ```bash
 docker compose -f deploy/compose.yaml ps
 ```
-Wynik: trzy kontenery ze statusem `Up … (healthy)`. W skrócie (kolumny `SERVICE` i `STATUS`):
+Wynik: cztery kontenery ze statusem `Up … (healthy)` (jeśli działa też profil `platform`, na liście są dodatkowo `api-gateway` i `auth-service`). W skrócie (kolumny `SERVICE` i `STATUS`):
 ```
 SERVICE         STATUS
 consul          Up 12 minutes (healthy)
 postgres        Up 12 minutes (healthy)
+rabbitmq        Up 12 minutes (healthy)
 redis-gateway   Up 12 minutes (healthy)
 ```
-`consul-kv-seed` nie ma na tej liście, bo już zakończył pracę. Jego stan (oczekiwany `exited 0`, czyli „zakończył się bez błędu”):
+`consul-kv-seed` i `rabbitmq-setup` nie ma na tej liście, bo już zakończyły pracę. Ich stan (oczekiwany `exited 0`, czyli „zakończył się bez błędu”):
 ```bash
-docker compose -f deploy/compose.yaml ps -a consul-kv-seed --format '{{.State}} {{.ExitCode}}'
+docker compose -f deploy/compose.yaml ps -a consul-kv-seed rabbitmq-setup --format '{{.Service}} {{.State}} {{.ExitCode}}'
 ```
 
 ## Jak sprawdzić, że działa
@@ -107,6 +116,22 @@ docker compose -f deploy/compose.yaml exec redis-gateway sh -c 'REDISCLI_AUTH="$
 ```
 Wynik: `PONG`. Redis ma hasło, dlatego zwykłe `redis-cli ping` odpowiada `NOAUTH Authentication required.`
 
+**RabbitMQ.** Panel: http://127.0.0.1:15672, login `admin`, hasło – zmienna `RABBITMQ_ADMIN_PASSWORD` z `deploy/.env`. Zakładka **Exchanges** pokazuje `shop.events` i `shop.dlx` (obok wbudowanych `(AMQP default)` i `amq.*`, których sklep nie używa), zakładka **Queues and Streams** – osiem kolejek (`notification.q`, `inventory.q`, `shipping.q`, `order.q` i ich kolejki błędów `*.dlq`), zakładka **Admin** – konto `admin` i pięć kont usług. Konta `guest` nie ma.
+
+Przebieg ostatniego wgrywania topologii i kont:
+```bash
+docker compose -f deploy/compose.yaml logs --no-log-prefix rabbitmq-setup
+```
+Wynik (po jednej parze linii na każde `up`; ostatnie są na końcu):
+```
+imported definitions.json
+applied 5 service accounts
+```
+
+Usługi łączą się z RabbitMQ przez AMQP: w sieci compose host `rabbitmq`, port `5672`; z laptopa (usługa uruchomiona z VS Code) `127.0.0.1:5672`. Każda usługa ma własne konto `<usługa>-service` (np. `auth-service`) z hasłem `<USŁUGA>_RABBITMQ_PASSWORD` z `deploy/.env` i prawem tylko do swojej kolejki i swoich zdarzeń (tabela w sekcji „Konwencje”). Konta usług nie logują się do panelu. Zdarzenia, kolejki, uprawnienia i sposób odbierania zdarzeń: [docs/events.md](../docs/events.md).
+
+Topologię i konta przywraca `rabbitmq-setup` przy każdym `up` (zmiana zrobiona ręcznie w panelu, np. usunięte uprawnienie, wraca do stanu z repo). Wgrywanie dodaje brakujące elementy i aktualizuje polityki, konta i uprawnienia. Istniejące kolejki i exchange pomija bez błędu, więc zmiana typu albo argumentów kolejki w `definitions.json` działa dopiero po czystym starcie (sekcja „RabbitMQ od zera”). Wgrywanie niczego nie usuwa: kolejka, wiązanie albo konto dodane ręcznie w panelu zostaje do czystego startu.
+
 ## Profil platform (API Gateway i Auth Service)
 
 Infrastruktura razem z API Gateway i Auth Service:
@@ -114,11 +139,11 @@ Infrastruktura razem z API Gateway i Auth Service:
 bash deploy/create-secrets.sh
 docker compose -f deploy/compose.yaml --profile platform up -d --wait --build
 ```
-`--build` buduje obrazy `api-gateway:dev` i `auth-service:dev` z `services/` (pierwszy raz kilka minut). Dochodzą trzy kontenery: `auth-migrate` (jednorazowo stosuje migracje bazy `auth_db` i kończy się kodem 0), `auth-service` (startuje po migracjach) i `api-gateway`. Stan:
+`--build` buduje obrazy `api-gateway:dev` i `auth-service:dev` z `services/` (pierwszy raz kilka minut). Dochodzą trzy kontenery: `auth-migrate` (jednorazowo stosuje migracje bazy `auth_db` i kończy się kodem 0), `auth-service` (startuje po migracjach i po `rabbitmq-setup`) i `api-gateway`. Stan:
 ```bash
 docker compose -f deploy/compose.yaml --profile platform ps --format '{{.Service}} {{.Status}}'
 ```
-Wynik: `api-gateway`, `auth-service`, `consul`, `postgres` i `redis-gateway` ze statusem `Up … (healthy)`.
+Wynik: `api-gateway`, `auth-service`, `consul`, `postgres`, `rabbitmq` i `redis-gateway` ze statusem `Up … (healthy)`.
 
 Przez pierwsze sekundy po starcie Gateway może jeszcze odpowiadać `503` na `/api/v1/auth/…` – czeka, aż zobaczy w Consulu zdrowy Auth Service. Wtedy powtórz polecenie po kilku sekundach.
 
@@ -201,7 +226,9 @@ Albo zatrzymanie i usunięcie kontenerów:
 ```bash
 docker compose -f deploy/compose.yaml down
 ```
-W obu przypadkach dane zostają: bazy w PostgreSQL i zawartość Consula przeżywają. Redis Gateway zaczyna zawsze pusty (celowo, bez zapisu na dysk) – liczniki limitów żądań startują od zera.
+W obu przypadkach dane zostają: bazy w PostgreSQL, zawartość Consula oraz kolejki i wiadomości w RabbitMQ przeżywają. Redis Gateway zaczyna zawsze pusty (celowo, bez zapisu na dysk) – liczniki limitów żądań startują od zera.
+
+Do czasu, aż powstaną usługi odbierające zdarzenia (etap 5), wiadomości zbierają się w kolejkach `*.q` (np. każda rejestracja dodaje jedną do `notification.q`). Kolejkę czyści się w panelu: **Queues and Streams** → kolejka → **Purge Messages**.
 
 Ponowny start – to samo polecenie co za pierwszym razem:
 ```bash
@@ -215,10 +242,12 @@ docker compose -f deploy/compose.yaml up -d --wait
 Z Auth (profil `platform`) oba polecenia z `--profile platform` – inaczej `auth-service` zostaje uruchomiony, a po `up` bez profilu nikt nie założy tabel w nowej, pustej bazie `auth_db` (robi to `auth-migrate`):
 
 ```bash
-docker compose -f deploy/compose.yaml down -v
-docker compose -f deploy/compose.yaml up -d --wait
+docker compose -f deploy/compose.yaml --profile platform down -v
+docker compose -f deploy/compose.yaml --profile platform up -d --wait
 ```
-`-v` usuwa też dane: **wszystkie bazy w PostgreSQL (z tabelami i danymi) i całą zawartość Consula**. Po `up` bazy i użytkownicy powstają od nowa, puste. Plik `deploy/.env` i klucze w `deploy/secrets/` zostają.
+Sama infrastruktura (bez Auth i Gateway): te same polecenia bez `--profile platform`.
+
+`-v` usuwa też dane: **wszystkie bazy w PostgreSQL (z tabelami i danymi), całą zawartość Consula i RabbitMQ (kolejki z wiadomościami, konta)**. Po `up` bazy i użytkownicy powstają od nowa, puste. Plik `deploy/.env` i klucze w `deploy/secrets/` zostają.
 
 Kiedy to potrzebne: po zmianie hasła w `deploy/.env` po pierwszym starcie. Bazy i użytkownicy powstają tylko przy pierwszym starcie na pustych danych, więc baza dalej ma stare hasło.
 
@@ -229,18 +258,31 @@ docker compose -f deploy/compose.yaml exec -T postgres bash /docker-entrypoint-i
 ```
 Pierwsze polecenie odtwarza kontener `postgres` z nowymi wartościami z `deploy/.env` (dane zostają). Drugie ustawia użytkownikom hasła według `deploy/.env` i tworzy brakujące bazy (także `auth_shadow_db`); istniejących baz nie rusza. Skrypt wypisuje najpierw linie `SET`, `ALTER ROLE`, `REVOKE` (wyniki kolejnych poleceń SQL), a na końcu `01-service-databases.sh: done (auth user product inventory order shipping)`.
 
+### RabbitMQ od zera
+
+Hasło konta `admin` (`RABBITMQ_ADMIN_PASSWORD`) RabbitMQ ustawia tylko przy pierwszym starcie na pustych danych. Po późniejszej zmianie tej zmiennej `rabbitmq-setup` nie może się zalogować i `up` kończy się błędem `service "rabbitmq-setup" didn't complete successfully`. Rozwiązanie – czysty start samego RabbitMQ (kolejki z wiadomościami znikają, bazy i Consul zostają):
+```bash
+docker compose -f deploy/compose.yaml --profile platform down
+docker volume rm sklep_rabbitmq-data
+docker compose -f deploy/compose.yaml --profile platform up -d --wait
+```
+Bez Gateway i Auth (sama infrastruktura) te same polecenia bez `--profile platform`.
+
+To samo polecenie przywraca dokładny stan z repo, gdy w panelu dodano ręcznie kolejki, wiązania albo konta (`rabbitmq-setup` ich nie usuwa) albo gdy w `definitions.json` zmienił się typ lub argumenty istniejącej kolejki. Hasła kont usług (`<USŁUGA>_RABBITMQ_PASSWORD`) `rabbitmq-setup` ustawia przy każdym `up` – ich zmiana nie wymaga czystego startu. Dozwolone znaki w tych hasłach: litery, cyfry i `. _ ~ -` (hasła z `create-secrets.sh` je spełniają).
+
 ## Konwencje
 
 Obowiązują w kolejnych etapach (Auth, Gateway, usługi zespołu).
 
 | Co | Wartość |
 |---|---|
-| Hosty w sieci compose (i później w k8s) | `consul`, `postgres`, `redis-gateway`; później `rabbitmq`, `mongo`, `redis-cart`, `mailpit` |
+| Hosty w sieci compose (i później w k8s) | `consul`, `postgres`, `redis-gateway`, `rabbitmq`; później `mongo`, `redis-cart`, `mailpit` |
 | Nazwa usługi w Consulu | = nazwa usługi w compose = nazwa obrazu (`auth-service`, `api-gateway`, …) |
 | Zmienne usług – Consul | `CONSUL_HOST` (`consul`, lokalnie `127.0.0.1`), `CONSUL_PORT` (`8500`) |
 | Zmienne usług – baza | `DB_HOST` (`postgres`), `DB_PORT` (`5432`), `DB_NAME` (`<s>_db`), `DB_USER` (`<s>_service`), `DB_PASSWORD` (w compose: `${<S>_DB_PASSWORD}`) |
 | Zmienne Gateway – Redis | `REDIS_HOST` (`redis-gateway`), `REDIS_PORT` (`6379`), `REDIS_PASSWORD` (w compose: `${REDIS_GATEWAY_PASSWORD}`) |
-| Usługa uruchomiona z VS Code (poza kontenerem) | łączy się z infrastrukturą przez `127.0.0.1` i porty z tabeli „Co tu jest” (5432, 8500, 6379); rejestruje się w Consulu z adresem `host.docker.internal` |
+| Zmienne usług – RabbitMQ | `RABBITMQ_HOST` (`rabbitmq`), `RABBITMQ_PORT` (`5672`), `RABBITMQ_USER` (`<s>-service`), `RABBITMQ_PASSWORD` (w compose: `${<S>_RABBITMQ_PASSWORD}`) |
+| Usługa uruchomiona z VS Code (poza kontenerem) | łączy się z infrastrukturą przez `127.0.0.1` i porty z tabeli „Co tu jest” (5432, 8500, 6379, 5672); rejestruje się w Consulu z adresem `host.docker.internal` |
 | Klucze JWT | `deploy/secrets/jwt-private.pem` (tylko Auth; w kontenerze `/run/secrets/jwt-private.pem`, tylko do odczytu), `jwt-public.pem` |
 | Konfiguracja w KV | `deploy/consul/config/<usługa>.yaml` → `config/<usługa>/data` |
 
@@ -258,6 +300,17 @@ Obowiązują w kolejnych etapach (Auth, Gateway, usługi zespołu).
 
 Każdy użytkownik jest właścicielem tylko swoich baz i nie może połączyć się z cudzą. `auth_shadow_db` to baza cieni dla `npx prisma migrate dev` w Auth Service (Prisma sprawdza na niej migracje); usługa jej nie używa. Review i Notification dostaną MongoDB, Cart – osobny Redis (etap 5).
 
+Konta w RabbitMQ (vhost `/`). Żadne konto usługi nie tworzy exchange, kolejek ani wiązań – robi to tylko `rabbitmq-setup`; odbiorca otwiera swoją kolejkę bez jej deklarowania. Szczegóły: [docs/events.md](../docs/events.md).
+
+| Konto | Hasło w `deploy/.env` | Wysyła do `shop.events` | Czyta kolejkę |
+|---|---|---|---|
+| `admin` (panel) | `RABBITMQ_ADMIN_PASSWORD` | wszystko | wszystkie |
+| `auth-service` | `AUTH_RABBITMQ_PASSWORD` | `user.registered` | – |
+| `notification-service` | `NOTIFICATION_RABBITMQ_PASSWORD` | – | `notification.q` |
+| `inventory-service` | `INVENTORY_RABBITMQ_PASSWORD` | – | `inventory.q` |
+| `shipping-service` | `SHIPPING_RABBITMQ_PASSWORD` | `shipment.status_changed` | `shipping.q` |
+| `order-service` | `ORDER_RABBITMQ_PASSWORD` | `order.created`, `order.cancelled` | `order.q` |
+
 ## Bezpieczeństwo
 
 - Porty są wystawione tylko na `127.0.0.1` – z innych komputerów w sieci są niedostępne.
@@ -266,7 +319,7 @@ Każdy użytkownik jest właścicielem tylko swoich baz i nie może połączyć 
 
 ## Gdy coś nie działa
 
-**Zajęty port 5432, 8500, 6379 albo 8080** (w komunikacie `port is already allocated` albo `address already in use`). Ten port zajmuje inny kontener albo program, np. compose z `services/user-service/dev/compose.yaml` albo lokalnie zainstalowany PostgreSQL. Kontenery z ich portami:
+**Zajęty port 5432, 8500, 6379, 5672, 15672 albo 8080** (w komunikacie `port is already allocated` albo `address already in use`). Ten port zajmuje inny kontener albo program, np. compose z `services/user-service/dev/compose.yaml` albo lokalnie zainstalowany PostgreSQL. Kontenery z ich portami:
 ```bash
 docker ps --format '{{.Names}}  {{.Ports}}'
 ```
@@ -295,8 +348,14 @@ docker compose -f deploy/compose.yaml logs consul-kv-seed
 ```
 Poprawny przebieg to linie `loaded config/<usługa>/data` – przy każdym `up` po jednej na plik z `deploy/consul/config/` (log zawiera wszystkie dotychczasowe uruchomienia, ostatnie są na końcu). Błąd zaczyna się od `Error!` (np. `Error! Failed writing data: …` – Consul nieosiągalny). Zwykle wystarcza ponowne `up -d --wait`. Uwaga: wgrywanie nie sprawdza składni YAML – plik z błędem trafi do Consula, a błąd zgłosi dopiero usługa przy starcie.
 
+**`service "rabbitmq-setup" didn't complete successfully`** – nie udało się wgrać topologii albo kont do RabbitMQ. `up` zatrzymuje się na tym błędzie: nie startują wtedy `redis-gateway` ani API Gateway (czekają na udany `rabbitmq-setup`), a z profilem `platform` także `auth-service`. `redis-gateway` nie korzysta z RabbitMQ — czeka na `rabbitmq-setup` tylko po to, żeby `up --wait` zaczekał na zakończenie tego jednorazowego kontenera. Przyczyna w logach:
+```bash
+docker compose -f deploy/compose.yaml logs rabbitmq-setup
+```
+Najczęściej ostatnia linia to `Not_Authorized` (zamiast `imported definitions.json`): `RABBITMQ_ADMIN_PASSWORD` w `deploy/.env` różni się od hasła ustawionego przy pierwszym starcie RabbitMQ – rozwiązanie to czysty start RabbitMQ (sekcja „RabbitMQ od zera”). Linia `<USŁUGA>_RABBITMQ_PASSWORD: only letters, digits and . _ ~ - are allowed …` oznacza puste hasło konta usługi albo hasło z innym znakiem niż litery, cyfry i `. _ ~ -` – usuń ten wiersz z `deploy/.env`, uruchom `bash deploy/create-secrets.sh` (doda nowe hasło) i ponów `up -d --wait`; czysty start nie jest potrzebny.
+
 **Inne problemy:** logi wybranego kontenera:
 ```bash
 docker compose -f deploy/compose.yaml logs postgres
 ```
-(zamiast `postgres`: `consul`, `redis-gateway`, `consul-kv-seed`, `api-gateway`, `auth-service`).
+(zamiast `postgres`: `consul`, `redis-gateway`, `consul-kv-seed`, `rabbitmq`, `rabbitmq-setup`, `api-gateway`, `auth-service`).
