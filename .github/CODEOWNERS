@@ -1,20 +1,21 @@
-# Kto zatwierdza zmiany w którym folderze.
-# Zamień każde @LOGIN-... na login GitHub (ze znakiem @).
-# Każda osoba stąd musi mieć w repo dostęp Write.
-# Jeśli kilka linii pasuje do pliku, liczy się OSTATNIA pasująca.
+# Who approves changes in which folder (a code owner approval is required for every PR).
+# Every person listed here must have Write access to the repository.
+# If several lines match a file, the LAST matching line wins.
 
 *                                @Michal-Jarek
 
 /services/api-gateway/           @Michal-Jarek
 /services/auth-service/          @Michal-Jarek
-/services/user-service/          @LOGIN-USER @Michal-Jarek
-/services/product-service/       @LOGIN-PRODUCT @Michal-Jarek
-/services/inventory-service/     @LOGIN-INVENTORY @Michal-Jarek
-/services/cart-service/          @LOGIN-CART @Michal-Jarek
-/services/order-service/         @LOGIN-ORDER @Michal-Jarek
-/services/notification-service/  @LOGIN-NOTIFICATION @Michal-Jarek
-/services/review-service/        @LOGIN-REVIEW @Michal-Jarek
-/services/shipping-service/      @LOGIN-SHIPPING @Michal-Jarek
+/services/user-service/          @karola2001km-blip @Michal-Jarek
+/services/cart-service/          @karola2001km-blip @Michal-Jarek
+/services/inventory-service/     @akrzeszewska @Michal-Jarek
+/services/review-service/        @akrzeszewska @Michal-Jarek
+
+# owner to be added
+/services/product-service/       @Michal-Jarek
+/services/order-service/         @Michal-Jarek
+/services/notification-service/  @Michal-Jarek
+/services/shipping-service/      @Michal-Jarek
 
 /frontend/                       @Michal-Jarek
 /deploy/                         @Michal-Jarek

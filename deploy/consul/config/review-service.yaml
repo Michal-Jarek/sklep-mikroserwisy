@@ -1,0 +1,4 @@
+# Configuration of review-service in Consul KV (key config/review-service/data). No credentials here.
+# Owner: Aleksandra (akrzeszewska). Changes go through Michal (deploy/ belongs to the platform).
+# Read at startup; environment variables override these values. Restart the service after a change.
+logLevel: info

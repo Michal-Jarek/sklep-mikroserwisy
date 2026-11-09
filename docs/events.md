@@ -242,7 +242,7 @@ Tryb „brak `RABBITMQ_HOST` = odbiorca wyłączony” jest dozwolony tylko w te
 
 Hasła są w `deploy/.env` (poza repo) w zmiennych `<USŁUGA>_RABBITMQ_PASSWORD`: `AUTH_RABBITMQ_PASSWORD`, `NOTIFICATION_RABBITMQ_PASSWORD`, `INVENTORY_RABBITMQ_PASSWORD`, `SHIPPING_RABBITMQ_PASSWORD`, `ORDER_RABBITMQ_PASSWORD`. Tworzy je `bash deploy/create-secrets.sh` (po aktualizacji repo dopisuje brakujące, istniejących nie zmienia). Konto i hasło zakłada `rabbitmq-setup` przy każdym `docker compose -f deploy/compose.yaml up`.
 
-Usługę do `deploy/compose.yaml` dopisuje **Michał** (folder `deploy/` należy do platformy), na prośbę właściciela usługi — właściciel nie zmienia `deploy/` sam. Konto i hasło usługi już istnieją (tabela wyżej). Wpis wygląda tak (np. Inventory) — hasło tylko przez zmienną z `deploy/.env`, start dopiero po założeniu topologii i kont przez `rabbitmq-setup`:
+Usługę do `deploy/compose.yaml` dopisuje **Michał** (folder `deploy/` należy do platformy), na prośbę właściciela usługi — właściciel nie zmienia `deploy/` sam (zob. [D6](decisions.md#d6--konwencje-deploy-i-zmienne-środowiskowe) i [wpis usługi w Docker Compose](patterns.md#5-wpis-usługi-w-docker-compose)). Konto i hasło usługi już istnieją (tabela wyżej). Wpis wygląda tak (np. Inventory) — hasło tylko przez zmienną z `deploy/.env`, start dopiero po założeniu topologii i kont przez `rabbitmq-setup`:
 
 ```yaml
     environment:
@@ -272,7 +272,7 @@ Zasady nadawcy:
 4. Nie deklaruje exchange ani kolejek.
 5. Publikuje **po zatwierdzeniu zmiany w bazie** (po commicie), nigdy przed — inaczej odbiorcy dostaną zdarzenie o czymś, co się wycofało.
 
-**Zalecany wzorzec — outbox (tak działa Auth).** W tej samej transakcji co zmiana danych usługa zapisuje kopertę zdarzenia do tabeli `outbox_events` w swojej bazie. Osobna pętla w usłudze (przekaźnik) co kilka sekund pobiera niewysłane wiersze, publikuje je z potwierdzeniem i oznacza jako wysłane; przy błędzie ponawia później. Dzięki temu zdarzenie nie ginie, gdy RabbitMQ nie działa albo usługa się restartuje, a odpowiedź HTTP nie czeka na brokera. Ten sam wiersz może jednak zostać wysłany dwa razy (np. potwierdzenie zaginęło po drodze) — dlatego odbiorcy rozpoznają duplikaty po `eventId`.
+**Zalecany wzorzec — [outbox](patterns.md#7-outbox) (tak działa Auth).** W tej samej transakcji co zmiana danych usługa zapisuje kopertę zdarzenia do tabeli `outbox_events` w swojej bazie. Osobna pętla w usłudze (przekaźnik) co kilka sekund pobiera niewysłane wiersze, publikuje je z potwierdzeniem i oznacza jako wysłane; przy błędzie ponawia później. Dzięki temu zdarzenie nie ginie, gdy RabbitMQ nie działa albo usługa się restartuje, a odpowiedź HTTP nie czeka na brokera. Ten sam wiersz może jednak zostać wysłany dwa razy (np. potwierdzenie zaginęło po drodze) — dlatego odbiorcy rozpoznają duplikaty po `eventId`.
 
 **Minimum bez outboxu:** publikacja zaraz po commicie, a przy błędzie ostrzeżenie w logu (`warn`, z `eventId` i `type`). Zdarzenie może wtedy przepaść, jeśli RabbitMQ nie działa.
 
@@ -348,11 +348,11 @@ Zasady odbiorcy:
 1. Łączy się kontem swojej usługi. Kolejkę `<usługa>.q` otwiera **pasywnie**: aio-pika `channel.get_queue(name, ensure=True)`, Spring `@RabbitListener(queues = "<usługa>.q")` bez beanów `Queue`/`Binding`. Nie deklaruje exchange, kolejek ani wiązań.
 2. `prefetch = 10`. Potwierdzanie ręczne: `ack` dopiero po przetworzeniu i zapisaniu skutku.
 3. Idempotencja: przetworzone `eventId` zapisuje w swojej bazie, **w tej samej transakcji co skutek** zdarzenia, w kolumnie (polu) z **unikalnym indeksem**. Duplikat → `ack` bez działania. Ten sam `eventId` może przyjść dwa razy równocześnie (np. nadawca wysłał kopię, a dwie instancje odbiorcy dostały po jednej): obie przejdą sprawdzenie „czy już był”, a druga przy zapisie dostanie **naruszenie unikalności**. To duplikat, nie błąd: wycofać transakcję i `ack` — bez ponowień i bez DLQ. Usługa bez wspólnej transakcji dla skutku i `eventId` (Notification: e-mail przez SMTP, baza MongoDB) — niżej, [Idempotencja w Notification](#idempotencja-w-notification). W kodzie usługi sprawdzenie duplikatu i zapis `eventId` są w `handle_event`, w transakcji ze skutkiem; naruszenie unikalności (np. `IntegrityError`) łapie się tam — wycofanie transakcji i `return` bez wyjątku (wyjątek oznaczałby ponowienia i DLQ). Zbiór `processed_event_ids` z przykładu zastępuje w usłudze ta tabela.
-4. Błąd przetwarzania (np. baza albo inna usługa chwilowo niedostępna): do 3 prób w procesie (odstęp 5 s, potem 30 s — razem dłużej niż otwarty wyłącznik awaryjny (30 s) i typowy restart zależności; decyzja Michała 2026-11-09), potem `nack(requeue=False)` → wiadomość trafia do `<usługa>.dlq`. **Nigdy `requeue=True`** (sekcja [Czego nie robić](#czego-nie-robić)).
+4. Błąd przetwarzania (np. baza albo inna usługa chwilowo niedostępna): do 3 prób w procesie (odstęp 5 s, potem 30 s — razem dłużej niż otwarty [wyłącznik awaryjny](decisions.md#d2--wyłącznik-i-ponowienia) (30 s) i typowy restart zależności; decyzja Michała 2026-11-09), potem `nack(requeue=False)` → wiadomość trafia do `<usługa>.dlq`. **Nigdy `requeue=True`** (sekcja [Czego nie robić](#czego-nie-robić)).
 5. Niepoprawny JSON, brak wymaganych pól, pola koperty złego typu (`eventId`, `type`, `occurredAt`, `requestId` muszą być tekstem, `version` liczbą całkowitą, `payload` obiektem), `type` inny niż klucz routingu dostawy albo nieznana `version` → od razu `nack(requeue=False)`, bo ponowienie nic nie zmieni. Uprawnienia brokera dotyczą klucza routingu, nie treści — tylko klucz mówi, kto mógł wysłać zdarzenie. Przykład: konto Shipping może publikować tylko z kluczem `shipment.status_changed`; gdyby odbiorca wierzył polu `type` z treści, Shipping mógłby podsunąć Inventory „anulowanie zamówienia”.
 6. Nieznany `type` albo przypadek, którego usługa nie obsługuje (np. Inventory i status inny niż `SHIPPED`) → `ack` bez działania.
 7. Gdy proces padnie w trakcie (brak `ack`), broker odda wiadomość innej instancji. Po 3 takich dostawach wiadomość trafia do DLQ (`x-first-death-reason: delivery_limit`).
-8. Logi z `eventId`, `type`, `requestId` (i `userId`), bez danych osobowych z `payload` (e-mail, adres).
+8. [Logi](decisions.md#d16--logi) z `eventId`, `type`, `requestId` (i `userId`), bez danych osobowych z `payload` (e-mail, adres).
 9. Wywołania REST z odbiorcy do innych usług: `X-User-Roles: SERVICE`, `X-User-Id` = `payload.userId` (jeśli jest), `X-Request-Id` = `requestId` z koperty.
 10. Kilka instancji czyta tę samą kolejkę (konkurujący konsumenci) — kod nie może zakładać, że dostaje wszystkie zdarzenia.
 
@@ -576,14 +576,15 @@ Wynik: `201`, a przykład wypisuje linię `"msg": "Event handled"` z `eventId`, 
 
 #### Odbiorca w usłudze FastAPI
 
-Odbiorca działa jako zadanie w tle uruchamiane w `lifespan` (`asyncio.create_task(main())`) i anulowane przy zamykaniu (`task.cancel()`). `/health/ready` zwraca `503` **tylko wtedy, gdy to zadanie się zakończyło** (`task.done()`) — to znaczy błąd w kodzie albo brak dostępu do kolejki; bez tego martwy odbiorca byłby niewidoczny, a zdarzenia leżałyby w kolejce. Przerwa w połączeniu z RabbitMQ **nie** zmienia gotowości: odbiorca sam wznawia połączenie, a REST usługi działa dalej (awaria brokera nie może blokować głównej operacji usługi). Pozostałe sprawdzenia `/health/ready` (np. baza) zostają bez zmian. Złe hasło albo konto (`ProbableAuthenticationError`, podklasa `AMQPConnectionError`) odbiorca ponawia bez końca — `/health/ready` zostaje `200`, a przyczyna jest tylko w logu `RabbitMQ unavailable, retrying` (pole `reason`). Brak zmiennej `RABBITMQ_*` (`KeyError`) kończy zadanie → `503`.
+Odbiorca działa jako zadanie w tle uruchamiane w `lifespan` (`asyncio.create_task(main())`) i anulowane przy zamykaniu (`task.cancel()`). `/health/ready` zwraca `503` **tylko wtedy, gdy to zadanie się zakończyło** (`task.done()`) — to znaczy błąd w kodzie albo brak dostępu do kolejki; bez tego martwy odbiorca byłby niewidoczny, a zdarzenia leżałyby w kolejce. Przerwa w połączeniu z RabbitMQ **nie** zmienia gotowości: odbiorca sam wznawia połączenie, a REST usługi działa dalej (awaria brokera nie może blokować głównej operacji usługi). Pozostałe sprawdzenia `/health/ready` (np. baza) zostają bez zmian (zob. [D15](decisions.md#d15--zdrowie-usługi)). Złe hasło albo konto (`ProbableAuthenticationError`, podklasa `AMQPConnectionError`) odbiorca ponawia bez końca — `/health/ready` zostaje `200`, a przyczyna jest tylko w logu `RabbitMQ unavailable, retrying` (pole `reason`). Brak zmiennej `RABBITMQ_*` (`KeyError`) kończy zadanie → `503`.
 
 ```python
 # Fragment: the consumer of example_consumer.py as a background task of a FastAPI service.
+# is_ready, health_ready and error_response as in example_service.py (docs/patterns.md, section 2).
 import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Response
+from fastapi import FastAPI
 
 from app import consumer  # the module with main() from the example above
 
@@ -598,14 +599,18 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
-@app.get("/health/ready")
-async def ready(response: Response) -> dict:
-    # 503 only when the consumer task has ended (a bug, no access to the queue).
+async def is_ready() -> bool:
+    database_ready = True  # the usual checks, e.g. a short query to the own database
+    # Not ready only when the consumer task has ended (a bug, no access to the queue).
     # A broker outage does not count: the consumer reconnects by itself.
-    if app.state.consumer_task.done():
-        response.status_code = 503
-        return {"status": "DOWN"}
-    return {"status": "UP"}  # plus the usual checks, e.g. the database
+    return database_ready and not app.state.consumer_task.done()
+
+
+@app.get("/health/ready")
+async def health_ready():
+    if not await is_ready():
+        return error_response(503, "Service is not ready")  # 503 in the error format of the team (D7)
+    return {"status": "UP"}
 ```
 
 Logikę bazy w `handle_event` wykonuje się asynchronicznym sterownikiem albo przez `asyncio.to_thread`, żeby nie blokować pętli zdarzeń.
@@ -719,7 +724,7 @@ Wiadomości nie wygasają i nie wracają same do `<usługa>.q`. Ponowne wysłani
 
 ## Zmiana kontraktu
 
-Nazwy exchange i kolejek, wiązania, koperta i pola zdarzeń oraz wzorzec odbiorcy to kontrakt między usługami. Zmiana wymaga zgody nadawcy, odbiorców i architekta projektu i trafia najpierw do tego dokumentu. Zmiana `payload` po pierwszej implementacji = nowa `version` zdarzenia (odbiorca odrzuca nieznaną wersję do DLQ, więc nadawca zaczyna ją wysyłać dopiero, gdy odbiorcy ją obsługują).
+Nazwy exchange i kolejek, wiązania, koperta i pola zdarzeń oraz wzorzec odbiorcy to kontrakt między usługami. Zmiana wymaga zgody nadawcy, odbiorców i architekta projektu i trafia najpierw do tego dokumentu (zob. [D9](decisions.md#d9--własność-kodu-pr-i-dokumenty)). Zmiana `payload` po pierwszej implementacji = nowa `version` zdarzenia (odbiorca odrzuca nieznaną wersję do DLQ, więc nadawca zaczyna ją wysyłać dopiero, gdy odbiorcy ją obsługują).
 
 ## Otwarte kwestie kontraktu v1
 

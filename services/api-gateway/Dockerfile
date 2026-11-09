@@ -21,6 +21,7 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
-USER node
+# Numeric UID:GID (1000 = node in the base image), so Kubernetes runAsNonRoot can check it without /etc/passwd.
+USER 1000:1000
 EXPOSE 8080
 CMD ["node", "dist/main.js"]

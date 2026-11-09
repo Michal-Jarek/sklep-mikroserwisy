@@ -25,6 +25,7 @@ Konta użytkowników, logowanie i tokeny JWT. Po rejestracji publikuje zdarzenie
 | `GET /health/live` | — | **200** `{"status":"UP"}` – proces działa, bez sprawdzania zależności | — |
 | `GET /health/ready` | — | **200** `{"status":"UP"}` – baza odpowiada na `SELECT 1`; Consul nie jest warunkiem | **503** `SERVICE_UNAVAILABLE` |
 | `GET /docs`, `GET /openapi.json` | — | Swagger UI i dokument OpenAPI | — |
+| ścieżka z tabeli, inna metoda (np. `DELETE /auth/login`) | — | — | **405** `METHOD_NOT_ALLOWED` + nagłówek `Allow` z metodami tej ścieżki |
 | każda inna ścieżka | — | — | **404** `NOT_FOUND` |
 
 Walidacja wejścia (nieznane pola, np. `roles`, dają **400**):
@@ -54,6 +55,7 @@ Format błędu (także 404, zły JSON i błędy Fastify):
 | `INVALID_CREDENTIALS` | 401 | złe hasło albo nieznany e-mail (ta sama odpowiedź w obu przypadkach) |
 | `UNAUTHORIZED` | 401 | `/auth/refresh`: brak, nieznany, wygasły albo unieważniony refresh token |
 | `NOT_FOUND` | 404 | nieznana ścieżka |
+| `METHOD_NOT_ALLOWED` | 405 | metoda nieobsługiwana na istniejącej ścieżce; nagłówek `Allow` podaje metody tej ścieżki |
 | `EMAIL_TAKEN` | 409 | e-mail już zarejestrowany (bez względu na wielkość liter) |
 | `PAYLOAD_TOO_LARGE` | 413 | treść żądania większa niż 1 MiB |
 | `UNSUPPORTED_MEDIA_TYPE` | 415 | `Content-Type`, którego usługa nie obsługuje (np. `application/xml`) |
@@ -62,7 +64,7 @@ Format błędu (także 404, zły JSON i błędy Fastify):
 | `INTERNAL_ERROR` | 500 | nieoczekiwany błąd; szczegóły tylko w logu |
 | `SERVICE_UNAVAILABLE` | 503 | baza niedostępna (`/health/ready`) albo User Service nie utworzył profilu przy rejestracji |
 
-Inne błędy 4xx zgłaszane przez Fastify dostają kod z nazwy statusu HTTP w UPPER_SNAKE_CASE (tak powstają `PAYLOAD_TOO_LARGE` i `UNSUPPORTED_MEDIA_TYPE` z tabeli). Za duże nagłówki żądania (431) serwer HTTP odrzuca, zanim żądanie dotrze do kodu usługi, więc ta odpowiedź nie ma formatu zespołu (`{"error","message","statusCode"}`). Zła metoda HTTP na istniejącej ścieżce (np. `DELETE /auth/login`) to **404** `NOT_FOUND`. Odpowiedź 429 ma nagłówek `Retry-After` (sekundy).
+Inne błędy 4xx zgłaszane przez Fastify dostają kod z nazwy statusu HTTP w UPPER_SNAKE_CASE (tak powstają `PAYLOAD_TOO_LARGE` i `UNSUPPORTED_MEDIA_TYPE` z tabeli). Za duże nagłówki żądania (431) serwer HTTP odrzuca, zanim żądanie dotrze do kodu usługi, więc ta odpowiedź nie ma formatu zespołu (`{"error","message","statusCode"}`). Zła metoda HTTP na istniejącej ścieżce (np. `DELETE /auth/login`) to **405** `METHOD_NOT_ALLOWED` z nagłówkiem `Allow` (np. `Allow: POST`; dla `/health/live` `Allow: GET, HEAD`). `HEAD` działa wszędzie tam, gdzie `GET`. Odpowiedź 429 ma nagłówek `Retry-After` (sekundy).
 
 ## Zmienne środowiskowe
 
@@ -82,7 +84,7 @@ Nazwy są w [.env.example](.env.example) (bez wartości).
 | `JWT_ISSUER` / `JWT_AUDIENCE` | — | — | opcjonalnie; nadpisują KV |
 | `ADMIN_EMAIL` | `${ADMIN_EMAIL:-admin@sklep.local}` | puste albo dowolny e-mail | pierwsze konto ADMIN (sekcja „Konto administratora”) |
 | `ADMIN_PASSWORD` | `ADMIN_PASSWORD` z `deploy/.env` | puste albo 10–72 bajty | |
-| `USER_SERVICE_ENABLED` | `"false"` (do etapu 5) | `false` | domyślnie `true`; `false` → rejestracja bez wywołania User Service |
+| `USER_SERVICE_ENABLED` | `"false"` (do czasu, aż User Service będzie w Docker Compose) | `false` | domyślnie `true`; `false` → rejestracja bez wywołania User Service |
 | `RABBITMQ_HOST` / `RABBITMQ_PORT` | `rabbitmq` / `5672` | `127.0.0.1` / `5672` | port domyślnie `5672` |
 | `RABBITMQ_USER` | `auth-service` | `auth-service` | konto z prawem publikacji tylko `user.registered` |
 | `RABBITMQ_PASSWORD` | `AUTH_RABBITMQ_PASSWORD` z `deploy/.env` | wartość `AUTH_RABBITMQ_PASSWORD` z `deploy/.env` | |
@@ -108,11 +110,11 @@ Wywołanie: `POST http://<instancja user-service z Consula>/users`, nagłówki `
 - Circuit breaker (`opossum`) obejmuje całe wywołanie razem z ponowieniem: gdy w ciągu 60 s było co najmniej 10 wywołań i ponad połowa z nich zakończyła się błędem, przez 30 s kolejne rejestracje dostają 503 od razu, bez wywołania User Service. Potem jedno wywołanie próbne: sukces zamyka obwód. Odpowiedzi 4xx inne niż 408 i 429 (np. 409) nie liczą się jako awaria User Service.
 - Transakcja ma limit 10 s (dwie próby po 2 s, odstęp i zapytanie do Consula).
 
-`USER_SERVICE_ENABLED=false` (w Docker Compose do etapu 5, bo User Service jeszcze tam nie działa): rejestracja zapisuje samo konto bez wywołania User Service, a log dostaje ostrzeżenie `User Service call is disabled …` z `userId` nowego konta.
+`USER_SERVICE_ENABLED=false` (w Docker Compose do czasu, aż User Service tam będzie): rejestracja zapisuje samo konto bez wywołania User Service, a log dostaje ostrzeżenie `User Service call is disabled …` z `userId` nowego konta.
 
 ## Zdarzenia
 
-Po udanej rejestracji Auth publikuje zdarzenie `user.registered` do RabbitMQ: exchange `shop.events`, klucz `user.registered`. Odbiera je Notification Service z kolejki `notification.q` (od etapu 5). Koperta, kolejki i zasady dla odbiorców: [docs/events.md](../../docs/events.md).
+Po udanej rejestracji Auth publikuje zdarzenie `user.registered` do RabbitMQ: exchange `shop.events`, klucz `user.registered`. Odbiera je Notification Service z kolejki `notification.q` (gdy Notification Service będzie w Docker Compose). Koperta, kolejki i zasady dla odbiorców: [docs/events.md](../../docs/events.md).
 
 ```json
 {
@@ -155,7 +157,7 @@ Konto `auth-service` może tylko publikować do `shop.events` z kluczem `user.re
     -c "select id, attempts, published_at, last_error from outbox_events order by created_at desc limit 5"
   ```
 
-Do etapu 5 nikt nie odbiera wiadomości z `notification.q`, więc się tam zbierają. Kolejkę czyści w panelu przycisk „Purge Messages” na stronie kolejki.
+Dopóki Notification Service nie jest w Docker Compose, nikt nie odbiera wiadomości z `notification.q`, więc się tam zbierają. Kolejkę czyści w panelu przycisk „Purge Messages” na stronie kolejki.
 
 ## Tokeny i JWKS
 

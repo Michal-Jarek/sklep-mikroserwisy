@@ -1,6 +1,6 @@
 # Wspólna infrastruktura sklepu (Docker Compose)
 
-Wspólna infrastruktura usług sklepu uruchamiana w Docker Compose: Consul (rejestr usług i konfiguracja w KV), PostgreSQL, Redis dla API Gateway i RabbitMQ (zdarzenia między usługami). Uruchomienie: sekcja „Pierwsze uruchomienie”.
+Wspólna infrastruktura usług sklepu uruchamiana w Docker Compose: Consul (rejestr usług i konfiguracja w KV), PostgreSQL, Redis dla API Gateway, RabbitMQ (zdarzenia między usługami), MongoDB (Review i Notification), Redis dla Cart i Mailpit (podgląd e-maili). Uruchomienie: sekcja „Pierwsze uruchomienie”. Zasady obowiązujące usługi: [docs/decisions.md](../docs/decisions.md), jak je spełnić (w tym praca z VS Code przy tej infrastrukturze i wpis usługi w compose): [docs/patterns.md](../docs/patterns.md).
 
 **Wszystkie polecenia uruchamia się z katalogu głównego repo** (tam, gdzie jest folder `deploy/`), nie z wnętrza `deploy/`.
 
@@ -14,6 +14,9 @@ Wspólna infrastruktura usług sklepu uruchamiana w Docker Compose: Consul (reje
 | `redis-gateway` | Redis dla API Gateway (liczniki limitów żądań). Bez zapisu na dysk. | `127.0.0.1:6379` |
 | `rabbitmq` | RabbitMQ 4.3: broker zdarzeń (exchange `shop.events`, kolejki odbiorców). Ma panel WWW. | AMQP `127.0.0.1:5672`, panel http://127.0.0.1:15672 |
 | `rabbitmq-setup` | Przy każdym starcie wgrywa do RabbitMQ topologię z `deploy/rabbitmq/definitions.json` i konta usług, potem kończy pracę (stan `Exited`). | – |
+| `mongo` | MongoDB 8.0: bazy `review_db` i `notification_db`, w każdej osobny użytkownik (sekcja „Konwencje”). | `127.0.0.1:27017` |
+| `redis-cart` | Redis dla Cart Service (koszyki). Z hasłem i z zapisem na dysk – dane przeżywają restart. | `127.0.0.1:6380` |
+| `mailpit` | Mailpit: serwer SMTP dla Notification Service z panelem WWW do podglądu wysłanych e-maili. Niczego nie wysyła dalej. | SMTP `127.0.0.1:1025`, panel http://127.0.0.1:8025 |
 
 Pliki w folderze:
 - `compose.yaml` – opis kontenerów;
@@ -22,11 +25,12 @@ Pliki w folderze:
 - `consul/config/<usługa>.yaml` – konfiguracja usług wgrywana do Consula;
 - `consul/seed-kv.sh` – skrypt, którym `consul-kv-seed` wgrywa konfigurację (nie uruchamia się go ręcznie);
 - `postgres/init/01-service-databases.sh` – tworzy bazy i użytkowników przy pierwszym starcie;
+- `mongo/init/01-service-users.js` – tworzy użytkowników baz MongoDB przy pierwszym starcie;
 - `rabbitmq/definitions.json` – exchange, kolejki, wiązania i polityki RabbitMQ (bez kont i haseł);
 - `rabbitmq/setup.sh` – skrypt, którym `rabbitmq-setup` wgrywa `definitions.json` i zakłada konta usług (nie uruchamia się go ręcznie);
 - `k8s/` – na później. Kubernetes to ostatni etap projektu; do tego czasu infrastruktura i usługi działają w Docker Compose.
 
-Usługi sklepu są w tym samym `compose.yaml` w grupach (tzw. profilach): profil `platform` (API Gateway i Auth Service), w etapie 5 profil `full-shop` (cały sklep, w tym usługi z `platform`). Polecenie bez `--profile` uruchamia tylko infrastrukturę z tabeli; profil `platform` – sekcja „Profil platform (API Gateway i Auth Service)”.
+Usługi sklepu są w tym samym `compose.yaml` w grupach (tzw. profilach): profil `platform` (API Gateway i Auth Service) i profil `full-shop` (cały sklep, w tym usługi z `platform`; usługa zespołu trafia do niego przy scaleniu jej PR – wzór wpisu w [docs/patterns.md](../docs/patterns.md)). Polecenie bez `--profile` uruchamia tylko infrastrukturę z tabeli; profil `platform` – sekcja „Profil platform (API Gateway i Auth Service)”.
 
 ## Wymagania
 
@@ -46,7 +50,7 @@ bash deploy/create-secrets.sh
 ```
 Wynik przy pierwszym uruchomieniu (komunikaty skryptów są po angielsku: `created` – utworzono, `variables` – zmienne):
 ```
-deploy/.env: created (15 variables)
+deploy/.env: created (19 variables)
 deploy/secrets/jwt-*.pem: created
 Done. Start: docker compose -f deploy/compose.yaml up -d --wait
 ```
@@ -66,24 +70,33 @@ Etap 4 dodał hasła RabbitMQ (konto `admin` i konta usług); wynik przy starym 
 ```
 deploy/.env: added: RABBITMQ_ADMIN_PASSWORD AUTH_RABBITMQ_PASSWORD NOTIFICATION_RABBITMQ_PASSWORD INVENTORY_RABBITMQ_PASSWORD SHIPPING_RABBITMQ_PASSWORD ORDER_RABBITMQ_PASSWORD
 ```
+Etap 5 dodał hasła MongoDB (konto `admin` i użytkownicy baz Review i Notification) i Redisa koszyka; wynik przy starym `deploy/.env`:
+```
+deploy/.env: added: MONGO_ROOT_PASSWORD REVIEW_DB_PASSWORD NOTIFICATION_DB_PASSWORD REDIS_CART_PASSWORD
+```
+Potem `docker compose -f deploy/compose.yaml up -d --wait` (z `--profile platform`, jeśli działają Gateway i Auth) uruchamia nowe kontenery `mongo`, `redis-cart` i `mailpit`; dotychczasowe dane zostają.
+
 Bez tego każde polecenie `docker compose -f deploy/compose.yaml …` (także bez profilu) kończy się błędem `required variable … is missing a value: Run deploy/create-secrets.sh` z nazwą brakującej zmiennej.
 
 **Krok 2.** Uruchom infrastrukturę:
 ```bash
 docker compose -f deploy/compose.yaml up -d --wait
 ```
-`-d` – działa w tle, `--wait` – polecenie kończy się dopiero, gdy kontenery są gotowe. Za pierwszym razem pobiera obrazy (kilka minut). Na końcu przy kontenerach jest `Healthy`, a przy `consul-kv-seed` i `rabbitmq-setup` – `Exited` (kontenery kończą pracę po wgraniu konfiguracji). RabbitMQ startuje najdłużej (ok. 10–20 s).
+`-d` – działa w tle, `--wait` – polecenie kończy się dopiero, gdy kontenery są gotowe. Za pierwszym razem pobiera obrazy (kilka minut). Na końcu przy kontenerach jest `Healthy`, a przy `consul-kv-seed` i `rabbitmq-setup` – `Exited` (kontenery kończą pracę po wgraniu konfiguracji). RabbitMQ startuje najdłużej (ok. 10–20 s); MongoDB przy pierwszym starcie zakłada użytkowników baz (kilka sekund dłużej niż przy kolejnych).
 
 **Krok 3.** Sprawdź stan:
 ```bash
 docker compose -f deploy/compose.yaml ps
 ```
-Wynik: cztery kontenery ze statusem `Up … (healthy)` (jeśli działa też profil `platform`, na liście są dodatkowo `api-gateway` i `auth-service`). W skrócie (kolumny `SERVICE` i `STATUS`):
+Wynik: siedem kontenerów ze statusem `Up … (healthy)` (jeśli działa też profil `platform`, na liście są dodatkowo `api-gateway` i `auth-service`). W skrócie (kolumny `SERVICE` i `STATUS`):
 ```
 SERVICE         STATUS
 consul          Up 12 minutes (healthy)
+mailpit         Up 12 minutes (healthy)
+mongo           Up 12 minutes (healthy)
 postgres        Up 12 minutes (healthy)
 rabbitmq        Up 12 minutes (healthy)
+redis-cart      Up 12 minutes (healthy)
 redis-gateway   Up 12 minutes (healthy)
 ```
 `consul-kv-seed` i `rabbitmq-setup` nie ma na tej liście, bo już zakończyły pracę. Ich stan (oczekiwany `exited 0`, czyli „zakończył się bez błędu”):
@@ -93,7 +106,7 @@ docker compose -f deploy/compose.yaml ps -a consul-kv-seed rabbitmq-setup --form
 
 ## Jak sprawdzić, że działa
 
-**Consul.** W przeglądarce http://127.0.0.1:8500/ui → zakładka **Key/Value** → folder `config/` → foldery `api-gateway/` i `auth-service/`, w każdym klucz `data` z treścią pliku z `deploy/consul/config/`.
+**Consul.** W przeglądarce http://127.0.0.1:8500/ui → zakładka **Key/Value** → folder `config/` → po jednym folderze na usługę (10: `api-gateway/`, `auth-service/` i osiem usług zespołu, np. `review-service/`), w każdym klucz `data` z treścią pliku z `deploy/consul/config/`.
 
 **PostgreSQL.** Lokalny `psql` nie jest potrzebny – polecenie uruchamia go w kontenerze:
 ```bash
@@ -114,7 +127,26 @@ Z zewnątrz (lokalny `psql` albo DBeaver): host `127.0.0.1`, port `5432`, baza `
 ```bash
 docker compose -f deploy/compose.yaml exec redis-gateway sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli ping'
 ```
-Wynik: `PONG`. Redis ma hasło, dlatego zwykłe `redis-cli ping` odpowiada `NOAUTH Authentication required.`
+Wynik: `PONG`. Redis ma hasło, dlatego zwykłe `redis-cli ping` odpowiada `NOAUTH Authentication required.` Hasło rozwija powłoka w kontenerze (pojedyncze cudzysłowy), więc nie pojawia się na ekranie ani w historii poleceń. Redis koszyka – to samo polecenie z `redis-cart` zamiast `redis-gateway` (zmienna w kontenerze też nazywa się `REDIS_PASSWORD`):
+```bash
+docker compose -f deploy/compose.yaml exec redis-cart sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli ping'
+```
+
+Z laptopa (usługa uruchomiona z VS Code, RedisInsight): Redis koszyka to host `127.0.0.1`, port **`6380`** (port 6379 ma Redis Gateway), hasło – zmienna `REDIS_CART_PASSWORD` z `deploy/.env`.
+
+**MongoDB.** Lokalny `mongosh` nie jest potrzebny – polecenie uruchamia go w kontenerze, a hasło rozwija powłoka w kontenerze:
+```bash
+docker compose -f deploy/compose.yaml exec -T mongo sh -c 'HOME=/tmp mongosh --quiet "mongodb://review_service:$REVIEW_DB_PASSWORD@127.0.0.1:27017/review_db?authSource=review_db" --eval "db.runCommand({connectionStatus: 1}).authInfo.authenticatedUsers"'
+```
+Wynik:
+```
+[ { user: 'review_service', db: 'review_db' } ]
+```
+To sprawdza, że użytkownik `review_service` loguje się hasłem do bazy `review_db`. Dla Notification w adresie zamień wszystkie cztery wystąpienia `review`/`REVIEW` na `notification`/`NOTIFICATION` (użytkownik, zmienna z hasłem, baza i `authSource`). Bez `-T` i bez `--eval …` otwiera się interaktywna konsola `mongosh` (wyjście: `exit`).
+
+Z laptopa (usługa uruchomiona z VS Code, MongoDB Compass): adres `mongodb://review_service:<hasło>@127.0.0.1:27017/review_db?authSource=review_db`, hasło – zmienna `REVIEW_DB_PASSWORD` z `deploy/.env`. `authSource` musi wskazywać bazę usługi (użytkownik jest zapisany w niej, nie w `admin`). Hasła z `create-secrets.sh` to same cyfry i litery `a–f`, więc można je wkleić do adresu bez zmian. Hasło ustawione ręcznie ze znakiem `@`, `:` albo `/` psuje adres `mongodb://` (trzeba by je zakodować, np. `@` jako `%40`) – lepiej zostać przy hasłach ze skryptu.
+
+**Mailpit.** Panel: http://127.0.0.1:8025 – lista e-maili wysłanych przez usługi. Panel i API odpowiadają tylko pod http://127.0.0.1:8025 albo http://localhost:8025; pod inną nazwą hosta (np. `mailpit:8025` z innego kontenera) odpowiadają `403` (ochrona przed odczytem e-maili przez obcą stronę WWW). Usługi wysyłają pocztę przez SMTP: w sieci compose host `mailpit`, port `1025`; z laptopa `127.0.0.1:1025`. Bez szyfrowania i bez logowania. Mailpit trzyma wiadomości w pamięci – znikają po restarcie albo `down` kontenera.
 
 **RabbitMQ.** Panel: http://127.0.0.1:15672, login `admin`, hasło – zmienna `RABBITMQ_ADMIN_PASSWORD` z `deploy/.env`. Zakładka **Exchanges** pokazuje `shop.events` i `shop.dlx` (obok wbudowanych `(AMQP default)` i `amq.*`, których sklep nie używa), zakładka **Queues and Streams** – osiem kolejek (`notification.q`, `inventory.q`, `shipping.q`, `order.q` i ich kolejki błędów `*.dlq`), zakładka **Admin** – konto `admin` i pięć kont usług. Konta `guest` nie ma.
 
@@ -226,9 +258,9 @@ Albo zatrzymanie i usunięcie kontenerów:
 ```bash
 docker compose -f deploy/compose.yaml down
 ```
-W obu przypadkach dane zostają: bazy w PostgreSQL, zawartość Consula oraz kolejki i wiadomości w RabbitMQ przeżywają. Redis Gateway zaczyna zawsze pusty (celowo, bez zapisu na dysk) – liczniki limitów żądań startują od zera.
+W obu przypadkach dane zostają: bazy w PostgreSQL i MongoDB, koszyki w Redisie koszyka, zawartość Consula oraz kolejki i wiadomości w RabbitMQ przeżywają. Redis Gateway zaczyna zawsze pusty (celowo, bez zapisu na dysk) – liczniki limitów żądań startują od zera. Mailpit też zaczyna pusty (e-maile trzyma w pamięci).
 
-Do czasu, aż powstaną usługi odbierające zdarzenia (etap 5), wiadomości zbierają się w kolejkach `*.q` (np. każda rejestracja dodaje jedną do `notification.q`). Kolejkę czyści się w panelu: **Queues and Streams** → kolejka → **Purge Messages**.
+Do czasu, aż usługi odbierające zdarzenia będą w Docker Compose, wiadomości zbierają się w kolejkach `*.q` (np. każda rejestracja dodaje jedną do `notification.q`). Kolejkę czyści się w panelu: **Queues and Streams** → kolejka → **Purge Messages**.
 
 Ponowny start – to samo polecenie co za pierwszym razem:
 ```bash
@@ -247,7 +279,7 @@ docker compose -f deploy/compose.yaml --profile platform up -d --wait
 ```
 Sama infrastruktura (bez Auth i Gateway): te same polecenia bez `--profile platform`.
 
-`-v` usuwa też dane: **wszystkie bazy w PostgreSQL (z tabelami i danymi), całą zawartość Consula i RabbitMQ (kolejki z wiadomościami, konta)**. Po `up` bazy i użytkownicy powstają od nowa, puste. Plik `deploy/.env` i klucze w `deploy/secrets/` zostają.
+`-v` usuwa też dane: **wszystkie bazy w PostgreSQL i MongoDB (z tabelami, kolekcjami i danymi), koszyki w Redisie koszyka, całą zawartość Consula i RabbitMQ (kolejki z wiadomościami, konta)**. Po `up` bazy i użytkownicy powstają od nowa, puste. Plik `deploy/.env` i klucze w `deploy/secrets/` zostają.
 
 Kiedy to potrzebne: po zmianie hasła w `deploy/.env` po pierwszym starcie. Bazy i użytkownicy powstają tylko przy pierwszym starcie na pustych danych, więc baza dalej ma stare hasło.
 
@@ -270,19 +302,56 @@ Bez Gateway i Auth (sama infrastruktura) te same polecenia bez `--profile platfo
 
 To samo polecenie przywraca dokładny stan z repo, gdy w panelu dodano ręcznie kolejki, wiązania albo konta (`rabbitmq-setup` ich nie usuwa) albo gdy w `definitions.json` zmienił się typ lub argumenty istniejącej kolejki. Hasła kont usług (`<USŁUGA>_RABBITMQ_PASSWORD`) `rabbitmq-setup` ustawia przy każdym `up` – ich zmiana nie wymaga czystego startu. Dozwolone znaki w tych hasłach: litery, cyfry i `. _ ~ -` (hasła z `create-secrets.sh` je spełniają).
 
+### MongoDB od zera i ponowne utworzenie użytkowników
+
+Konto `admin` i użytkowników baz (`review_service`, `notification_service`) MongoDB zakłada tylko przy pierwszym starcie na pustych danych (wolumen `sklep_mongo-data`). Wolumen z wcześniejszej próby, bez tych użytkowników albo ze starymi hasłami, daje przy logowaniu usługi błąd `Authentication failed`. Są dwie drogi.
+
+**Pusty wolumen** (kolekcje Review i Notification znikają, reszta danych zostaje):
+```bash
+docker compose -f deploy/compose.yaml --profile platform down
+docker volume rm sklep_mongo-data
+docker compose -f deploy/compose.yaml --profile platform up -d --wait
+```
+Bez Gateway i Auth (sama infrastruktura) te same polecenia bez `--profile platform`. W logu `docker compose -f deploy/compose.yaml logs mongo` pojawiają się wtedy linie `created review_service in review_db` i `created notification_service in notification_db`.
+
+**Ponowny skrypt bez kasowania danych** – np. po zmianie `REVIEW_DB_PASSWORD` albo `NOTIFICATION_DB_PASSWORD` w `deploy/.env`:
+```bash
+docker compose -f deploy/compose.yaml up -d --wait
+docker compose -f deploy/compose.yaml exec -T mongo sh -c 'HOME=/tmp mongosh --quiet -u admin -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin /docker-entrypoint-initdb.d/01-service-users.js'
+```
+Pierwsze polecenie odtwarza kontener `mongo` z nowymi wartościami z `deploy/.env` (dane zostają). Drugie loguje się kontem `admin` (hasło rozwija powłoka w kontenerze) i ustawia użytkownikom baz hasła i uprawnienia według `deploy/.env`; brakujących użytkowników zakłada. Wynik:
+```
+updated review_service in review_db
+updated notification_service in notification_db
+```
+Hasła konta `admin` (`MONGO_ROOT_PASSWORD`) to nie zmienia: MongoDB ustawia je tylko przy pustym wolumenie, tak jak RabbitMQ. Po zmianie `MONGO_ROOT_PASSWORD` w `deploy/.env` drugie polecenie kończy się błędem `Authentication failed` – wtedy pozostaje pusty wolumen.
+
+### Redis koszyka od zera
+
+Usunięcie wszystkich koszyków (pozostałe dane zostają):
+```bash
+docker compose -f deploy/compose.yaml --profile platform down
+docker volume rm sklep_redis-cart-data
+docker compose -f deploy/compose.yaml --profile platform up -d --wait
+```
+Hasło Redisa koszyka (`REDIS_CART_PASSWORD`) nie jest zapisane w danych – po jego zmianie w `deploy/.env` wystarczy `up -d --wait` (odtwarza kontener z nowym hasłem), bez kasowania koszyków.
+
 ## Konwencje
 
 Obowiązują w kolejnych etapach (Auth, Gateway, usługi zespołu).
 
 | Co | Wartość |
 |---|---|
-| Hosty w sieci compose (i później w k8s) | `consul`, `postgres`, `redis-gateway`, `rabbitmq`; później `mongo`, `redis-cart`, `mailpit` |
+| Hosty w sieci compose (i później w k8s) | `consul`, `postgres`, `redis-gateway`, `rabbitmq`, `mongo`, `redis-cart`, `mailpit` |
 | Nazwa usługi w Consulu | = nazwa usługi w compose = nazwa obrazu (`auth-service`, `api-gateway`, …) |
 | Zmienne usług – Consul | `CONSUL_HOST` (`consul`, lokalnie `127.0.0.1`), `CONSUL_PORT` (`8500`) |
 | Zmienne usług – baza | `DB_HOST` (`postgres`), `DB_PORT` (`5432`), `DB_NAME` (`<s>_db`), `DB_USER` (`<s>_service`), `DB_PASSWORD` (w compose: `${<S>_DB_PASSWORD}`) |
+| Zmienne usług – MongoDB (Review, Notification) | `DB_HOST` (`mongo`), `DB_PORT` (`27017`), `DB_NAME` (`<s>_db`), `DB_USER` (`<s>_service`), `DB_PASSWORD` (w compose: `${<S>_DB_PASSWORD}`); `authSource` = `<s>_db` |
 | Zmienne Gateway – Redis | `REDIS_HOST` (`redis-gateway`), `REDIS_PORT` (`6379`), `REDIS_PASSWORD` (w compose: `${REDIS_GATEWAY_PASSWORD}`) |
+| Zmienne Cart – Redis | `REDIS_HOST` (`redis-cart`), `REDIS_PORT` (`6379`), `REDIS_PASSWORD` (w compose: `${REDIS_CART_PASSWORD}`) |
+| Zmienne Notification – SMTP | `SMTP_HOST` (`mailpit`), `SMTP_PORT` (`1025`); bez logowania i bez TLS |
 | Zmienne usług – RabbitMQ | `RABBITMQ_HOST` (`rabbitmq`), `RABBITMQ_PORT` (`5672`), `RABBITMQ_USER` (`<s>-service`), `RABBITMQ_PASSWORD` (w compose: `${<S>_RABBITMQ_PASSWORD}`) |
-| Usługa uruchomiona z VS Code (poza kontenerem) | łączy się z infrastrukturą przez `127.0.0.1` i porty z tabeli „Co tu jest” (5432, 8500, 6379, 5672); rejestruje się w Consulu z adresem `host.docker.internal` |
+| Usługa uruchomiona z VS Code (poza kontenerem) | łączy się z infrastrukturą przez `127.0.0.1` i porty z tabeli „Co tu jest” (5432, 8500, 6379, 5672, 27017, 6380 – Redis koszyka, 1025 – SMTP); rejestruje się w Consulu z adresem `host.docker.internal` (szczegóły: [docs/patterns.md](../docs/patterns.md)) |
 | Klucze JWT | `deploy/secrets/jwt-private.pem` (tylko Auth; w kontenerze `/run/secrets/jwt-private.pem`, tylko do odczytu), `jwt-public.pem` |
 | Konfiguracja w KV | `deploy/consul/config/<usługa>.yaml` → `config/<usługa>/data` |
 
@@ -298,7 +367,16 @@ Obowiązują w kolejnych etapach (Auth, Gateway, usługi zespołu).
 | shipping-service | `shipping_db` | `shipping_service` | `SHIPPING_DB_PASSWORD` |
 | auth-service (tylko tworzenie migracji) | `auth_shadow_db` | `auth_service` | `AUTH_DB_PASSWORD` |
 
-Każdy użytkownik jest właścicielem tylko swoich baz i nie może połączyć się z cudzą. `auth_shadow_db` to baza cieni dla `npx prisma migrate dev` w Auth Service (Prisma sprawdza na niej migracje); usługa jej nie używa. Review i Notification dostaną MongoDB, Cart – osobny Redis (etap 5).
+Każdy użytkownik jest właścicielem tylko swoich baz i nie może połączyć się z cudzą. `auth_shadow_db` to baza cieni dla `npx prisma migrate dev` w Auth Service (Prisma sprawdza na niej migracje); usługa jej nie używa.
+
+Bazy w MongoDB (kontener `mongo`). Użytkownik jest zapisany w bazie usługi, więc w adresie połączenia `authSource` = baza usługi. Każdy użytkownik ma tylko rolę `readWrite` na swojej bazie: zapis do cudzej kończy się błędem `not authorized`, a lista baz pokazuje tylko własną. Konto `admin` służy tylko do administracji (np. skrypt z sekcji „MongoDB od zera…”), nie dla usług.
+
+| Usługa | Baza | Użytkownik | Hasło w `deploy/.env` |
+|---|---|---|---|
+| review-service | `review_db` | `review_service` | `REVIEW_DB_PASSWORD` |
+| notification-service | `notification_db` | `notification_service` | `NOTIFICATION_DB_PASSWORD` |
+
+Cart Service ma osobny serwer Redis (`redis-cart`, hasło `REDIS_CART_PASSWORD`, zapis na dysk), niezależny od Redisa Gateway – żaden z nich nie zna hasła drugiego.
 
 Konta w RabbitMQ (vhost `/`). Żadne konto usługi nie tworzy exchange, kolejek ani wiązań – robi to tylko `rabbitmq-setup`; odbiorca otwiera swoją kolejkę bez jej deklarowania. Szczegóły: [docs/events.md](../docs/events.md).
 
@@ -311,15 +389,35 @@ Konta w RabbitMQ (vhost `/`). Żadne konto usługi nie tworzy exchange, kolejek 
 | `shipping-service` | `SHIPPING_RABBITMQ_PASSWORD` | `shipment.status_changed` | `shipping.q` |
 | `order-service` | `ORDER_RABBITMQ_PASSWORD` | `order.created`, `order.cancelled` | `order.q` |
 
+### Hasła w `deploy/.env`
+
+Wszystkie 19 zmiennych tworzy `bash deploy/create-secrets.sh` (losowe, 48 znaków `0-9a-f`). Każdy kontener dostaje tylko hasła, których potrzebuje.
+
+| Zmienna | Do czego | Kontener |
+|---|---|---|
+| `POSTGRES_PASSWORD` | superużytkownik PostgreSQL `postgres` (tylko administracja) | `postgres` |
+| `AUTH_DB_PASSWORD` | użytkownik `auth_service` bazy `auth_db` | `postgres`, `auth-migrate`, `auth-service` |
+| `USER_DB_PASSWORD`, `PRODUCT_DB_PASSWORD`, `INVENTORY_DB_PASSWORD`, `ORDER_DB_PASSWORD`, `SHIPPING_DB_PASSWORD` | użytkownicy `<s>_service` baz PostgreSQL usług zespołu | `postgres` (i usługa po scaleniu jej PR) |
+| `REDIS_GATEWAY_PASSWORD` | Redis Gateway | `redis-gateway`, `api-gateway` |
+| `ADMIN_PASSWORD` | pierwsze konto `ADMIN` w Auth (tylko przy pierwszym starcie) | `auth-service` |
+| `RABBITMQ_ADMIN_PASSWORD` | konto `admin` RabbitMQ (panel; tylko przy pustym wolumenie) | `rabbitmq`, `rabbitmq-setup` |
+| `AUTH_RABBITMQ_PASSWORD`, `NOTIFICATION_RABBITMQ_PASSWORD`, `INVENTORY_RABBITMQ_PASSWORD`, `SHIPPING_RABBITMQ_PASSWORD`, `ORDER_RABBITMQ_PASSWORD` | konta usług w RabbitMQ | `rabbitmq-setup` (i usługa: dziś `auth-service`) |
+| `MONGO_ROOT_PASSWORD` | konto `admin` MongoDB (tylko administracja; tylko przy pustym wolumenie) | `mongo` |
+| `REVIEW_DB_PASSWORD`, `NOTIFICATION_DB_PASSWORD` | użytkownicy `<s>_service` baz MongoDB | `mongo` (i usługa po scaleniu jej PR) |
+| `REDIS_CART_PASSWORD` | Redis koszyka | `redis-cart` (i Cart po scaleniu PR) |
+
+Hasło do własnej usługi uruchamianej z VS Code przenosi się z `deploy/.env` do lokalnego `.env` usługi bez wyświetlania – polecenie w [docs/patterns.md](../docs/patterns.md). Haseł nie wkleja się do czatu, issue ani do repo.
+
 ## Bezpieczeństwo
 
 - Porty są wystawione tylko na `127.0.0.1` – z innych komputerów w sieci są niedostępne.
 - Z usług sklepu port ma tylko API Gateway: `127.0.0.1:8080`. Pozostałe usługi (np. `auth-service`) nie mają portów na laptopie i są osiągalne tylko przez Gateway.
+- Każdy kontener działa bez uprawnień roota i dostaje tylko swoje hasła (tabela „Hasła w `deploy/.env`”). Mailpit nie ma logowania – SMTP jest dostępny z laptopa i z sieci compose, panel i API tylko z laptopa (http://127.0.0.1:8025, http://localhost:8025).
 - `deploy/.env` i `deploy/secrets/` **nigdy nie trafiają do repo** (`.gitignore` je pomija) i nie są przekazywane innym osobom – każdy generuje własne.
 
 ## Gdy coś nie działa
 
-**Zajęty port 5432, 8500, 6379, 5672, 15672 albo 8080** (w komunikacie `port is already allocated` albo `address already in use`). Ten port zajmuje inny kontener albo program, np. compose z `services/user-service/dev/compose.yaml` albo lokalnie zainstalowany PostgreSQL. Kontenery z ich portami:
+**Zajęty port 5432, 8500, 6379, 5672, 15672, 27017, 6380, 8025, 1025 albo 8080** (w komunikacie `port is already allocated` albo `address already in use`). Ten port zajmuje inny kontener albo program, np. compose z `services/user-service/dev/compose.yaml` albo lokalnie zainstalowany PostgreSQL lub MongoDB. Kontenery z ich portami:
 ```bash
 docker ps --format '{{.Names}}  {{.Ports}}'
 ```
@@ -354,8 +452,10 @@ docker compose -f deploy/compose.yaml logs rabbitmq-setup
 ```
 Najczęściej ostatnia linia to `Not_Authorized` (zamiast `imported definitions.json`): `RABBITMQ_ADMIN_PASSWORD` w `deploy/.env` różni się od hasła ustawionego przy pierwszym starcie RabbitMQ – rozwiązanie to czysty start RabbitMQ (sekcja „RabbitMQ od zera”). Linia `<USŁUGA>_RABBITMQ_PASSWORD: only letters, digits and . _ ~ - are allowed …` oznacza puste hasło konta usługi albo hasło z innym znakiem niż litery, cyfry i `. _ ~ -` – usuń ten wiersz z `deploy/.env`, uruchom `bash deploy/create-secrets.sh` (doda nowe hasło) i ponów `up -d --wait`; czysty start nie jest potrzebny.
 
+**MongoDB: `Authentication failed`** przy logowaniu użytkownika usługi (np. `review_service`). Wolumen `sklep_mongo-data` powstał wcześniej, bez tego użytkownika albo z innym hasłem – sekcja „MongoDB od zera i ponowne utworzenie użytkowników”.
+
 **Inne problemy:** logi wybranego kontenera:
 ```bash
 docker compose -f deploy/compose.yaml logs postgres
 ```
-(zamiast `postgres`: `consul`, `redis-gateway`, `consul-kv-seed`, `rabbitmq`, `rabbitmq-setup`, `api-gateway`, `auth-service`).
+(zamiast `postgres`: `consul`, `redis-gateway`, `consul-kv-seed`, `rabbitmq`, `rabbitmq-setup`, `mongo`, `redis-cart`, `mailpit`, `api-gateway`, `auth-service`).
