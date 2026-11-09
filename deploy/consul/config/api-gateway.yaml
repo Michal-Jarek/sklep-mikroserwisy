@@ -1,5 +1,53 @@
-# Configuration of api-gateway in Consul KV (key config/api-gateway/data). No credentials here. Environment variables take precedence.
+# Configuration of api-gateway in Consul KV (key config/api-gateway/data). No credentials here.
+# Read at startup; without it the Gateway is not ready and retries every 15 s. Restart the Gateway after a change.
+# An invalid document (wrong type, unknown access level or method, bad path) is rejected as a whole.
 logLevel: info
 jwt:
   issuer: sklep-auth
   audience: sklep-api
+proxy:
+  timeoutSeconds: 10
+# First path segment after /api/v1 -> service name in Consul.
+routes:
+  auth: auth-service
+  users: user-service
+  products: product-service
+  categories: product-service
+  inventory: inventory-service
+  cart: cart-service
+  orders: order-service
+  notifications: notification-service
+  reviews: review-service
+  shipping: shipping-service
+  shipments: shipping-service
+# Checked in order, the first match wins; no match means "authenticated".
+# path: without /api/v1; "*" = one segment, "**" (last only) = zero or more segments.
+# methods: GET, HEAD, POST, PUT, PATCH, DELETE or ANY. access: public | authenticated | ADMIN | blocked.
+access:
+  - { methods: [ANY], path: /auth/**, access: public }
+  # Internal endpoints (role SERVICE, called only between services): 404 from outside.
+  - { methods: [POST], path: /users, access: blocked }
+  - { methods: [DELETE], path: /cart/*, access: blocked }
+  - { methods: [ANY], path: /inventory/reservations/**, access: blocked }
+  - { methods: [ANY], path: /orders/purchased/**, access: blocked }
+  - { methods: [GET, HEAD], path: /users/me/**, access: authenticated }
+  - { methods: [GET, HEAD], path: /users/*, access: ADMIN }
+  - { methods: [GET, HEAD], path: /products/**, access: public }
+  - { methods: [POST, PUT, PATCH, DELETE], path: /products/**, access: ADMIN }
+  - { methods: [GET, HEAD], path: /categories/**, access: public }
+  - { methods: [POST, PUT, PATCH, DELETE], path: /categories/**, access: ADMIN }
+  - { methods: [GET, HEAD], path: /reviews/**, access: public }
+  - { methods: [GET, HEAD], path: /shipping/methods/**, access: public }
+  - { methods: [GET, HEAD], path: /inventory/*, access: public }
+  - { methods: [PUT], path: /inventory/*, access: ADMIN }
+  - { methods: [PATCH], path: /shipments/*/status, access: ADMIN }
+rateLimit:
+  # Per client IP, shared by all Gateway instances (Redis). /health/* is not limited.
+  global: { max: 300, timeWindowSeconds: 60 }
+  # Extra limits for single endpoints (exact path without /api/v1), counted on top of the global one.
+  routes:
+    - { method: POST, path: /auth/login, max: 5, timeWindowSeconds: 60 }
+    - { method: POST, path: /auth/register, max: 10, timeWindowSeconds: 60 }
+cors:
+  # Browser origins allowed to call the API from another address. Empty: no CORS (frontend and API share one address).
+  allowedOrigins: []

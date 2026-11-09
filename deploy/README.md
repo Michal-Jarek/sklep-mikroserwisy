@@ -22,7 +22,7 @@ Pliki w folderze:
 - `postgres/init/01-service-databases.sh` – tworzy bazy i użytkowników przy pierwszym starcie;
 - `k8s/`, `rabbitmq/` – na później. Kubernetes to ostatni etap projektu; do tego czasu infrastruktura i usługi działają w Docker Compose.
 
-Usługi sklepu są w tym samym `compose.yaml` w grupach (tzw. profilach): profil `platform` (od etapu 2 Auth Service, w etapie 3 Gateway), w etapie 5 profil `full-shop` (cały sklep, w tym usługi z `platform`). Polecenie bez `--profile` uruchamia tylko infrastrukturę z tabeli; profil `platform` – sekcja „Profil platform (Auth Service)”.
+Usługi sklepu są w tym samym `compose.yaml` w grupach (tzw. profilach): profil `platform` (API Gateway i Auth Service), w etapie 5 profil `full-shop` (cały sklep, w tym usługi z `platform`). Polecenie bez `--profile` uruchamia tylko infrastrukturę z tabeli; profil `platform` – sekcja „Profil platform (API Gateway i Auth Service)”.
 
 ## Wymagania
 
@@ -107,39 +107,91 @@ docker compose -f deploy/compose.yaml exec redis-gateway sh -c 'REDISCLI_AUTH="$
 ```
 Wynik: `PONG`. Redis ma hasło, dlatego zwykłe `redis-cli ping` odpowiada `NOAUTH Authentication required.`
 
-## Profil platform (Auth Service)
+## Profil platform (API Gateway i Auth Service)
 
-Infrastruktura razem z Auth Service:
+Infrastruktura razem z API Gateway i Auth Service:
 ```bash
 bash deploy/create-secrets.sh
 docker compose -f deploy/compose.yaml --profile platform up -d --wait --build
 ```
-`--build` buduje obraz `auth-service:dev` z `services/auth-service` (pierwszy raz kilka minut). Dochodzą dwa kontenery: `auth-migrate` (jednorazowo stosuje migracje bazy `auth_db` i kończy się kodem 0) i `auth-service` (startuje po migracjach). Auth nie ma portu na laptopie – jest dostępny tylko w sieci `sklep_backend` (od etapu 3 przez Gateway). Szczegóły usługi: [services/auth-service/README.md](../services/auth-service/README.md).
+`--build` buduje obrazy `api-gateway:dev` i `auth-service:dev` z `services/` (pierwszy raz kilka minut). Dochodzą trzy kontenery: `auth-migrate` (jednorazowo stosuje migracje bazy `auth_db` i kończy się kodem 0), `auth-service` (startuje po migracjach) i `api-gateway`. Stan:
+```bash
+docker compose -f deploy/compose.yaml --profile platform ps --format '{{.Service}} {{.Status}}'
+```
+Wynik: `api-gateway`, `auth-service`, `consul`, `postgres` i `redis-gateway` ze statusem `Up … (healthy)`.
 
-W `up`, `stop` i `down` podaje się `--profile platform`, inaczej polecenie pomija kontenery Auth (`stop` zostawia je uruchomione, `down` ich nie usuwa). W `ps` i `logs` profil nie jest potrzebny, ale nie szkodzi:
+Przez pierwsze sekundy po starcie Gateway może jeszcze odpowiadać `503` na `/api/v1/auth/…` – czeka, aż zobaczy w Consulu zdrowy Auth Service. Wtedy powtórz polecenie po kilku sekundach.
+
+**API Gateway** działa pod adresem `http://localhost:8080` i jest jedynym wejściem do usług z laptopa (port tylko na `127.0.0.1`). Sprawdzenie:
+```bash
+curl -i http://localhost:8080/health/ready
+```
+Wynik: `HTTP/1.1 200 OK` i `{"status":"UP"}`. Gateway przekazuje żądania `/api/v1/<zasób>/…` do usług zarejestrowanych w Consulu; trasy, reguły dostępu, limity żądań i kody błędów opisuje [services/api-gateway/README.md](../services/api-gateway/README.md).
+
+**Auth Service** nie ma portu na laptopie – działa w sieci `sklep_backend`, a z laptopa woła się go przez Gateway pod `http://localhost:8080/api/v1/auth/…`. Rejestracja i logowanie (przykładowe dane; hasło co najmniej 8 znaków):
+```bash
+curl -s -w ' %{http_code}\n' -H 'Content-Type: application/json' \
+  -d '{"email":"anna@example.com","password":"Haslo-1234!","firstName":"Anna","lastName":"Nowak"}' \
+  http://localhost:8080/api/v1/auth/register
+curl -s -o /dev/null -w '%{http_code}\n' -c /tmp/sklep-cookies.txt -H 'Content-Type: application/json' \
+  -d '{"email":"anna@example.com","password":"Haslo-1234!"}' \
+  http://localhost:8080/api/v1/auth/login
+```
+Wynik: dane konta i `201` (drugi raz `409` – e-mail zajęty), potem `200`. Bez `-o /dev/null -w …` odpowiedź logowania zawiera `accessToken` – traktuj go jak hasło. Ciasteczko `refresh_token` (`Path=/api/v1/auth`) trafia do pliku `/tmp/sklep-cookies.txt` i działa przez Gateway bez przepisywania:
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -b /tmp/sklep-cookies.txt -c /tmp/sklep-cookies.txt -X POST http://localhost:8080/api/v1/auth/refresh
+```
+Wynik: `200`. Gateway ogranicza logowanie do 5, a rejestrację do 10 żądań na minutę z jednego adresu IP – potem odpowiada `429`. Szczegóły Auth: [services/auth-service/README.md](../services/auth-service/README.md).
+
+Plik z ciasteczkiem działa jak hasło do sesji – po testach go usuń:
+```bash
+rm -f /tmp/sklep-cookies.txt
+```
+
+W `up`, `stop` i `down` podaje się `--profile platform`, inaczej polecenie pomija kontenery Gateway i Auth (`stop` zostawia je uruchomione, `down` ich nie usuwa). W `ps` i `logs` profil nie jest potrzebny, ale nie szkodzi:
 ```bash
 docker compose -f deploy/compose.yaml --profile platform ps
 ```
-Podpowiedź `Done. Start: …` na końcu `create-secrets.sh` dotyczy samej infrastruktury; z Auth użyj polecenia z początku tej sekcji.
+Podpowiedź `Done. Start: …` na końcu `create-secrets.sh` dotyczy samej infrastruktury; z Gateway i Auth użyj polecenia z początku tej sekcji.
 
 Wolumen PostgreSQL utworzony przed etapem 2 nie ma bazy cieni `auth_shadow_db` (potrzebnej tylko do tworzenia migracji Auth). Dodaje ją ponowne uruchomienie skryptu baz, bez utraty danych – polecenie `exec … 01-service-databases.sh` z sekcji „Reset od zera”.
+
+### Pokaz load balancingu (dwie instancje Auth)
+
+Druga instancja Auth Service:
+```bash
+docker compose -f deploy/compose.yaml --profile platform up -d --wait --scale auth-service=2
+sleep 12   # Gateway odświeża listę instancji z Consula co 10 s
+```
+Osiem żądań przez Gateway; nagłówek `X-Instance-Id` w odpowiedzi pokazuje, która instancja odpowiedziała (`POST /api/v1/auth/logout` bez ciasteczka odpowiada 204 i niczego nie zmienia):
+```bash
+for i in $(seq 1 8); do
+  curl -s -D - -o /dev/null -X POST http://localhost:8080/api/v1/auth/logout | grep -i '^x-instance-id' | tr -d '\r'
+done | sort | uniq -c
+```
+Wynik: dwie różne wartości `x-instance-id: auth-service-<hostname>`, każda po 4 razy. Powrót do jednej instancji:
+```bash
+docker compose -f deploy/compose.yaml --profile platform up -d --wait --scale auth-service=1
+sleep 12   # Gateway odświeża listę instancji z Consula co 10 s
+```
+Bez odczekania Gateway może jeszcze przez około 10 s kierować żądania do usuniętej instancji: `POST` (np. logowanie) dostaje wtedy `502`, a `GET` jest ponawiany do drugiej instancji.
 
 ### Logowanie jako ADMIN
 
 Przy pierwszym starcie `auth-service` zakłada konto z rolą `ADMIN`: e-mail `admin@sklep.local` (inny: `ADMIN_EMAIL=…` w `deploy/.env` przed pierwszym startem), hasło – zmienna `ADMIN_PASSWORD` z `deploy/.env`. Późniejsza zmiana `ADMIN_PASSWORD` nie zmienia hasła istniejącego konta. Hasła nie wkleja się do czatu, issue ani do repo.
 
-Sprawdzenie logowania bez wypisywania hasła (hasło trafia do zmiennej, a żądanie idzie przez standardowe wejście):
+Sprawdzenie logowania przez Gateway bez wypisywania hasła (hasło trafia do zmiennej, a żądanie idzie przez standardowe wejście):
 ```bash
 P=$(docker compose -f deploy/compose.yaml --profile platform exec -T auth-service printenv ADMIN_PASSWORD)
-printf '{"email":"admin@sklep.local","password":"%s"}' "$P" | docker run --rm -i --network sklep_backend --entrypoint curl hashicorp/consul:1.21 \
-  -s -o /dev/null -w '%{http_code}\n' -H 'Content-Type: application/json' --data-binary @- http://auth-service:8081/auth/login
+printf '{"email":"admin@sklep.local","password":"%s"}' "$P" | curl -s -o /dev/null -w '%{http_code}\n' \
+  -H 'Content-Type: application/json' --data-binary @- http://localhost:8080/api/v1/auth/login
 unset P
 ```
 Wynik: `200`. Bez `-o /dev/null -w …` odpowiedź zawiera `accessToken` (token z rolą `ADMIN`, ważny 15 minut) – traktuj go jak hasło.
 
 ## Codzienna praca
 
-Jeśli uruchamiasz też Auth (profil `platform`), dodaj `--profile platform` do każdego polecenia w tej i następnej sekcji (np. `docker compose -f deploy/compose.yaml --profile platform stop`) – inaczej kontenery Auth zostaną pominięte.
+Jeśli uruchamiasz też Gateway i Auth (profil `platform`), dodaj `--profile platform` do każdego polecenia w tej i następnej sekcji (np. `docker compose -f deploy/compose.yaml --profile platform stop`) – inaczej kontenery Gateway i Auth zostaną pominięte.
 
 Zatrzymanie (kontenery zostają, start jest szybszy):
 ```bash
@@ -149,14 +201,14 @@ Albo zatrzymanie i usunięcie kontenerów:
 ```bash
 docker compose -f deploy/compose.yaml down
 ```
-W obu przypadkach dane zostają: bazy w PostgreSQL i zawartość Consula przeżywają. Redis Gateway zaczyna zawsze pusty (celowo, bez zapisu na dysk).
+W obu przypadkach dane zostają: bazy w PostgreSQL i zawartość Consula przeżywają. Redis Gateway zaczyna zawsze pusty (celowo, bez zapisu na dysk) – liczniki limitów żądań startują od zera.
 
 Ponowny start – to samo polecenie co za pierwszym razem:
 ```bash
 docker compose -f deploy/compose.yaml up -d --wait
 ```
 
-**Zmiana konfiguracji usługi w Consulu:** edytuj plik `deploy/consul/config/<usługa>.yaml`, potem uruchom `docker compose -f deploy/compose.yaml up -d --wait`. Przy każdym `up` kontener `consul-kv-seed` wgrywa te pliki do Consula i nadpisuje to, co tam było. Zmiana zrobiona ręcznie w UI Consula działa więc tylko do następnego `up`. W tych plikach nie wpisuje się haseł.
+**Zmiana konfiguracji usługi w Consulu:** edytuj plik `deploy/consul/config/<usługa>.yaml`, potem uruchom `docker compose -f deploy/compose.yaml --profile platform up -d --wait` (z profilem, jeśli działają usługi z `platform`). Przy każdym `up` kontener `consul-kv-seed` wgrywa te pliki do Consula i nadpisuje to, co tam było. Usługa czyta konfigurację tylko przy starcie, więc potem zrestartuj ją, np. `docker compose -f deploy/compose.yaml --profile platform restart api-gateway`; `restart` nie czeka na gotowość – usługa działa, gdy `docker compose -f deploy/compose.yaml --profile platform ps` pokazuje przy niej `(healthy)`. Zmiana zrobiona ręcznie w UI Consula działa tylko do następnego `up`. W tych plikach nie wpisuje się haseł.
 
 ## Reset od zera
 
@@ -209,12 +261,12 @@ Każdy użytkownik jest właścicielem tylko swoich baz i nie może połączyć 
 ## Bezpieczeństwo
 
 - Porty są wystawione tylko na `127.0.0.1` – z innych komputerów w sieci są niedostępne.
+- Z usług sklepu port ma tylko API Gateway: `127.0.0.1:8080`. Pozostałe usługi (np. `auth-service`) nie mają portów na laptopie i są osiągalne tylko przez Gateway.
 - `deploy/.env` i `deploy/secrets/` **nigdy nie trafiają do repo** (`.gitignore` je pomija) i nie są przekazywane innym osobom – każdy generuje własne.
-- Usługi sklepu (od etapu 2/3) nie dostaną portów lokalnych. Z zewnątrz będzie dostępny tylko API Gateway.
 
 ## Gdy coś nie działa
 
-**Zajęty port 5432, 8500 albo 6379** (w komunikacie `port is already allocated` albo `address already in use`). Ten port zajmuje inny kontener albo program, np. compose z `services/user-service/dev/compose.yaml` albo lokalnie zainstalowany PostgreSQL. Kontenery z ich portami:
+**Zajęty port 5432, 8500, 6379 albo 8080** (w komunikacie `port is already allocated` albo `address already in use`). Ten port zajmuje inny kontener albo program, np. compose z `services/user-service/dev/compose.yaml` albo lokalnie zainstalowany PostgreSQL. Kontenery z ich portami:
 ```bash
 docker ps --format '{{.Names}}  {{.Ports}}'
 ```
@@ -247,4 +299,4 @@ Poprawny przebieg to linie `loaded config/<usługa>/data` – przy każdym `up` 
 ```bash
 docker compose -f deploy/compose.yaml logs postgres
 ```
-(zamiast `postgres`: `consul`, `redis-gateway`, `consul-kv-seed`).
+(zamiast `postgres`: `consul`, `redis-gateway`, `consul-kv-seed`, `api-gateway`, `auth-service`).

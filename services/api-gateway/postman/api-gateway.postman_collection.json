@@ -1,0 +1,647 @@
+{
+  "info": {
+    "name": "api-gateway",
+    "description": "API Gateway, the single entry point to the backend. Set baseUrl in the environment, e.g. http://localhost:8080 (Docker Compose, profile platform: Gateway and Auth Service, no other services). Run the requests in order: one registration and one login per run (rate limits). The collection keeps the refresh_token cookie in a variable and sends it in the Cookie header (cookie jar disabled for these requests), so the result does not depend on how a client treats a Secure cookie over http://localhost.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Every response, also errors: headers of the Gateway.",
+          "pm.test('X-Request-Id header is set', () => pm.expect(pm.response.headers.get('X-Request-Id')).to.be.a('string').and.not.empty);",
+          "pm.test('X-Gateway-Instance-Id header starts with api-gateway-', () => pm.expect(pm.response.headers.get('X-Gateway-Instance-Id')).to.match(/^api-gateway-/));"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "health",
+      "item": [
+        {
+          "name": "Liveness",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('body is {\"status\":\"UP\"}', () => pm.expect(pm.response.json()).to.eql({ status: 'UP' }));",
+                  "pm.test('no X-Instance-Id header (set only by the services behind the Gateway)', () => pm.expect(pm.response.headers.has('X-Instance-Id')).to.be.false);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health/live",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health",
+                "live"
+              ]
+            },
+            "description": "The process is alive; dependencies are not checked."
+          }
+        },
+        {
+          "name": "Readiness",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('body is {\"status\":\"UP\"}', () => pm.expect(pm.response.json()).to.eql({ status: 'UP' }));",
+                  "pm.test('no X-Instance-Id header (set only by the services behind the Gateway)', () => pm.expect(pm.response.headers.has('X-Instance-Id')).to.be.false);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health/ready",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health",
+                "ready"
+              ]
+            },
+            "description": "Ready when the configuration from Consul KV is loaded; otherwise 503 SERVICE_UNAVAILABLE. Redis, Consul (after loading) and Auth Service are not required."
+          }
+        }
+      ]
+    },
+    {
+      "name": "auth through the Gateway",
+      "item": [
+        {
+          "name": "Register a new account (201)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A new email on every run, so the collection can be run many times.",
+                  "pm.collectionVariables.set('email', `gateway-${Date.now()}-${Math.floor(Math.random() * 1e6)}@example.com`);",
+                  "pm.collectionVariables.set('password', 'Postman-Pass-123');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.test('answered by Auth Service (X-Instance-Id auth-service-...)', () => pm.expect(pm.response.headers.get('X-Instance-Id')).to.match(/^auth-service-/));",
+                  "const body = pm.response.json();",
+                  "pm.test('account with the generated email and role CUSTOMER', () => {",
+                  "  pm.expect(body.email).to.eql(pm.collectionVariables.get('email'));",
+                  "  pm.expect(body.roles).to.eql(['CUSTOMER']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "register"
+              ]
+            },
+            "description": "Public route /auth/**. One registration per run (limit 10 per minute per IP in the Gateway).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\",\n  \"firstName\": \"Postman\",\n  \"lastName\": \"Gateway\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Log in (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('answered by Auth Service (X-Instance-Id auth-service-...)', () => pm.expect(pm.response.headers.get('X-Instance-Id')).to.match(/^auth-service-/));",
+                  "const body = pm.response.json();",
+                  "pm.test('access token in the body', () => pm.expect(body.accessToken.split('.')).to.have.lengthOf(3));",
+                  "pm.collectionVariables.set('accessToken', body.accessToken);",
+                  "// The value is kept in a variable and sent in the Cookie header of the next requests (cookie jar disabled",
+                  "// there): the result does not depend on whether a client sends a Secure cookie back over http://localhost.",
+                  "const setCookie = pm.response.headers.get('Set-Cookie') || '';",
+                  "const match = /(?:^|,\\s*)refresh_token=([^;]+)/.exec(setCookie);",
+                  "pm.test('Set-Cookie: refresh_token with Path=/api/v1/auth, HttpOnly, Secure, SameSite=Strict', () => {",
+                  "  pm.expect(match, 'refresh_token cookie').to.not.be.null;",
+                  "  pm.expect(setCookie).to.include('Path=/api/v1/auth');",
+                  "  pm.expect(setCookie).to.include('HttpOnly');",
+                  "  pm.expect(setCookie).to.include('Secure');",
+                  "  pm.expect(setCookie).to.include('SameSite=Strict');",
+                  "});",
+                  "if (match) {",
+                  "  pm.collectionVariables.set('refreshToken', match[1]);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            },
+            "description": "One login per run (limit 5 per minute per IP in the Gateway and in Auth Service).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Refresh the session (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('answered by Auth Service (X-Instance-Id auth-service-...)', () => pm.expect(pm.response.headers.get('X-Instance-Id')).to.match(/^auth-service-/));",
+                  "const body = pm.response.json();",
+                  "pm.test('new access token', () => pm.expect(body.accessToken.split('.')).to.have.lengthOf(3));",
+                  "pm.collectionVariables.set('accessToken', body.accessToken);",
+                  "// The value is kept in a variable and sent in the Cookie header of the next requests (cookie jar disabled",
+                  "// there): the result does not depend on whether a client sends a Secure cookie back over http://localhost.",
+                  "const setCookie = pm.response.headers.get('Set-Cookie') || '';",
+                  "const match = /(?:^|,\\s*)refresh_token=([^;]+)/.exec(setCookie);",
+                  "pm.test('Set-Cookie: refresh_token with Path=/api/v1/auth, HttpOnly, Secure, SameSite=Strict', () => {",
+                  "  pm.expect(match, 'refresh_token cookie').to.not.be.null;",
+                  "  pm.expect(setCookie).to.include('Path=/api/v1/auth');",
+                  "  pm.expect(setCookie).to.include('HttpOnly');",
+                  "  pm.expect(setCookie).to.include('Secure');",
+                  "  pm.expect(setCookie).to.include('SameSite=Strict');",
+                  "});",
+                  "if (match) {",
+                  "  pm.collectionVariables.set('refreshToken', match[1]);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Cookie",
+                "value": "refresh_token={{refreshToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "refresh"
+              ]
+            },
+            "description": "The refresh cookie (Path=/api/v1/auth) goes through the Gateway unchanged; Auth Service rotates it."
+          },
+          "protocolProfileBehavior": {
+            "disableCookies": true
+          }
+        },
+        {
+          "name": "Log out (204)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 204', () => pm.response.to.have.status(204));",
+                  "pm.test('answered by Auth Service (X-Instance-Id auth-service-...)', () => pm.expect(pm.response.headers.get('X-Instance-Id')).to.match(/^auth-service-/));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Cookie",
+                "value": "refresh_token={{refreshToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/logout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "logout"
+              ]
+            },
+            "description": "Revokes the refresh token from the cookie."
+          },
+          "protocolProfileBehavior": {
+            "disableCookies": true
+          }
+        },
+        {
+          "name": "Refresh after logout (401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('answered by Auth Service (X-Instance-Id auth-service-...)', () => pm.expect(pm.response.headers.get('X-Instance-Id')).to.match(/^auth-service-/));",
+                  "const body = pm.response.json();",
+                  "pm.test('Auth Service error 401 UNAUTHORIZED in the team format', () => {",
+                  "  pm.expect(body.status).to.eql(401);",
+                  "  pm.expect(body.error).to.eql('UNAUTHORIZED');",
+                  "  pm.expect(body.message).to.be.a('string').and.not.empty;",
+                  "  pm.expect(body.requestId).to.eql(pm.response.headers.get('X-Request-Id'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Cookie",
+                "value": "refresh_token={{refreshToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "refresh"
+              ]
+            },
+            "description": "The revoked refresh token is rejected by Auth Service."
+          },
+          "protocolProfileBehavior": {
+            "disableCookies": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "access rules",
+      "item": [
+        {
+          "name": "Own profile without a token (401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "const body = pm.response.json();",
+                  "pm.test('Gateway error 401 UNAUTHORIZED in the team format', () => {",
+                  "  pm.expect(body).to.eql({ status: 401, error: 'UNAUTHORIZED', message: 'Missing or invalid access token', requestId: pm.response.headers.get('X-Request-Id') });",
+                  "});",
+                  "pm.test('no X-Instance-Id (the answer of the Gateway, not of a service)', () => pm.expect(pm.response.headers.has('X-Instance-Id')).to.be.false);",
+                  "pm.test('WWW-Authenticate: Bearer', () => pm.expect(pm.response.headers.get('WWW-Authenticate')).to.eql('Bearer'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users",
+                "me"
+              ]
+            },
+            "description": "Route /users/me/** requires a logged-in user; the Gateway answers before any service."
+          }
+        },
+        {
+          "name": "Own profile with a token (503, no User Service)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 503', () => pm.response.to.have.status(503));",
+                  "const body = pm.response.json();",
+                  "pm.test('Gateway error 503 SERVICE_UNAVAILABLE in the team format', () => {",
+                  "  pm.expect(body).to.eql({ status: 503, error: 'SERVICE_UNAVAILABLE', message: 'Service is unavailable, try again later', requestId: pm.response.headers.get('X-Request-Id') });",
+                  "});",
+                  "pm.test('no X-Instance-Id (the answer of the Gateway, not of a service)', () => pm.expect(pm.response.headers.has('X-Instance-Id')).to.be.false);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users",
+                "me"
+              ]
+            },
+            "description": "The token is valid, but user-service has no instance in Consul (not in Docker Compose yet), so the Gateway answers 503."
+          }
+        },
+        {
+          "name": "Internal endpoint POST /users (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 404', () => pm.response.to.have.status(404));",
+                  "const body = pm.response.json();",
+                  "pm.test('Gateway error 404 NOT_FOUND in the team format', () => {",
+                  "  pm.expect(body).to.eql({ status: 404, error: 'NOT_FOUND', message: 'Not found', requestId: pm.response.headers.get('X-Request-Id') });",
+                  "});",
+                  "pm.test('no X-Instance-Id (the answer of the Gateway, not of a service)', () => pm.expect(pm.response.headers.has('X-Instance-Id')).to.be.false);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/users",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "users"
+              ]
+            },
+            "description": "Internal endpoint (role SERVICE only): blocked from outside with the same answer as an unknown route, also with a token.",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Create a product as a customer (403)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403', () => pm.response.to.have.status(403));",
+                  "const body = pm.response.json();",
+                  "pm.test('Gateway error 403 FORBIDDEN in the team format', () => {",
+                  "  pm.expect(body).to.eql({ status: 403, error: 'FORBIDDEN', message: 'Insufficient role', requestId: pm.response.headers.get('X-Request-Id') });",
+                  "});",
+                  "pm.test('no X-Instance-Id (the answer of the Gateway, not of a service)', () => pm.expect(pm.response.headers.has('X-Instance-Id')).to.be.false);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/products",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "products"
+              ]
+            },
+            "description": "POST /products requires the role ADMIN; the token of the new account has CUSTOMER.",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "paths",
+      "item": [
+        {
+          "name": "Path with %2e%2e (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "const body = pm.response.json();",
+                  "pm.test('Gateway error 400 VALIDATION_ERROR in the team format', () => {",
+                  "  pm.expect(body).to.eql({ status: 400, error: 'VALIDATION_ERROR', message: 'Invalid request path', requestId: pm.response.headers.get('X-Request-Id') });",
+                  "});",
+                  "pm.test('no X-Instance-Id (the answer of the Gateway, not of a service)', () => pm.expect(pm.response.headers.has('X-Instance-Id')).to.be.false);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/products/%2e%2e/users",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "products",
+                "%2e%2e",
+                "users"
+              ]
+            },
+            "description": "A non-canonical path (encoded ..) is rejected before routing; nothing reaches a service."
+          }
+        },
+        {
+          "name": "Unknown resource (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 404', () => pm.response.to.have.status(404));",
+                  "const body = pm.response.json();",
+                  "pm.test('Gateway error 404 NOT_FOUND in the team format', () => {",
+                  "  pm.expect(body).to.eql({ status: 404, error: 'NOT_FOUND', message: 'Not found', requestId: pm.response.headers.get('X-Request-Id') });",
+                  "});",
+                  "pm.test('no X-Instance-Id (the answer of the Gateway, not of a service)', () => pm.expect(pm.response.headers.has('X-Instance-Id')).to.be.false);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/nie-ma",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "nie-ma"
+              ]
+            },
+            "description": "No route for the first path segment."
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "email",
+      "value": ""
+    },
+    {
+      "key": "password",
+      "value": ""
+    },
+    {
+      "key": "accessToken",
+      "value": ""
+    },
+    {
+      "key": "refreshToken",
+      "value": ""
+    }
+  ]
+}

@@ -148,6 +148,38 @@ services:
       retries: 20
       start_period: 10s
 
+  # The only service with a published port: the entry point to the backend (http://localhost:8080).
+  # Does not depend on auth-service: public routes work without it, the others answer 503.
+  api-gateway:
+    image: api-gateway:dev
+    build: ../services/api-gateway
+    profiles: [platform, full-shop]
+    user: node
+    environment:
+      PORT: "8080"
+      CONSUL_HOST: consul
+      CONSUL_PORT: "8500"
+      REDIS_HOST: redis-gateway
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_GATEWAY_PASSWORD:?Run deploy/create-secrets.sh}
+    # backend: Consul, Redis and the services; edge: entry from outside (published port).
+    networks: [backend, edge]
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      consul:
+        condition: service_healthy
+      consul-kv-seed:
+        condition: service_completed_successfully
+      redis-gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health/ready > /dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
 networks:
   # Infrastructure and all services; no outbound access.
   backend: { internal: true }

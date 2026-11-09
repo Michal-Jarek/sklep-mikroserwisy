@@ -133,13 +133,13 @@ Każda odpowiedź **401** z `/auth/refresh` czyści ciasteczko (`Max-Age=0`), ż
 
 Usunięcie konta usuwa jego refresh tokeny (`ON DELETE CASCADE`).
 
-**Bez Gateway** (`curl`, Postman, testy) ciasteczko nie zostanie odesłane samo: adres to `http://…/auth/refresh`, a ciasteczko ma `Path=/api/v1/auth` i `Secure`. Wartość trzeba przepisać z nagłówka `Set-Cookie` do nagłówka `Cookie` (przykład w sekcji „Zapytania bez Gateway”). Przez Gateway (od etapu 3) przeglądarka zrobi to sama.
+**Bez Gateway** (`curl`, Postman, testy) ciasteczko nie zostanie odesłane samo: adres to `http://…/auth/refresh`, a ciasteczko ma `Path=/api/v1/auth` i `Secure`. Wartość trzeba przepisać z nagłówka `Set-Cookie` do nagłówka `Cookie` (przykład w sekcji „Zapytania bez Gateway”). Przez Gateway (od etapu 3) przeglądarka zrobi to sama. Adres przez Gateway to `http://localhost:8080/api/v1/auth/…` – zgodny z `Path=/api/v1/auth`, więc ciasteczko działa bez przepisywania (także w `curl` ze słoikiem `-b`/`-c`, przykład w sekcji „Zapytania przez Gateway”).
 
 ## Limit prób logowania i blokada konta
 
 Kolejność sprawdzeń przy `POST /auth/login`: limit IP → blokada konta → hasło.
 
-**Limit IP:** najwyżej 5 żądań `POST /auth/login` w ciągu 60 s z jednego adresu IP (każde żądanie się liczy, także udane i z błędną treścią). Szóste dostaje **429** `TOO_MANY_REQUESTS` z `Retry-After` (sekundy do końca okna). Licznik jest w pamięci instancji: restart go zeruje, a przy kilku instancjach każda liczy osobno (wspólny limit doda Gateway w etapie 3). Rejestracja, odświeżanie i wylogowanie nie mają limitu.
+**Limit IP:** najwyżej 5 żądań `POST /auth/login` w ciągu 60 s z jednego adresu IP (każde żądanie się liczy, także udane i z błędną treścią). Szóste dostaje **429** `TOO_MANY_REQUESTS` z `Retry-After` (sekundy do końca okna). Licznik jest w pamięci instancji: restart go zeruje, a przy kilku instancjach każda liczy osobno. Wspólny limit dla wszystkich instancji ma Gateway (sekcja „Zapytania przez Gateway”). Rejestracja, odświeżanie i wylogowanie nie mają limitu.
 
 Adres IP to `request.ip` Fastify z `trustProxy` ograniczonym do sieci prywatnych i pętli (`127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, plik `src/common/fastify-adapter.ts`). Żądanie z takiego adresu może podać prawdziwy adres klienta w `X-Forwarded-For` (od etapu 3 robi to Gateway); wpisy przed pierwszym adresem spoza tych sieci są pomijane. Skutek: każdy kontener w sieci `sklep_backend` może podać dowolny `X-Forwarded-For` – z tego korzystają testy etapu. Dlatego Auth nie ma portu na laptopie, a Gateway musi nadpisywać ten nagłówek.
 
@@ -254,9 +254,25 @@ Infrastruktura (Consul, PostgreSQL) musi działać w Docker Compose. Kontener `a
 
 Zatrzymanie: Ctrl+C w terminalu z `npm run start:dev` (usługa wyrejestruje się z Consula).
 
+## Zapytania przez Gateway
+
+Od etapu 3 z laptopa woła się Auth **przez API Gateway** (zestaw `platform` w Docker Compose, `http://localhost:8080`): ścieżki z prefiksem `/api/v1`, a ciasteczko `refresh_token` (`Path=/api/v1/auth`) odsyła sam klient, bez przepisywania:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -H 'Content-Type: application/json' \
+  -d '{"email":"anna@example.com","password":"Haslo-1234!","firstName":"Anna","lastName":"Nowak"}' \
+  http://localhost:8080/api/v1/auth/register   # 201, przy kolejnym uruchomieniu 409
+curl -s -o /dev/null -w '%{http_code}\n' -c /tmp/sklep-cookies.txt -H 'Content-Type: application/json' \
+  -d '{"email":"anna@example.com","password":"Haslo-1234!"}' http://localhost:8080/api/v1/auth/login
+curl -s -o /dev/null -w '%{http_code}\n' -b /tmp/sklep-cookies.txt -c /tmp/sklep-cookies.txt -X POST http://localhost:8080/api/v1/auth/refresh
+rm -f /tmp/sklep-cookies.txt   # ciasteczko działa jak hasło do sesji
+```
+
+Wynik: `201` (albo `409`), `200`, `200`. Gateway dodaje własne limity (logowanie 5, rejestracja 10 żądań na minutę z jednego IP, wspólne dla wszystkich instancji Gateway) – opis w [services/api-gateway/README.md](../api-gateway/README.md).
+
 ## Zapytania bez Gateway
 
-Z laptopa przy pracy z VS Code: `http://localhost:8081`, np.:
+Przykłady w tej sekcji wołają usługę bezpośrednio, bez Gateway. Z laptopa przy pracy z VS Code: `http://localhost:8081`, np.:
 
 ```bash
 curl -s -i -H 'Content-Type: application/json' \
