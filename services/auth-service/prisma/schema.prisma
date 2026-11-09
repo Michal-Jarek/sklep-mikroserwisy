@@ -49,3 +49,25 @@ model LoginFailure {
 
   @@map("login_failures")
 }
+
+/// Transactional outbox (stage 4): an event is written in the same transaction as the change and
+/// published to RabbitMQ later by OutboxRelay. The envelope contains the email: never log it.
+/// Claimed and updated with raw SQL (outbox-relay.service.ts).
+model OutboxEvent {
+  /// Equal to envelope.eventId.
+  id            String    @id @db.Uuid
+  routingKey    String    @map("routing_key")
+  envelope      Json
+  /// Set by the database, not by Prisma (which would use the clock of the app): the relay compares
+  /// next_attempt_at with now() of the database, so a new row must be due at once after the commit.
+  createdAt     DateTime  @default(dbgenerated("now()")) @map("created_at") @db.Timestamptz
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime  @default(dbgenerated("now()")) @map("next_attempt_at") @db.Timestamptz
+  /// null = not published yet.
+  publishedAt   DateTime? @map("published_at") @db.Timestamptz
+  /// At most 500 characters, never the envelope content.
+  lastError     String?   @map("last_error")
+
+  @@index([publishedAt, nextAttemptAt])
+  @@map("outbox_events")
+}

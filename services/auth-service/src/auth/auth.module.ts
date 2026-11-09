@@ -1,4 +1,5 @@
 import { DynamicModule, Module } from '@nestjs/common';
+import { EventsModule } from '../events/events.module';
 import { UserClientModule } from '../user-client/user-client.module';
 import { AdminAccountInitializer } from './admin-account.service';
 import { AuthController } from './auth.controller';
@@ -16,7 +17,7 @@ export class AuthModule {
   static register(signingKey: SigningKey): DynamicModule {
     return {
       module: AuthModule,
-      imports: [UserClientModule],
+      imports: [UserClientModule, EventsModule],
       controllers: [AuthController, JwksController],
       providers: [
         AuthService,

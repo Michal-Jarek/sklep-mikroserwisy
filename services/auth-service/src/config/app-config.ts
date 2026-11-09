@@ -35,6 +35,13 @@ export interface AppConfig {
     user: string;
     password: string;
   };
+  // RabbitMQ connection of the outbox relay (account auth-service, vhost /).
+  rabbitmq: {
+    host: string;
+    port: number;
+    user: string;
+    password: string;
+  };
   jwt: {
     issuer: string;
     audience: string;
@@ -156,6 +163,12 @@ export function buildConfig(env: Env, kv: KvConfig): AppConfig {
       name: required(env, 'DB_NAME'),
       user: required(env, 'DB_USER'),
       password: required(env, 'DB_PASSWORD'),
+    },
+    rabbitmq: {
+      host: required(env, 'RABBITMQ_HOST'),
+      port: portNumber(env, 'RABBITMQ_PORT', 5672),
+      user: required(env, 'RABBITMQ_USER'),
+      password: required(env, 'RABBITMQ_PASSWORD'),
     },
     jwt: {
       issuer: env.JWT_ISSUER || kv.jwt.issuer,

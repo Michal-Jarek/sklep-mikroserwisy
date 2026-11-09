@@ -7,6 +7,7 @@ import { loggerModuleParams } from './common/logger';
 import { AppConfig } from './config/app-config';
 import { AppConfigModule } from './config/app-config.module';
 import { ConsulModule } from './consul/consul.module';
+import { EventsModule } from './events/events.module';
 import { HealthModule } from './health/health.module';
 import { PrismaModule } from './prisma/prisma.module';
 
@@ -22,6 +23,7 @@ export class AppModule {
         PrismaModule,
         ConsulModule,
         HealthModule,
+        EventsModule,
         AuthModule.register(signingKey),
       ],
     };

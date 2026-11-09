@@ -1,6 +1,6 @@
 # Auth Service
 
-Konta użytkowników, logowanie i tokeny JWT. Usługa rejestruje się w Consulu, czyta konfigurację z Consul KV, loguje w JSON i zwraca błędy w formacie zespołu. Jej szkielet (konfiguracja, Consul, logi, błędy, health) jest wzorcem dla pozostałych usług w Node.js.
+Konta użytkowników, logowanie i tokeny JWT. Po rejestracji publikuje zdarzenie `user.registered` do RabbitMQ (sekcja „Zdarzenia”). Usługa rejestruje się w Consulu, czyta konfigurację z Consul KV, loguje w JSON i zwraca błędy w formacie zespołu. Jej szkielet (konfiguracja, Consul, logi, błędy, health) jest wzorcem dla pozostałych usług w Node.js.
 
 | | |
 |---|---|
@@ -31,7 +31,7 @@ Walidacja wejścia (nieznane pola, np. `roles`, dają **400**):
 
 - `email` – przycięty i zamieniony na małe litery, najwyżej 254 znaki. `Anna@Example.com` i `anna@example.com` to to samo konto.
 - `password` – przy rejestracji 10–72 **bajty** UTF-8 (polska litera to 2 bajty; bcrypt pomija wszystko po 72. bajcie, więc dłuższe hasło jest odrzucane). Przy logowaniu 1–72 bajty.
-- `firstName`, `lastName` – 1–100 znaków po przycięciu.
+- `firstName`, `lastName` – 1–100 znaków po przycięciu, bez znaków sterujących (np. NUL, CR, LF, tabulator) i niesparowanych surogatów UTF-16 – inaczej **400** `VALIDATION_ERROR` (imię trafia do zdarzenia `user.registered` i dalej, np. do nagłówków e-maili).
 
 Odpowiedzi nigdy nie zawierają hasła, jego hasha ani refresh tokenu w treści (refresh token jest tylko w ciasteczku).
 
@@ -83,8 +83,11 @@ Nazwy są w [.env.example](.env.example) (bez wartości).
 | `ADMIN_EMAIL` | `${ADMIN_EMAIL:-admin@sklep.local}` | puste albo dowolny e-mail | pierwsze konto ADMIN (sekcja „Konto administratora”) |
 | `ADMIN_PASSWORD` | `ADMIN_PASSWORD` z `deploy/.env` | puste albo 10–72 bajty | |
 | `USER_SERVICE_ENABLED` | `"false"` (do etapu 5) | `false` | domyślnie `true`; `false` → rejestracja bez wywołania User Service |
+| `RABBITMQ_HOST` / `RABBITMQ_PORT` | `rabbitmq` / `5672` | `127.0.0.1` / `5672` | port domyślnie `5672` |
+| `RABBITMQ_USER` | `auth-service` | `auth-service` | konto z prawem publikacji tylko `user.registered` |
+| `RABBITMQ_PASSWORD` | `AUTH_RABBITMQ_PASSWORD` z `deploy/.env` | wartość `AUTH_RABBITMQ_PASSWORD` z `deploy/.env` | |
 
-Połączenie z bazą powstaje tylko ze zmiennych `DB_*` (bez `DATABASE_URL`).
+Połączenie z bazą powstaje tylko ze zmiennych `DB_*` (bez `DATABASE_URL`), połączenie z RabbitMQ tylko z `RABBITMQ_*` (bez `RABBITMQ_URL`). Brak `RABBITMQ_HOST`, `RABBITMQ_USER` albo `RABBITMQ_PASSWORD` zatrzymuje start (jak brak `DB_*`); niedziałający RabbitMQ – nie (sekcja „Zdarzenia”).
 
 ### Konfiguracja z Consul KV
 
@@ -106,6 +109,53 @@ Wywołanie: `POST http://<instancja user-service z Consula>/users`, nagłówki `
 - Transakcja ma limit 10 s (dwie próby po 2 s, odstęp i zapytanie do Consula).
 
 `USER_SERVICE_ENABLED=false` (w Docker Compose do etapu 5, bo User Service jeszcze tam nie działa): rejestracja zapisuje samo konto bez wywołania User Service, a log dostaje ostrzeżenie `User Service call is disabled …` z `userId` nowego konta.
+
+## Zdarzenia
+
+Po udanej rejestracji Auth publikuje zdarzenie `user.registered` do RabbitMQ: exchange `shop.events`, klucz `user.registered`. Odbiera je Notification Service z kolejki `notification.q` (od etapu 5). Koperta, kolejki i zasady dla odbiorców: [docs/events.md](../../docs/events.md).
+
+```json
+{
+  "eventId": "6f1c2b9e-3d4a-4f6b-9a51-2c8e7d0b1a23",
+  "type": "user.registered",
+  "version": 1,
+  "occurredAt": "2026-11-09T07:12:45.123Z",
+  "requestId": "<X-Request-Id żądania rejestracji>",
+  "payload": { "userId": "<id konta>", "email": "<e-mail po normalizacji>", "firstName": "Anna" }
+}
+```
+
+Wiadomość jest trwała (`delivery_mode` 2), ma `content_type` `application/json`, `message_id` = `eventId`, `type` = `user.registered`, `timestamp` (sekundy) i `app_id` `auth-service`. Kolejność pól w treści może być inna niż w przykładzie (PostgreSQL `jsonb` układa klucze po swojemu) – odbiorca czyta pola po nazwie.
+
+**Outbox.** Zdarzenie trafia do tabeli `outbox_events` w tej samej transakcji co konto. Wycofana rejestracja (409, 503) nie zostawia zdarzenia, a zatwierdzona zawsze je ma, nawet gdy RabbitMQ albo sama usługa padnie zaraz po odpowiedzi. Przekaźnik w Auth (`OutboxRelay`) wysyła zdarzenia zaraz po rejestracji, po każdym połączeniu z RabbitMQ i co 5 s:
+
+- bierze do 20 zaległych wierszy, od najstarszego, z dzierżawą 30 s (`FOR UPDATE SKIP LOCKED`) – każdy wiersz przejmuje naraz jedna instancja Auth, a wiersze instancji, która padła w trakcie, wracają do kolejki po 30 s. Partia nie trwa dłużej niż 20 s (nowy wiersz zaczyna się tylko w tym czasie), więc dzierżawa nie wygasa w trakcie wysyłki; nierozpoczęta reszta wraca do kolejki od razu. Pełna partia (20) → następna zaraz po niej;
+- publikuje z potwierdzeniem brokera (limit 5 s, razem z otwarciem kanału). Potwierdzone → `published_at`. Błąd albo brak potwierdzenia → `last_error` i ponowienie po 1, 2, 4, 8, 16 s, potem co 30 s, do skutku. Pierwszy błąd kończy partię (reszta wraca do kolejki bez liczenia próby). Wynik zapisuje się tylko dla wiersza jeszcze niewysłanego;
+- gwarancja „co najmniej raz”, możliwe duplikaty: gdy potwierdzenie zaginie albo przyjdzie po limicie, zdarzenie może dojść dwa razy, dlatego odbiorcy rozpoznają duplikaty po `eventId`.
+
+**Gdy RabbitMQ nie działa.** Rejestracja działa bez zmian (bez dodatkowego czasu), usługa startuje bez brokera, a `/health/ready` od niego nie zależy. Zdarzenia czekają w `outbox_events`. Auth sam łączy się ponownie (odstępy od 1 s do 30 s) i po połączeniu wysyła zaległe zdarzenia. W logu jest jedno ostrzeżenie na awarię: `RabbitMQ connection lost, events wait in the outbox` (z `reason`), a po powrocie `Connected to RabbitMQ`.
+
+**Gdy RabbitMQ działa, ale nie przyjmuje zdarzeń.**
+
+- Alarm pamięci albo dysku: broker blokuje publikację (`connection.blocked`). Przekaźnik niczego nie przejmuje, w logu jest jedno ostrzeżenie `RabbitMQ blocked publishing, events wait in the outbox` (z `reason`), a po zdjęciu blokady zaległe zdarzenia wychodzą od razu.
+- Broker nie odpowiada (np. zamrożony): po braku potwierdzenia w 5 s przekaźnik czeka, aż broker cokolwiek odpowie (spóźnione potwierdzenie, nowe połączenie), najdłużej 30 s – potem próbuje jednego zdarzenia; nieudana próba to kolejne `Event not published, will retry` i znów 30 s przerwy. Zdarzenie wysłane przed zamrożeniem może dojść po jego końcu drugi raz (duplikat).
+
+Logi zdarzeń: `Event published` i `Event not published, will retry` z `eventId`, `eventType`, `requestId`, `userId`. Koperta, e-mail ani hasło do RabbitMQ nie trafiają do logów ani do `last_error`.
+
+Konto `auth-service` może tylko publikować do `shop.events` z kluczem `user.registered`. Nie tworzy kolejek ani exchange – topologię i konta zakłada kontener `rabbitmq-setup` ([deploy/README.md](../../deploy/README.md)).
+
+**Jak zobaczyć zdarzenie.**
+
+- Panel RabbitMQ http://127.0.0.1:15672 (login `admin`, hasło `RABBITMQ_ADMIN_PASSWORD` z `deploy/.env`) → Queues and Streams → `notification.q` → Get messages, Ack mode „Nack message requeue true” (wiadomość wraca do kolejki) → Get Message(s).
+- Połączenie Auth: zakładka Connections, nazwa `auth-service-<hostname>` (jedna na instancję).
+- Tabela outbox (z katalogu głównego repozytorium):
+
+  ```bash
+  docker compose -f deploy/compose.yaml exec -T postgres psql -U postgres -d auth_db \
+    -c "select id, attempts, published_at, last_error from outbox_events order by created_at desc limit 5"
+  ```
+
+Do etapu 5 nikt nie odbiera wiadomości z `notification.q`, więc się tam zbierają. Kolejkę czyści w panelu przycisk „Purge Messages” na stronie kolejki.
 
 ## Tokeny i JWKS
 
@@ -194,7 +244,7 @@ Zostaje jeden kontener; może się nazywać `sklep-auth-service-2` (to normalne)
 
 ## Uruchomienie z VS Code
 
-Infrastruktura (Consul, PostgreSQL) musi działać w Docker Compose. Kontener `auth-service` może przy tym działać – obie instancje mają różne ID w Consulu.
+Infrastruktura (Consul, PostgreSQL, RabbitMQ) musi działać w Docker Compose. Kontener `auth-service` może przy tym działać – obie instancje mają różne ID w Consulu i obie wysyłają zdarzenia z tej samej tabeli outbox (każdy wiersz przejmuje naraz jedna instancja; możliwe duplikaty – gwarancja „co najmniej raz”, sekcja „Zdarzenia”).
 
 1. Wersja Node.js z pliku `.nvmrc` (22):
 
@@ -211,7 +261,9 @@ Infrastruktura (Consul, PostgreSQL) musi działać w Docker Compose. Kontener `a
    npm ci
    ```
 
-3. Plik `.env` z wartościami z kolumny „Lokalnie” (opis każdej zmiennej jest w `.env.example`) i hasłem do bazy prosto z kontenera PostgreSQL. Hasło nie pojawia się na ekranie; nie wklejaj go nigdzie ręcznie:
+   Na końcu `npm` może zgłosić `… vulnerabilities` i zaproponować `npm audit fix --force` – nie uruchamiaj go (zmienia wersje bibliotek w repo).
+
+3. Plik `.env` z wartościami z kolumny „Lokalnie” (opis każdej zmiennej jest w `.env.example`), hasłem do bazy prosto z kontenera PostgreSQL i hasłem do RabbitMQ z `deploy/.env`. Hasła nie pojawiają się na ekranie; nie wklejaj ich nigdzie ręcznie:
 
    ```bash
    printf '%s\n' \
@@ -226,8 +278,12 @@ Infrastruktura (Consul, PostgreSQL) musi działać w Docker Compose. Kontener `a
      DB_USER=auth_service \
      DB_SHADOW_NAME=auth_shadow_db \
      JWT_PRIVATE_KEY_FILE=../../deploy/secrets/jwt-private.pem \
-     USER_SERVICE_ENABLED=false > .env
+     USER_SERVICE_ENABLED=false \
+     RABBITMQ_HOST=127.0.0.1 \
+     RABBITMQ_PORT=5672 \
+     RABBITMQ_USER=auth-service > .env
    printf 'DB_PASSWORD=%s\n' "$(docker compose -f ../../deploy/compose.yaml exec -T postgres printenv AUTH_DB_PASSWORD)" >> .env
+   printf 'RABBITMQ_PASSWORD=%s\n' "$(sed -n 's/^AUTH_RABBITMQ_PASSWORD=//p' ../../deploy/.env)" >> .env
    ```
 
    `USER_SERVICE_ENABLED=false`, bo User Service nie działa jeszcze w Docker Compose. Bez `ADMIN_EMAIL` i `ADMIN_PASSWORD` usługa nie zakłada konta administratora (sekcja „Konto administratora”). Opcjonalne `LOG_LEVEL`, `JWT_ISSUER`, `JWT_AUDIENCE` możesz dopisać według `.env.example`. Plik `.env` jest w `.gitignore` i nie trafia do obrazu.
@@ -249,6 +305,8 @@ Infrastruktura (Consul, PostgreSQL) musi działać w Docker Compose. Kontener `a
    ```bash
    curl -i http://localhost:8081/health/ready
    ```
+
+   W logu `Connected to RabbitMQ` (bez działającego RabbitMQ: ostrzeżenie `RabbitMQ connection lost, events wait in the outbox`, usługa działa dalej). Połączenie widać w panelu http://127.0.0.1:15672 → Connections jako `auth-service-<nazwa komputera>`.
 
    Rejestracja w Consulu: http://127.0.0.1:8500/ui → Services → `auth-service`. Wpis z adresem `host.docker.internal` to instancja z VS Code; check `/health/ready` wykonuje Consul z kontenera. Jeśli macOS zapyta, czy zezwolić aplikacji `node` na połączenia przychodzące, zezwól – inaczej check w Consulu będzie `critical`.
 
@@ -307,7 +365,7 @@ docker run --rm --network sklep_backend --entrypoint curl hashicorp/consul:1.21 
 ## Testy i lint
 
 ```bash
-npm test        # testy jednostkowe (Jest), bez bazy i Consula
+npm test        # testy jednostkowe (Jest), bez bazy, Consula i RabbitMQ
 npm run lint    # ESLint
 npm run build   # kompilacja do dist/
 ```
@@ -323,8 +381,9 @@ Schemat: [prisma/schema.prisma](prisma/schema.prisma), migracje: `prisma/migrati
 | `accounts` | `id uuid` (klucz), `email text` (unikalny, małe litery), `password_hash text`, `roles text[]` (domyślnie `{CUSTOMER}`), `created_at timestamptz`, `updated_at timestamptz` |
 | `refresh_tokens` | `id uuid` (klucz), `account_id uuid` (→ `accounts`, `ON DELETE CASCADE`), `family_id uuid` (indeks), `token_hash text` (unikalny, SHA-256 hex), `expires_at timestamptz`, `revoked_at timestamptz` (pusty = ważny), `replaced_by_id uuid` (następca po wymianie), `created_at timestamptz` |
 | `login_failures` | `email text` (klucz, znormalizowany), `failed_count int`, `locked_until timestamptz` (pusty albo w przeszłości = brak blokady), `updated_at timestamptz` |
+| `outbox_events` | `id uuid` (klucz, = `eventId`), `routing_key text`, `envelope jsonb` (cała koperta, zawiera e-mail), `created_at timestamptz`, `attempts int`, `next_attempt_at timestamptz`, `published_at timestamptz` (pusty = do wysłania), `last_error text`; indeks `(published_at, next_attempt_at)` |
 
-Migracje: `…_create_accounts` (tabela `accounts`), `…_refresh_tokens_and_login_failures` (dwie pozostałe). Tabelę `login_failures` zmienia surowe SQL w `src/auth/login-attempts.service.ts` (atomowy licznik), dlatego `updated_at` ustawia tam samo polecenie, a nie Prisma.
+Migracje: `…_create_accounts` (tabela `accounts`), `…_refresh_tokens_and_login_failures` (dwie kolejne), `…_outbox_events` (etap 4). Tabelę `login_failures` zmienia surowe SQL w `src/auth/login-attempts.service.ts` (atomowy licznik), dlatego `updated_at` ustawia tam samo polecenie, a nie Prisma. Wiersze `outbox_events` przejmuje i aktualizuje surowe SQL w `src/events/outbox-relay.service.ts`; `created_at` i `next_attempt_at` ustawia baza (`DEFAULT now()`), nie Prisma, bo przekaźnik porównuje je z zegarem bazy.
 
 Nowa migracja po zmianie `schema.prisma` – z folderu `services/auth-service`, z plikiem `.env` z kroku 3 uruchomienia z VS Code (w nim `DB_SHADOW_NAME=auth_shadow_db`):
 
@@ -366,3 +425,4 @@ npx --yes newman run services/auth-service/postman/auth-service.postman_collecti
 | `src/prisma/` | klient Prisma, rozpoznawanie błędów Prismy (np. naruszenie unikalności) |
 | `src/auth/` | endpointy `/auth/*` i JWKS, DTO z walidacją, hasła (bcrypt), klucz i tokeny (jose), rejestracja i logowanie, refresh tokeny i ciasteczko, blokada konta, konto administratora |
 | `src/user-client/` | wywołanie `POST /users` w User Service: Consul, timeout, ponowienie, circuit breaker |
+| `src/events/` | zdarzenia: koperta `user.registered` i właściwości AMQP, nadawca RabbitMQ (`amqplib`, potwierdzenia, ponowne łączenie), przekaźnik outbox (`OutboxRelay`) |

@@ -28,6 +28,7 @@
     "@nestjs/swagger": "^12.1.1",
     "@prisma/adapter-pg": "7.10.1",
     "@prisma/client": "7.10.1",
+    "amqplib": "2.2.1",
     "bcrypt": "^6.0.0",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",

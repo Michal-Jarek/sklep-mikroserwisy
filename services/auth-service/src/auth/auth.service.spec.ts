@@ -2,6 +2,8 @@ import { jest } from '@jest/globals';
 import type { PinoLogger } from 'nestjs-pino';
 import { AppException } from '../common/app-exception';
 import { buildConfig, KV_DEFAULTS } from '../config/app-config';
+import type { EventEnvelope } from '../events/event-envelope';
+import type { OutboxRelay } from '../events/outbox-relay.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { UserClient, UserProfile } from '../user-client/user-client.service';
 import { AuthService, REGISTRATION_TRANSACTION_TIMEOUT_MS } from './auth.service';
@@ -10,7 +12,15 @@ import { PasswordService } from './password.service';
 import type { RefreshTokenService, RotatedRefreshToken } from './refresh-token.service';
 import type { TokenService } from './token.service';
 
-const ENV = { DB_HOST: 'postgres', DB_NAME: 'auth_db', DB_USER: 'auth_service', DB_PASSWORD: 'test-password' };
+const ENV = {
+  DB_HOST: 'postgres',
+  DB_NAME: 'auth_db',
+  DB_USER: 'auth_service',
+  DB_PASSWORD: 'test-password',
+  RABBITMQ_HOST: 'rabbitmq',
+  RABBITMQ_USER: 'auth-service',
+  RABBITMQ_PASSWORD: 'test-rabbitmq-password',
+};
 const REQUEST = { email: 'anna@example.com', password: 'correct-horse-42', firstName: 'Anna', lastName: 'Nowak' };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -21,6 +31,12 @@ interface StoredAccount {
   roles: string[];
 }
 
+interface StoredOutboxEvent {
+  id: string;
+  routingKey: string;
+  envelope: EventEnvelope;
+}
+
 function uniqueViolation(): Error {
   return Object.assign(new Error('Unique constraint failed on the fields: (`email`)'), { code: 'P2002' });
 }
@@ -28,6 +44,7 @@ function uniqueViolation(): Error {
 /** In-memory "database" with an interactive transaction that commits or rolls back. */
 function fakePrisma() {
   const committed: StoredAccount[] = [];
+  const outbox: StoredOutboxEvent[] = [];
   const state = { rolledBack: false, timeout: 0 };
   const create = jest.fn(({ data }: { data: StoredAccount }, pending: StoredAccount[]) => {
     if ([...committed, ...pending].some((account) => account.email === data.email)) {
@@ -40,7 +57,16 @@ function fakePrisma() {
     $transaction: async (fn: (tx: unknown) => Promise<void>, options: { timeout: number }) => {
       state.timeout = options.timeout;
       const pending: StoredAccount[] = [];
-      const tx = { account: { create: (args: { data: StoredAccount }) => create(args, pending) } };
+      const pendingOutbox: StoredOutboxEvent[] = [];
+      const tx = {
+        account: { create: (args: { data: StoredAccount }) => create(args, pending) },
+        outboxEvent: {
+          create: ({ data }: { data: StoredOutboxEvent }) => {
+            pendingOutbox.push(data);
+            return Promise.resolve(data);
+          },
+        },
+      };
       try {
         await fn(tx);
       } catch (error) {
@@ -48,13 +74,14 @@ function fakePrisma() {
         throw error;
       }
       committed.push(...pending);
+      outbox.push(...pendingOutbox);
     },
     account: {
       findUnique: ({ where }: { where: { email: string } }) =>
         Promise.resolve(committed.find((account) => account.email === where.email) ?? null),
     },
   };
-  return { prisma: prisma as unknown as PrismaService, committed, state, create };
+  return { prisma: prisma as unknown as PrismaService, committed, outbox, state, create };
 }
 
 /**
@@ -101,6 +128,7 @@ describe('AuthService', () => {
   const issue = jest.fn<(accountId: string) => Promise<string>>();
   const rotate = jest.fn<(value: string | undefined) => Promise<RotatedRefreshToken>>();
   const revokeFamily = jest.fn<(value: string | undefined) => Promise<string | null>>();
+  const wake = jest.fn<() => void>();
 
   function createService(env: Record<string, string> = ENV) {
     const db = fakePrisma();
@@ -112,6 +140,7 @@ describe('AuthService', () => {
       { issue, rotate, revokeFamily } as unknown as RefreshTokenService,
       attempts as unknown as LoginAttemptsService,
       { createProfile } as unknown as UserClient,
+      { wake } as unknown as OutboxRelay,
       buildConfig(env, KV_DEFAULTS),
       logger as unknown as PinoLogger,
     );
@@ -145,10 +174,36 @@ describe('AuthService', () => {
       expect(logger.assign).toHaveBeenCalledWith({ userId: result.id });
     });
 
+    it('writes user.registered to the outbox in the same transaction and wakes the relay after the commit', async () => {
+      const { service, committed, outbox } = createService();
+      const seenAtWake: number[] = [];
+      wake.mockImplementation(() => {
+        seenAtWake.push(outbox.length, committed.length);
+      });
+
+      const result = await service.register(REQUEST, 'req-1');
+
+      expect(outbox).toHaveLength(1);
+      const [row] = outbox;
+      expect(row).toEqual({ id: row.envelope.eventId, routingKey: 'user.registered', envelope: row.envelope });
+      expect(row.envelope).toEqual({
+        eventId: expect.stringMatching(UUID),
+        type: 'user.registered',
+        version: 1,
+        occurredAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/),
+        requestId: 'req-1',
+        payload: { userId: result.id, email: REQUEST.email, firstName: 'Anna' },
+      });
+      expect(wake).toHaveBeenCalledTimes(1);
+      // Called after the commit: the account and the event were already stored.
+      expect(seenAtWake).toEqual([1, 1]);
+    });
+
     it('returns 409 EMAIL_TAKEN without calling User Service and without logging', async () => {
-      const { service } = createService();
+      const { service, outbox } = createService();
       await service.register(REQUEST, 'req-1');
       createProfile.mockClear();
+      wake.mockClear();
 
       const error = await service.register({ ...REQUEST, firstName: 'Other' }, 'req-2').catch((e: unknown) => e);
 
@@ -156,10 +211,13 @@ describe('AuthService', () => {
       expect(error).toMatchObject({ status: 409, code: 'EMAIL_TAKEN' });
       expect(createProfile).not.toHaveBeenCalled();
       expect(logger.warn).not.toHaveBeenCalled();
+      // Only the event of the first registration; no wake for the rejected one.
+      expect(outbox).toHaveLength(1);
+      expect(wake).not.toHaveBeenCalled();
     });
 
     it('rolls the account back and returns 503 when User Service fails', async () => {
-      const { service, committed, state } = createService();
+      const { service, committed, outbox, state } = createService();
       createProfile.mockRejectedValue(new AppException(503, 'SERVICE_UNAVAILABLE', 'User Service is unavailable'));
 
       const error = await service.register(REQUEST, 'req-1').catch((e: unknown) => e);
@@ -167,6 +225,8 @@ describe('AuthService', () => {
       expect(error).toMatchObject({ status: 503, code: 'SERVICE_UNAVAILABLE' });
       expect(state.rolledBack).toBe(true);
       expect(committed).toHaveLength(0);
+      expect(outbox).toHaveLength(0);
+      expect(wake).not.toHaveBeenCalled();
     });
 
     it('skips User Service when USER_SERVICE_ENABLED=false and warns without the email', async () => {

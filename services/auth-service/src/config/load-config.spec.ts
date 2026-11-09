@@ -8,6 +8,9 @@ const BASE_ENV = {
   DB_NAME: 'auth_db',
   DB_USER: 'auth_service',
   DB_PASSWORD: 'test-password',
+  RABBITMQ_HOST: 'rabbitmq',
+  RABBITMQ_USER: 'auth-service',
+  RABBITMQ_PASSWORD: 'test-rabbitmq-password',
   CONSUL_HOST: 'consul',
 };
 
@@ -94,7 +97,25 @@ describe('configuration', () => {
     expect(() => buildConfig({ ...BASE_ENV, DB_PASSWORD: '' }, KV_DEFAULTS)).toThrow('DB_PASSWORD');
   });
 
+  it('reads the RabbitMQ connection, port 5672 by default', () => {
+    expect(buildConfig(BASE_ENV, KV_DEFAULTS).rabbitmq).toEqual({
+      host: 'rabbitmq',
+      port: 5672,
+      user: 'auth-service',
+      password: 'test-rabbitmq-password',
+    });
+    expect(buildConfig({ ...BASE_ENV, RABBITMQ_PORT: '15673' }, KV_DEFAULTS).rabbitmq.port).toBe(15673);
+  });
+
+  it.each(['RABBITMQ_HOST', 'RABBITMQ_USER', 'RABBITMQ_PASSWORD'])('fails without %s, without values in the message', (name) => {
+    // An Error object compares the whole message, so no value can be appended to it.
+    const missing = new Error(`Missing environment variable ${name}`);
+    expect(() => buildConfig({ ...BASE_ENV, [name]: '' }, KV_DEFAULTS)).toThrow(missing);
+    expect(() => buildConfig({ ...BASE_ENV, [name]: undefined }, KV_DEFAULTS)).toThrow(missing);
+  });
+
   it('fails with an invalid port or log level', () => {
+    expect(() => buildConfig({ ...BASE_ENV, RABBITMQ_PORT: '70000' }, KV_DEFAULTS)).toThrow('RABBITMQ_PORT');
     expect(() => buildConfig({ ...BASE_ENV, PORT: 'abc' }, KV_DEFAULTS)).toThrow('PORT');
     expect(() => buildConfig({ ...BASE_ENV, LOG_LEVEL: 'loud' }, KV_DEFAULTS)).toThrow('LOG_LEVEL');
   });

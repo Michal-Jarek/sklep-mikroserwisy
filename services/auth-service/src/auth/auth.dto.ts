@@ -1,10 +1,13 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Transform, type TransformFnParams } from 'class-transformer';
-import { IsByteLength, IsEmail, IsString, Length, MaxLength } from 'class-validator';
+import { IsByteLength, IsEmail, IsString, Length, Matches, MaxLength } from 'class-validator';
 import { ACCESS_TOKEN_TTL_SECONDS } from './token.service';
 import { EMAIL_MAX_LENGTH, normalizeEmail, PASSWORD_MAX_BYTES, PASSWORD_MIN_BYTES } from './credentials';
 
 export const NAME_MAX_LENGTH = 100;
+// No control characters (NUL breaks the jsonb outbox, CR/LF would reach e-mail headers) and no lone surrogates.
+const NAME_PATTERN = /^[^\p{Cc}\p{Cs}]*$/u;
+const NAME_PATTERN_MESSAGE = '$property must not contain control characters or unpaired surrogates';
 
 // Transforms run before validation; values of other types are left for the validators to reject.
 const toEmail = ({ value }: TransformFnParams): unknown => (typeof value === 'string' ? normalizeEmail(value) : value);
@@ -22,16 +25,18 @@ export class RegisterRequest {
   @IsByteLength(PASSWORD_MIN_BYTES, PASSWORD_MAX_BYTES)
   password: string;
 
-  @ApiProperty({ example: 'Anna', minLength: 1, maxLength: NAME_MAX_LENGTH, description: 'Trimmed' })
+  @ApiProperty({ example: 'Anna', minLength: 1, maxLength: NAME_MAX_LENGTH, description: 'Trimmed, without control characters' })
   @Transform(trim)
   @IsString()
   @Length(1, NAME_MAX_LENGTH)
+  @Matches(NAME_PATTERN, { message: NAME_PATTERN_MESSAGE })
   firstName: string;
 
-  @ApiProperty({ example: 'Nowak', minLength: 1, maxLength: NAME_MAX_LENGTH, description: 'Trimmed' })
+  @ApiProperty({ example: 'Nowak', minLength: 1, maxLength: NAME_MAX_LENGTH, description: 'Trimmed, without control characters' })
   @Transform(trim)
   @IsString()
   @Length(1, NAME_MAX_LENGTH)
+  @Matches(NAME_PATTERN, { message: NAME_PATTERN_MESSAGE })
   lastName: string;
 }
 
