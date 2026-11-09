@@ -251,6 +251,57 @@ describe('auth endpoints (HTTP)', () => {
     expect(await response.json()).toEqual({ keys: [JWK] });
   });
 
+  describe('wrong method on an existing path (decision D7)', () => {
+    it(`DELETE ${PATHS.login}: 405 METHOD_NOT_ALLOWED with Allow and the request id`, async () => {
+      const response = await fetch(`${baseUrl}${PATHS.login}`, { method: 'DELETE', headers: { 'x-request-id': 'm-405' } });
+      expect(response.status).toBe(405);
+      expect(response.headers.get('allow')).toBe('POST');
+      expect(response.headers.get('x-request-id')).toBe('m-405');
+      expect(await response.json()).toEqual({
+        status: 405,
+        error: 'METHOD_NOT_ALLOWED',
+        message: 'Method not allowed',
+        requestId: 'm-405',
+      });
+      expect(login).not.toHaveBeenCalled();
+    });
+
+    it(`GET ${PATHS.register} and HEAD ${PATHS.login}: 405 with Allow: POST`, async () => {
+      const get = await fetch(`${baseUrl}${PATHS.register}`);
+      expect(get.status).toBe(405);
+      expect(get.headers.get('allow')).toBe('POST');
+      expect(await get.json()).toMatchObject({ status: 405, error: 'METHOD_NOT_ALLOWED' });
+
+      const head = await fetch(`${baseUrl}${PATHS.login}`, { method: 'HEAD' });
+      expect(head.status).toBe(405);
+      expect(head.headers.get('allow')).toBe('POST');
+    });
+
+    it(`POST ${PATHS.jwks}: 405 with Allow: GET, HEAD; HEAD works like GET`, async () => {
+      const post = await fetch(`${baseUrl}${PATHS.jwks}`, { method: 'POST' });
+      expect(post.status).toBe(405);
+      expect(post.headers.get('allow')).toBe('GET, HEAD');
+
+      const head = await fetch(`${baseUrl}${PATHS.jwks}`, { method: 'HEAD' });
+      expect(head.status).toBe(200);
+    });
+
+    it('unknown path and a trailing slash stay 404 NOT_FOUND without Allow', async () => {
+      for (const path of ['/nie-ma', `${PATHS.login}/`]) {
+        const response = await fetch(`${baseUrl}${path}`, { method: 'DELETE' });
+        expect(response.status).toBe(404);
+        expect(response.headers.get('allow')).toBeNull();
+        expect(await response.json()).toMatchObject({ status: 404, error: 'NOT_FOUND' });
+      }
+    });
+
+    it('a query string does not hide the path', async () => {
+      const response = await fetch(`${baseUrl}${PATHS.login}?x=1`, { method: 'PUT' });
+      expect(response.status).toBe(405);
+      expect(response.headers.get('allow')).toBe('POST');
+    });
+  });
+
   it('describes the endpoints in OpenAPI', () => {
     expect(Object.keys(createOpenApiDocument(app).paths)).toEqual(
       expect.arrayContaining([PATHS.register, PATHS.login, PATHS.refresh, PATHS.logout, PATHS.jwks]),

@@ -1,7 +1,9 @@
-# Shared shop infrastructure: Consul (+ KV seeding), PostgreSQL, Redis for the Gateway
-# and RabbitMQ (+ topology and service accounts from deploy/rabbitmq/).
+# Shared shop infrastructure: Consul (+ KV seeding), PostgreSQL, Redis for the Gateway,
+# RabbitMQ (+ topology and service accounts from deploy/rabbitmq/), MongoDB (Review, Notification),
+# Redis for Cart and Mailpit (SMTP + web UI for emails).
 # Started by default: docker compose -f deploy/compose.yaml up -d --wait
-# Services are added in profiles "platform" (from stage 2) and "full-shop" (stage 5).
+# Services are added in profiles "platform" (Gateway, Auth) and "full-shop"
+# (team services are added when their PR is merged).
 # Ports only on 127.0.0.1. Passwords from deploy/.env (created by deploy/create-secrets.sh).
 name: sklep
 
@@ -149,13 +151,99 @@ services:
       rabbitmq:
         condition: service_healthy
 
+  # One server for Review and Notification: database <s>_db and user <s>_service per service
+  # (created by deploy/mongo/init/ on an empty volume), like PostgreSQL.
+  mongo:
+    image: mongo:8.0
+    # Whole container without root, also the healthcheck and "docker compose exec"
+    # (the image itself drops root only for mongod).
+    user: mongodb
+    # The default WiredTiger cache is half of the VM memory minus 1 GB (~2.4 GB on a 6 GB VM);
+    # 256 MB is enough here. --noscripting disables server-side JavaScript ($where, $function,
+    # mapReduce with JS): the services do not need it, and an injected query operator cannot run code.
+    command: ["mongod", "--wiredTigerCacheSizeGB", "0.25", "--noscripting"]
+    # The admin account is created only on an empty volume (like RabbitMQ). The service passwords
+    # are read by deploy/mongo/init/01-service-users.js.
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?Run deploy/create-secrets.sh}
+      REVIEW_DB_PASSWORD: ${REVIEW_DB_PASSWORD:?Run deploy/create-secrets.sh}
+      NOTIFICATION_DB_PASSWORD: ${NOTIFICATION_DB_PASSWORD:?Run deploy/create-secrets.sh}
+    networks: [backend, tools]
+    ports:
+      - "127.0.0.1:27017:27017"
+    volumes:
+      - mongo-data:/data/db
+      - ./mongo/init:/docker-entrypoint-initdb.d:ro
+    # The image declares VOLUME /data/configdb (unused without a replica set): without tmpfs every
+    # new container leaves an anonymous volume behind. uid/gid of user mongodb: otherwise the
+    # directory belongs to root and mongod does not start.
+    tmpfs:
+      - /data/configdb:uid=999,gid=999
+    healthcheck:
+      # Through the container hostname, not localhost: during init scripts the image runs a temporary
+      # mongod on 127.0.0.1 only, so healthy only after them.
+      # mongosh is a Node process (~0.3 s CPU per run): every 2 s it kept ~12-15 % of a core busy,
+      # so every 10 s after the start; start_interval checks every 1 s during start_period, so
+      # "up --wait" still sees healthy right after init. HOME=/tmp: mongosh writes its logs to
+      # $HOME/.mongodb, and the HOME of user mongodb is /data/db (the data volume).
+      test: ["CMD-SHELL", "HOME=/tmp mongosh --quiet --host \"$$(hostname)\" --eval 'db.adminCommand(\"ping\").ok' | grep -q 1"]
+      interval: 10s
+      start_interval: 1s
+      start_period: 60s
+      timeout: 5s
+      retries: 3
+
+  # Redis for Cart Service: a separate server and password, so Cart and the Gateway do not see
+  # each other's data.
+  redis-cart:
+    image: redis:7.4-alpine
+    # "sh -c" skips the privilege drop in the image, so the user is set explicitly (no root).
+    user: redis
+    environment:
+      REDIS_PASSWORD: ${REDIS_CART_PASSWORD:?Run deploy/create-secrets.sh}
+    # Carts are customer data: append-only file on the volume, so they survive a restart.
+    command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\" --appendonly yes"]
+    networks: [backend, tools]
+    ports:
+      - "127.0.0.1:6380:6379"
+    volumes:
+      - redis-cart-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Local SMTP server with a web UI for the emails of Notification Service. Sends nothing out.
+  # Messages are kept in memory and are lost on restart.
+  mailpit:
+    image: axllent/mailpit:v1.32
+    # The image runs as root by default; no data on disk, so any non-root user works.
+    user: "1000:1000"
+    # Web UI and API answer only these Host headers (403 otherwise), so a web page cannot read the
+    # emails through DNS rebinding to 127.0.0.1. Also from other containers: mailpit:8025 -> 403.
+    # SMTP is not affected.
+    environment:
+      MP_ALLOWED_HOSTS: "localhost:8025,127.0.0.1:8025"
+    networks: [backend, tools]
+    # 8025 web UI and API, 1025 SMTP (no TLS, no login).
+    ports:
+      - "127.0.0.1:8025:8025"
+      - "127.0.0.1:1025:1025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
   # One-off: applies Auth Service database migrations (prisma migrate deploy), then exits.
   # auth-service starts only after it succeeds, so with --scale the migration still runs once.
   auth-migrate:
     image: auth-service:dev
     build: ../services/auth-service
     profiles: [platform, full-shop]
-    user: node
+    user: "1000:1000"
     # The Prisma CLI is called directly: npx would try to write its cache.
     command: ["node", "node_modules/prisma/build/index.js", "migrate", "deploy"]
     environment:
@@ -175,7 +263,7 @@ services:
     image: auth-service:dev
     build: ../services/auth-service
     profiles: [platform, full-shop]
-    user: node
+    user: "1000:1000"
     environment:
       PORT: "8081"
       CONSUL_HOST: consul
@@ -189,7 +277,7 @@ services:
       # First admin account, created at startup when it does not exist yet.
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@sklep.local}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Run deploy/create-secrets.sh}
-      # Until stage 5 (User Service in Compose) registration does not call User Service.
+      # Until User Service is in Compose (added when its PR is merged) registration does not call User Service.
       USER_SERVICE_ENABLED: "false"
       # Publishing events (outbox relay); Auth starts and registers users without RabbitMQ.
       RABBITMQ_HOST: rabbitmq
@@ -224,7 +312,7 @@ services:
     image: api-gateway:dev
     build: ../services/api-gateway
     profiles: [platform, full-shop]
-    user: node
+    user: "1000:1000"
     environment:
       PORT: "8080"
       CONSUL_HOST: consul
@@ -262,3 +350,5 @@ volumes:
   consul-data: {}
   postgres-data: {}
   rabbitmq-data: {}
+  mongo-data: {}
+  redis-cart-data: {}

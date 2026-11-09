@@ -1,5 +1,5 @@
 import { jest } from '@jest/globals';
-import { Body, Controller, Get, Post } from '@nestjs/common';
+import { Body, Controller, Get, NotFoundException, Post } from '@nestjs/common';
 import type { NestFastifyApplication } from '@nestjs/platform-fastify';
 import { Test } from '@nestjs/testing';
 import { IsEmail } from 'class-validator';
@@ -13,6 +13,7 @@ const SAMPLE = 'sample';
 const BOOM = 'boom';
 const LOCKED = 'locked';
 const MISSING = 'missing';
+const GONE = 'gone';
 
 // Controller and DTO only for this test: the real endpoints with bodies come in later tasks.
 class SampleDto {
@@ -35,6 +36,11 @@ class SampleController {
   @Get(LOCKED)
   locked(): never {
     throw new AppException(429, 'TOO_MANY_ATTEMPTS', 'Account is temporarily locked', 60);
+  }
+
+  @Get(GONE)
+  gone(): never {
+    throw new NotFoundException('Item not found');
   }
 }
 
@@ -131,6 +137,21 @@ describe('HTTP layer (headers, validation, error format)', () => {
       message: `Cannot GET /${MISSING}`,
       requestId: 'req-404',
     });
+  });
+
+  it('a 404 thrown by an existing route stays 404 NOT_FOUND without Allow', async () => {
+    const response = await request(`/${SAMPLE}/${GONE}`);
+    expect(response.status).toBe(404);
+    expect(response.headers.get('allow')).toBeNull();
+    expect(response.body).toMatchObject({ status: 404, error: 'NOT_FOUND', message: 'Item not found' });
+  });
+
+  it('returns 405 METHOD_NOT_ALLOWED with Allow for another method on an existing path (D7)', async () => {
+    const response = await request(`/${SAMPLE}`, { method: 'PATCH', headers: { 'x-request-id': 'req-405' } });
+    expect(response.status).toBe(405);
+    expect(response.headers.get('allow')).toBe('POST');
+    expect(response.headers.get('x-instance-id')).toBe('auth-service-test');
+    expect(response.body).toEqual({ status: 405, error: 'METHOD_NOT_ALLOWED', message: 'Method not allowed', requestId: 'req-405' });
   });
 
   it('hides unknown errors behind 500 INTERNAL_ERROR and logs them', async () => {
