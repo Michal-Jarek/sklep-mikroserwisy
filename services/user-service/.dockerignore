@@ -1,0 +1,13 @@
+**/.env
+**/.env.*
+**/.venv
+**/node_modules
+**/target
+**/tests
+**/__pycache__
+**/.pytest_cache
+**/dev
+**/docs
+**/postman
+**/k8s
+**/.git
