@@ -19,7 +19,7 @@ spec:
             matchLabels: {kubernetes.io/metadata.name: kube-system}
       ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
     - to:
-        - podSelector: {matchLabels: {app: user-postgres}}
+        - podSelector: {matchLabels: {app: postgres}}
       ports: [{protocol: TCP, port: 5432}]
     - to:
         - podSelector: {matchLabels: {app: consul}}

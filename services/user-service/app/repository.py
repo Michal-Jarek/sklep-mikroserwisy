@@ -12,7 +12,7 @@ class ProfileRepository:
         return self.session.get(UserProfile, user_id)
 
     def addresses(self, user_id: UUID) -> list[Address]:
-        return list(self.session.scalars(select(Address).where(Address.user_id == user_id).order_by(Address.id)))
+        return list(self.session.scalars(select(Address).where(Address.user_id == user_id).order_by(Address.created_at, Address.id)))
 
     def owned_address(self, user_id: UUID, address_id: UUID) -> Address | None:
         return self.session.scalar(select(Address).where(Address.id == address_id, Address.user_id == user_id))

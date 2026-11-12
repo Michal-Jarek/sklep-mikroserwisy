@@ -1,5 +1,7 @@
 """Konfiguracja z env; stałe adresy zależności to tylko lokalne nadpisania."""
-from uuid import uuid4
+from typing import Literal
+from socket import gethostname
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
@@ -7,8 +9,9 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     consul_url: str = "http://localhost:8500"
     consul_enabled: bool = True
-    service_address: str = "127.0.0.1"
+    service_address: str = ""
     port: int = 8085
-    instance_id: str = "cart-service-" + str(uuid4())
+    instance_id: str = Field(default_factory=lambda: "cart-service-" + gethostname())
+    log_level: Literal["debug", "info", "warning", "error"] = "info"
     product_service_url: str | None = None
     inventory_service_url: str | None = None

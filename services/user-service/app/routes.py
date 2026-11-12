@@ -15,8 +15,10 @@ Internal = Annotated[Caller, Depends(service_caller)]
 Reader = Annotated[Caller, Depends(profile_reader)]
 
 @router.post("", response_model=UserView, status_code=201)
-def create(data: CreateUser, db: DB, caller: Internal):
-    return ProfileService(db).create(data)
+def create(data: CreateUser, db: DB, caller: Internal, response: Response):
+    profile, created = ProfileService(db).create(data)
+    response.status_code = 201 if created else 200
+    return profile
 
 @router.get("/me", response_model=UserView)
 def me(db: DB, caller: Me):

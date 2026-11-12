@@ -26,20 +26,26 @@ Koszyk przechowuje nazwę produktu, cenę i ilość w hashu Redis `cart:{userId}
 
 ## Uruchomienie lokalne
 
+Wymagany Python 3.12. W Windows: `py -3.12` zamiast `python3.12`.
+
+Do izolowanego uruchomienia użyj zestawu dev wskazanego poniżej. Wspólne repo ma już infrastrukturę PostgreSQL/Redis/Consul, ale wpisy aplikacji i włączenie wywołania User w Auth wymagają osobnej zmiany właściciela `deploy/`. Ten PR zawiera wyłącznie katalogi User i Cart.
+
 Wariant Compose dla User i Cart: [../user-service/dev/README.md](../user-service/dev/README.md).
 
 Bez kontenera aplikacji, z działającym Redisem:
 
 ```sh
 cd services/cart-service
-python -m venv .venv
+python3.12 -m venv .venv
 # Linux/macOS: source .venv/bin/activate
 # PowerShell: .\.venv\Scripts\Activate.ps1
 python -m pip install --require-hashes -r requirements-dev.lock
+cp .env.example .env
+# Bez Consula: wpisz CONSUL_ENABLED=false w .env
 uvicorn app.main:app --host 127.0.0.1 --port 8085 --reload --no-access-log
 ```
 
-Domyślny Redis: `redis://localhost:6379/0`, Consul: `http://localhost:8500`. Opcjonalne zmienne są wymienione w `.env.example`. Dla pracy bez Consula można ustawić `CONSUL_ENABLED=false` oraz lokalne adresy `PRODUCT_SERVICE_URL` i `INVENTORY_SERVICE_URL`.
+Domyślny Redis: `redis://localhost:6379/0`, Consul: `http://localhost:8500`. Opcjonalne zmienne są wymienione w `.env.example`. Przy wspólnej infrastrukturze ustaw `REDIS_URL` na lokalny port 6380 i hasło `REDIS_CART_PASSWORD` z `deploy/.env` (URL wymaga kodowania znaków specjalnych w ręcznie ustawionym haśle). Dla pracy bez Consula można ustawić `CONSUL_ENABLED=false` oraz lokalne adresy `PRODUCT_SERVICE_URL` i `INVENTORY_SERVICE_URL`.
 
 Brak Product powoduje 503 przy dodawaniu pozycji. Brak Inventory dopuszcza zapis z `inventoryChecked:false`. Ostateczną rezerwację towaru wykonuje Order.
 
@@ -73,3 +79,13 @@ W klastrze adres Redisa pochodzi z Secret `cart-redis-secret`, klucz `url`. Cons
 Tożsamość jest przekazywana w nagłówkach z zaufanego Gateway. W klastrze niezbędne są ograniczenia ruchu sieciowego. Usługa nie jest publicznym punktem wejścia do sklepu.
 
 Wyniki sprawdzenia: [docs/WERYFIKACJA.md](docs/WERYFIKACJA.md).
+
+Przykład bezpośredni przy uruchomieniu lokalnym (ID konta zastąp własnym UUID):
+
+```sh
+curl -H "X-User-Id: 11111111-1111-4111-8111-111111111111" -H "X-User-Roles: CUSTOMER" http://127.0.0.1:8085/cart
+```
+
+Konfiguracja `logLevel` jest czytana przy starcie z `config/cart-service/data` (YAML). `LOG_LEVEL` ze środowiska lub `.env` ma pierwszeństwo. Start bez Consula jest dozwolony; rejestracja wraca w tle co 15 s.
+
+Przy uruchomieniu z VS Code z Consulem w Dockerze ustaw `SERVICE_ADDRESS=host.docker.internal` (D13). W kontenerze pozostaw puste — adres zostanie wykryty. ID instancji jest stabilne: nazwa usługi plus hostname; `INSTANCE_ID` pozwala je jawnie nadpisać.

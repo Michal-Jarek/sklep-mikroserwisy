@@ -11,7 +11,9 @@ spec:
     metadata:
       labels: {app: cart-service}
     spec:
+      automountServiceAccountToken: false
       securityContext:
+        seccompProfile: {type: RuntimeDefault}
         runAsNonRoot: true
         runAsUser: 1000
         runAsGroup: 1000
@@ -22,6 +24,7 @@ spec:
           imagePullPolicy: IfNotPresent
           ports: [{containerPort: 8085}]
           securityContext:
+            readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
             capabilities: {drop: [ALL]}
           env:

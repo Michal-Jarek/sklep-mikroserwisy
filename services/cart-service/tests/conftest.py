@@ -22,7 +22,7 @@ class Upstream:
         if path.startswith("/v1/health/service/"):
             return httpx.Response(200, json=[{"Service": {"Address": "upstream.test", "Port": 8083}, "Node": {"Address": "unused"}}])
         if path.startswith("/products/"):
-            return httpx.Response(self.product_status, json={"name": "Książka", "price": self.price})
+            return httpx.Response(self.product_status, json={"name": "Książka", "price": self.price, "currency": "PLN"})
         if path.startswith("/inventory/"):
             return httpx.Response(self.inventory_status, json={"available": self.stock})
         return httpx.Response(404)
@@ -33,7 +33,7 @@ async def context():
     if not redis_url.endswith("/15"):
         raise RuntimeError("Testy wymagają oddzielnej bazy Redis nr 15")
     upstream = Upstream()
-    settings = Settings(redis_url=redis_url, consul_url="http://consul.test", consul_enabled=True)
+    settings = Settings(service_address="127.0.0.1", redis_url=redis_url, consul_url="http://consul.test", consul_enabled=True)
     app = create_app(settings, transport=httpx.MockTransport(upstream.respond))
     user_id = uuid4()
     async with app.router.lifespan_context(app):

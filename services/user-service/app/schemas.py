@@ -1,7 +1,7 @@
 """DTO Pydantic: camelCase w JSON, snake_case wewnątrz Pythona."""
 from typing import Annotated
 from uuid import UUID
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from pydantic.alias_generators import to_camel
 
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
@@ -14,7 +14,7 @@ class CreateUser(DTO):
     id: UUID
     first_name: Name
     last_name: Name
-    email: Annotated[EmailStr, Field(max_length=254)]
+    email: Annotated[str, Field(min_length=1, max_length=254)]
 
 class UpdateUser(DTO):
     first_name: Name

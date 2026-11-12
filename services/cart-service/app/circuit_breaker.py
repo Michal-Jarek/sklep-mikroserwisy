@@ -16,6 +16,9 @@ class CircuitOpen(Exception):
 class ResourceMissing(Exception):
     """404 jest wynikiem biznesowym, nie awarią połączenia."""
 
+class ContractError(Exception):
+    """Non-transient response or payload mismatch; excluded from failure count."""
+
 class CircuitBreaker:
     def __init__(self, clock: Callable[[], float] = monotonic, cooldown: float = 30):
         self.clock = clock
@@ -36,11 +39,17 @@ class CircuitBreaker:
             generation = self.generation
         try:
             result = await operation()
-        except ResourceMissing:
+        except (ResourceMissing, ContractError):
             await self.finish(True, is_probe, generation)
             raise
-        except BaseException:
-            # Także anulowana próba nie może na zawsze zablokować half-open.
+        except asyncio.CancelledError:
+            # Caller cancellation is not a network failure. Release a half-open
+            # probe so the next caller can test the dependency.
+            async with self.lock:
+                if is_probe and generation == self.generation:
+                    self.probe = False
+            raise
+        except Exception:
             await self.finish(False, is_probe, generation)
             raise
         await self.finish(True, is_probe, generation)

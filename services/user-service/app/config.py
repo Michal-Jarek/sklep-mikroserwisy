@@ -1,5 +1,7 @@
 """Konfiguracja ze środowiska; poświadczenia nigdy nie trafiają do logów."""
-from uuid import uuid4
+from typing import Literal
+from socket import gethostname
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import URL
 
@@ -13,9 +15,10 @@ class Settings(BaseSettings):
     db_password: str = ""
     consul_url: str = "http://localhost:8500"
     consul_enabled: bool = True
-    service_address: str = "127.0.0.1"
+    service_address: str = ""
     port: int = 8082
-    instance_id: str = "user-service-" + str(uuid4())
+    instance_id: str = Field(default_factory=lambda: "user-service-" + gethostname())
+    log_level: Literal["debug", "info", "warning", "error"] = "info"
 
     @property
     def database_url(self) -> str | URL:

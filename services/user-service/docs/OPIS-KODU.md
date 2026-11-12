@@ -22,7 +22,7 @@ Wszystkie ścieżki w tabeli są względem `services/user-service/`.
 | `app/main.py` | Składa FastAPI, sesje bazy, rejestrację w Consulu, endpointy zdrowia i mapowanie błędów SQLAlchemy. |
 | `app/config.py` | Odczytuje zmienne środowiskowe. Buduje URL PostgreSQL z bezpiecznym kodowaniem hasła. |
 | `app/database.py` | Tworzy silnik SQLAlchemy, pulę połączeń i sesję na czas żądania. |
-| `app/models.py` | Encje `UserProfile` i `Address`: opis tabel, kolumn, UUID, klucza obcego i unikalnego e-maila. |
+| `app/models.py` | Encje `UserProfile` i `Address`: opis tabel, kolumn, UUID, klucza obcego i adresu e-mail (unikalność i format utrzymuje Auth). |
 | `app/schemas.py` | DTO Pydantic: pola wejścia/wyjścia, długości, e-mail, kraj i nazwy camelCase. |
 | `app/repository.py` | Zapytania do bazy. `owned_address()` szuka jednocześnie po ID adresu i ID właściciela. |
 | `app/service.py` | Reguły biznesowe, transakcje, tworzenie i edycja profilu oraz operacje adresów. |
@@ -43,3 +43,5 @@ Profil korzysta z UUID konta nadanego przez Auth. Nowe adresy mają własne UUID
 `models.py` opisuje bazę, a `schemas.py` opisuje API. To rozdzielenie chroni przed przypadkowym ujawnieniem wewnętrznych pól i pozwala zmieniać sposób zapisu bez zmiany kontraktu HTTP. `extra="forbid"` odrzuca dodatkowe pola, np. próbę dopisania sobie roli ADMIN.
 
 Alembic tworzy schemat osobnym poleceniem `alembic upgrade head`; aplikacja nie tworzy automatycznie tabel przy każdym starcie. Kolejne zmiany schematu są zapisywane jako nowe migracje. Zastosowana migracja `0001` pozostaje niezmienna.
+
+W Cart własny wyłącznik jest celowy (D2): blokada chroni tylko stan, nigdy wywołanie sieciowe. Okno 10, próg 50%, przerwa 30 s i jedna próba half-open są sprawdzane testami. Rejestracja Consul jest sprawdzana co 15 s i odzyskiwana w tle; wyszukiwanie współdzieli tylko odświeżenie konkretnej usługi i zachowuje ostatnie znane adresy.

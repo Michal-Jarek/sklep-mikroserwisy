@@ -175,6 +175,6 @@ async def test_product_breaker_stops_network_calls(context):
     upstream.product_status = 503
     for _ in range(10):
         assert (await client.post("/cart/items", json={"productId": str(uuid4()), "quantity": 1})).status_code == 503
-    calls = len(upstream.calls)
+    calls = len([r for r in upstream.calls if r.url.path.startswith("/products/")])
     assert (await client.post("/cart/items", json={"productId": str(uuid4()), "quantity": 1})).status_code == 503
-    assert len(upstream.calls) == calls
+    assert len([r for r in upstream.calls if r.url.path.startswith("/products/")]) == calls

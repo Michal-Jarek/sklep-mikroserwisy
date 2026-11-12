@@ -7,10 +7,12 @@ spec:
   backoffLimit: 3
   template:
     metadata:
-      labels: {app: user-service}
+      labels: {app: user-db-migration}
     spec:
       restartPolicy: Never
+      automountServiceAccountToken: false
       securityContext:
+        seccompProfile: {type: RuntimeDefault}
         runAsNonRoot: true
         runAsUser: 1000
         runAsGroup: 1000
@@ -20,11 +22,12 @@ spec:
           imagePullPolicy: IfNotPresent
           command: [alembic, upgrade, head]
           securityContext:
+            readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
             capabilities: {drop: [ALL]}
           env:
             - name: DB_HOST
-              value: user-postgres
+              value: postgres
             - name: DB_NAME
               value: user_db
             - name: DB_USER
