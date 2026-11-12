@@ -137,7 +137,7 @@ Ten dokument zbiera zasady wiążące każdą usługę sklepu (D1–D20): co obo
 | 500 | `INTERNAL_ERROR` | nieoczekiwany błąd; bez stack trace w odpowiedzi (szczegóły tylko w logu) |
 | 503 | `SERVICE_UNAVAILABLE` | niedostępna zależność, otwarty wyłącznik (D2), usługa niegotowa |
 
-502 i 504 zwraca tylko Gateway. `message` jest dla programisty (język dowolny), bez danych osobowych. Kody domenowe zapisuje się `UPPER_SNAKE`.
+502 i 504 zwraca Gateway, a gdy Gateway nie odpowiada — nginx frontendu. `message` jest dla programisty (język dowolny), bez danych osobowych. Kody domenowe zapisuje się `UPPER_SNAKE`.
 
 ### Rejestr kodów domenowych
 
@@ -149,8 +149,13 @@ Kody, które istnieją dziś. Nowy kod domenowy → zgłoszenie Michałowi (dopi
 | Auth | 409 | `EMAIL_TAKEN` | e-mail już zarejestrowany |
 | Auth | 429 | `TOO_MANY_ATTEMPTS` | e-mail zablokowany na 15 min po 10 nieudanych logowaniach; z `Retry-After` |
 | Inventory | 409 | `INSUFFICIENT_STOCK` | za mało towaru do rezerwacji |
+| Order | 409 | `CART_EMPTY` | zamówienie z pustego koszyka — **propozycja v1** |
+| Order | 409 | `ORDER_NOT_CANCELLABLE` | anulowanie zamówienia po wysyłce albo w statusie innym niż `NEW`/`PAID` — **propozycja v1** |
+| Shipping | 409 | `INVALID_STATUS_TRANSITION` | zmiana statusu przesyłki inna niż o jeden krok naprzód — **propozycja v1** |
 
 Pełna lista odpowiedzi Auth: [README Auth, sekcja „Endpointy”](../services/auth-service/README.md#endpointy).
+
+Kody oznaczone „propozycja v1” pochodzą z kontraktu usług bez implementacji (Order, Shipping); właściciel może je zmienić przed pierwszą implementacją w porozumieniu z Michałem. Wszystkie endpointy i kody, z których korzysta frontend: [frontend-api.md](frontend-api.md).
 
 **Dlaczego.** Frontend i inne usługi rozpoznają błąd po `error`, nie po tekście `message`. W przeglądach PR #1 i #2 te same błędy miały różne kody (`BAD_REQUEST` i `VALIDATION_ERROR`, `INTERNAL_SERVER_ERROR` i `INTERNAL_ERROR`), a FastAPI domyślnie odpowiada 422 w innym formacie.
 

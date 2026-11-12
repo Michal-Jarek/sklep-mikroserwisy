@@ -1,0 +1,188 @@
+# Shop in the browser: nginx serves the React app (SPA) and forwards /api/ to the API Gateway, so the app and the
+# API share one address (no CORS). Template for the envsubst of the nginx image: only the environment variables
+# GATEWAY_URL and NGINX_LOCAL_RESOLVERS (from /etc/resolv.conf, NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1) are replaced;
+# nginx variables ($uri, $remote_addr, ...) stay. Included in the http block of /etc/nginx/nginx.conf.
+
+# X-Request-Id of the client when it is safe to log (the Gateway accepts the same pattern), otherwise the id of nginx.
+map $http_x_request_id $req_id {
+    "~^[A-Za-z0-9._-]{1,64}$"  $http_x_request_id;
+    default                    $request_id;
+}
+
+# $request_time (seconds with milliseconds) as whole milliseconds without leading zeros: 0.004 -> 4, 1.250 -> 1250.
+map $request_time $duration_ms {
+    "~^0[.]0*(?<duration_ms_part>[0-9]+)$"                       $duration_ms_part;
+    "~^(?<duration_s>[1-9][0-9]*)[.](?<duration_ms_rest>[0-9]+)$"  $duration_s$duration_ms_rest;
+    default                                                      0;
+}
+
+# Path for the access log: the path the client asked for, without the query string (it can carry personal data).
+# $uri would show /index.html for every page of the app after the SPA fallback.
+map $request_uri $log_path {
+    "~^(?<log_path_only>[^?]*)"  $log_path_only;
+}
+
+# Outside /api/ only GET and HEAD; /api/ passes every method to the Gateway.
+map "$request_method:$uri" $method_not_allowed {
+    "~^(GET|HEAD):"  0;
+    "~^[^:]*:/api/"  0;
+    default          1;
+}
+
+# One JSON line per request; no headers, cookies or query strings.
+log_format frontend_json escape=json
+    '{"time":"$time_iso8601","level":"info","service":"frontend","requestId":"$req_id",'
+    '"method":"$request_method","path":"$log_path","status":$status,"durationMs":$duration_ms,'
+    '"upstreamStatus":"$upstream_status"}';
+
+server {
+    listen 8080;
+    server_name _;
+    server_tokens off;
+    # Relative Location in redirects of nginx (/api -> /api/): the port inside the container (8080) is not the port
+    # of the shop on the host.
+    absolute_redirect off;
+    root /usr/share/nginx/html;
+    access_log /dev/stdout frontend_json;
+
+    # Header lines up to 32 KB reach the Gateway, which answers 431 for too large headers itself.
+    large_client_header_buffers 4 32k;
+    # Larger header lines and request lines are rejected by nginx before a location is chosen: answered in the team
+    # format, not in HTML. 494 is the internal status of nginx for too large headers. Internal URIs, not named
+    # locations: a request line that was not read has no URI, and a redirect to a named location fails then (500).
+    error_page 494 = /_nginx/headers-too-large;
+    error_page 400 414 = /_nginx/bad-request;
+
+    if ($method_not_allowed) {
+        return 405;
+    }
+
+    # Headers of the app (also on 404 and 405). Locations with their own add_header merge them (add_header_inherit),
+    # /api/ does not get them: the answers of the Gateway pass unchanged.
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "same-origin" always;
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
+    add_header Cross-Origin-Opener-Policy "same-origin" always;
+
+    location /api/ {
+        add_header_inherit off;
+
+        # Docker DNS, resolved at request time: nginx starts without the Gateway (502 until it is up) and follows
+        # a new address of the Gateway without a restart.
+        resolver ${NGINX_LOCAL_RESOLVERS} valid=10s ipv6=off;
+        # proxy_pass with a variable and without a path: the original request URI is passed, not normalized.
+        set $gateway ${GATEWAY_URL};
+        proxy_pass $gateway;
+
+        proxy_set_header Host $host;
+        # Replaced, never appended: the Gateway trusts this header only from this container (TRUSTED_PROXIES).
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Request-Id $req_id;
+        proxy_set_header X-Real-IP "";
+        proxy_set_header Forwarded "";
+        # The Gateway trusts this container (TRUSTED_PROXIES), so Fastify would take the host, protocol and port of the
+        # request from these headers: the client cannot set them.
+        proxy_set_header X-Forwarded-Host "";
+        proxy_set_header X-Forwarded-Proto "";
+        proxy_set_header X-Forwarded-Port "";
+        # The answer of the Gateway passes unchanged: no internal redirects or other nginx actions from its headers.
+        proxy_ignore_headers X-Accel-Redirect X-Accel-Expires X-Accel-Limit-Rate X-Accel-Buffering X-Accel-Charset;
+
+        # The 1 MiB body limit (413) and the 431 for headers stay in the Gateway.
+        client_max_body_size 2m;
+        proxy_connect_timeout 2s;
+        proxy_read_timeout 35s;
+        proxy_send_timeout 35s;
+
+        # Only errors of nginx itself; 502/503/504 of the Gateway pass unchanged (proxy_intercept_errors off).
+        # "=": the status comes from the named location (a 504 without a connection becomes 502 there).
+        proxy_intercept_errors off;
+        error_page 502 = @gateway_unreachable;
+        error_page 504 = @gateway_timeout;
+        error_page 413 = @body_too_large;
+    }
+
+    location @gateway_unreachable {
+        add_header_inherit off;
+        types { }
+        default_type application/json;
+        return 502 '{"status":502,"error":"BAD_GATEWAY","message":"API Gateway is not reachable","requestId":"$req_id"}';
+    }
+
+    # nginx answers 504 for both timeouts; $upstream_connect_time is "-" when no connection was made within
+    # proxy_connect_timeout (e.g. the address of a stopped Gateway still in the DNS cache), so that case becomes
+    # 502 "not reachable", and 504 stays for a Gateway that accepted the connection but did not answer in 35 s.
+    location @gateway_timeout {
+        add_header_inherit off;
+        types { }
+        default_type application/json;
+        if ($upstream_connect_time = "-") {
+            return 502 '{"status":502,"error":"BAD_GATEWAY","message":"API Gateway is not reachable","requestId":"$req_id"}';
+        }
+        return 504 '{"status":504,"error":"GATEWAY_TIMEOUT","message":"API Gateway did not respond in time","requestId":"$req_id"}';
+    }
+
+    location @body_too_large {
+        add_header_inherit off;
+        types { }
+        default_type application/json;
+        return 413 '{"status":413,"error":"PAYLOAD_TOO_LARGE","message":"Request body is too large","requestId":"$req_id"}';
+    }
+
+    # The same code and message as the 431 of the Gateway for headers over its own limit of 16 KB.
+    location = /_nginx/headers-too-large {
+        internal;
+        add_header_inherit off;
+        types { }
+        default_type application/json;
+        return 431 '{"status":431,"error":"REQUEST_HEADER_FIELDS_TOO_LARGE","message":"Request headers are too large","requestId":"$req_id"}';
+    }
+
+    # Request line over 32 KB (414) and requests nginx cannot read (400): 400 VALIDATION_ERROR, the code of the Gateway
+    # for such requests (the team format has no code for 414).
+    location = /_nginx/bad-request {
+        internal;
+        add_header_inherit off;
+        types { }
+        default_type application/json;
+        return 400 '{"status":400,"error":"VALIDATION_ERROR","message":"Bad request","requestId":"$req_id"}';
+    }
+
+    # Health of the container: nginx answers and has the app files. Not logged (healthcheck every 5 s).
+    location = /health/live {
+        access_log off;
+        types { }
+        default_type application/json;
+        return 200 '{"status":"UP"}';
+    }
+
+    location = /health/ready {
+        access_log off;
+        types { }
+        default_type application/json;
+        if (!-f $document_root/index.html) {
+            return 503 '{"status":503,"error":"SERVICE_UNAVAILABLE","message":"Application files are missing","requestId":"$req_id"}';
+        }
+        return 200 '{"status":"UP"}';
+    }
+
+    # Built files with a hash in the name: cached for a year; a missing file is 404, not the app.
+    location /assets/ {
+        add_header_inherit merge;
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        try_files $uri =404;
+    }
+
+    # Always asked again, so a new version of the app is seen at once.
+    location = /index.html {
+        add_header_inherit merge;
+        add_header Cache-Control "no-cache";
+    }
+
+    # A file when it exists, otherwise the app (client-side routes such as /orders/<id>) with status 200.
+    location / {
+        try_files $uri /index.html;
+    }
+}

@@ -98,7 +98,7 @@ describe('HTTP layer (headers, body parser, error format, health)', () => {
       providers: [{ provide: GatewayConfigState, useValue: configState }],
     }).compile();
     app = moduleRef.createNestApplication<NestFastifyApplication>(
-      createFastifyAdapter(INSTANCE_ID, logger),
+      createFastifyAdapter(INSTANCE_ID, logger, () => false),
       { logger: false, bodyParser: false },
     );
     await setupApp(app, logger);

@@ -48,6 +48,10 @@ export class ProxyService {
   }
 
   private async proxy(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+    // Address of the client (behind a trusted proxy the last X-Forwarded-For entry, else the connection address),
+    // on every later log line of the request; req.remoteAddress stays the connection address.
+    this.logger.assign({ clientIp: request.ip });
+
     // 2. Configuration from KV not loaded yet.
     const config = this.configState.current();
     if (config === null) {

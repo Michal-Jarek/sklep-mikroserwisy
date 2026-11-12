@@ -4,6 +4,7 @@ import { Logger, PinoLogger } from 'nestjs-pino';
 import { AppModule } from './app.module';
 import { createFastifyAdapter } from './common/fastify-adapter';
 import { createLogger } from './common/logger';
+import { TrustedProxies } from './common/trusted-proxies';
 import { buildAppConfig, isLogLevel } from './config/app-config';
 import { GatewayConfigState } from './config/gateway-config-state.service';
 import { ConsulRegistration } from './consul/consul-registration.service';
@@ -17,10 +18,14 @@ const logger = createLogger(isLogLevel(process.env.LOG_LEVEL) ? process.env.LOG_
 
 async function bootstrap(): Promise<void> {
   const config = buildAppConfig(process.env);
+  // Before the adapter: Fastify asks it about the peer of every request (request.ip). Host names: first lookup
+  // (at most 2 s), then every 10 s.
+  const trustedProxies = new TrustedProxies(config.trustedProxies, logger);
+  await trustedProxies.start();
 
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule.register(config, logger),
-    createFastifyAdapter(config.instanceId, logger),
+    createFastifyAdapter(config.instanceId, logger, (address) => trustedProxies.isTrusted(address)),
     // No Nest body parsers: setupApp() reads every body as a Buffer.
     { bufferLogs: true, bodyParser: false },
   );

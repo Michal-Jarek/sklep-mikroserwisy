@@ -74,7 +74,7 @@ Gdy usługa nie odpowiada:
 
 Do circuit breakera usługi liczą się jako awarie tylko awarie sieci: brak połączenia, brak odpowiedzi w czasie, inny błąd sieci oraz odpowiedzi usługi 502 i 504 (sekcja „Limity żądań i circuit breaker”). Odpowiedzi 500 i 503 usługi nie są awarią. Żądanie odrzucone przed wysłaniem (400 z kroku 10) nie liczy się.
 
-Każda nieudana próba to linia logu `warn` „Request to the service failed” z polami `targetService`, `upstream` (`ip:port` instancji) i `reason` (kod błędu). Linia zakończenia żądania („request completed”) ma `requestId`, `targetService`, `upstream` (ostatnia próba), `userId` (gdy użytkownik jest zalogowany), `res.statusCode` i `responseTime`. Treści żądań, tokeny i ciasteczka nie trafiają do logów.
+Każda nieudana próba to linia logu `warn` „Request to the service failed” z polami `targetService`, `upstream` (`ip:port` instancji) i `reason` (kod błędu). Linia zakończenia żądania („request completed”) ma `requestId`, `clientIp`, `targetService`, `upstream` (ostatnia próba), `userId` (gdy użytkownik jest zalogowany), `res.statusCode` i `responseTime`. `clientIp` to adres klienta, który Gateway liczy w limitach żądań: za zaufanym proxy (`TRUSTED_PROXIES`) ostatni wpis `X-Forwarded-For`, w innym razie adres połączenia; `req.remoteAddress` to zawsze adres połączenia (za nginx – kontener `frontend`), a `req.headers["x-forwarded-for"]` to surowy nagłówek, który przy połączeniu wprost na port 8080 podaje sam klient. Treści żądań, tokeny i ciasteczka nie trafiają do logów.
 
 ## Trasy
 
@@ -214,7 +214,7 @@ Gateway przekazuje żądanie do usługi bez prefiksu `/api/v1` (np. `/api/v1/pro
 | `X-User-Id` | `sub` z tokenu (UUID użytkownika) | klient zalogowany, także na trasie publicznej, jeśli wysłał ważny token |
 | `X-User-Roles` | `CUSTOMER` albo `ADMIN` (kilka po przecinku, w kolejności z tokenu); nigdy `SERVICE` | jak wyżej |
 | `X-Request-Id` | wartość od klienta, gdy pasuje do `^[A-Za-z0-9._-]{1,64}$`, w przeciwnym razie nowy UUID | zawsze |
-| `X-Forwarded-For` | jeden adres: IP klienta widziane przez Gateway (wartość od klienta jest nadpisywana) | zawsze |
+| `X-Forwarded-For` | jeden adres: IP klienta – adres połączenia, a za zaufanym proxy (`TRUSTED_PROXIES`, np. kontener `frontend`) ostatni wpis jego `X-Forwarded-For`; wartość od klienta jest nadpisywana | zawsze |
 
 Z żądania klienta Gateway zawsze usuwa: `Authorization`, każdy nagłówek zaczynający się od `X-User-` (bez względu na wielkość liter), `Forwarded`, `X-Real-IP`, pozostałe `X-Forwarded-*`, `Expect` (na `Expect: 100-continue` Gateway sam odpowiada `100 Continue` i czyta treść), nagłówki zmiany metody `X-HTTP-Method-Override`, `X-HTTP-Method` i `X-Method-Override`, **każdy nagłówek z `_` w nazwie** (np. `X_User_Roles`, `Some_Header`; jak nginx z `underscores_in_headers off` – serwery WSGI czytają `X_User_Roles` tak samo jak `X-User-Roles`) i nagłówki hop-by-hop. Klient nie może więc sam podać `X-User-Id` ani `X-User-Roles` ani zmienić metody żądania za plecami reguł dostępu. Usługa nie dostanie żadnego nagłówka z `_` w nazwie, więc nie może na takim polegać. Pozostałe nagłówki (np. `Cookie`, `Content-Type`, `Accept`) przechodzą bez zmian.
 
@@ -230,7 +230,7 @@ Co to znaczy dla usługi:
 
 ### Limity żądań
 
-Gateway liczy żądania `/api/v1/**` na adres IP klienta (adres połączenia; `X-Forwarded-For` od klienta nie ma znaczenia). Liczy je wtyczka `@fastify/rate-limit` (11.x) z magazynem w Redisie `redis-gateway`, więc wszystkie instancje Gateway dzielą te same limity. Wtyczka nie dodaje limitów do tras sama: Gateway wywołuje limit globalny i limit trasy w kroku 3 obsługi żądania. Okno jest stałe: zaczyna się przy pierwszym żądaniu i po `timeWindowSeconds` licznik znika.
+Gateway liczy żądania `/api/v1/**` na adres IP klienta: adres połączenia, a gdy połączenie przychodzi od zaufanego proxy z `TRUSTED_PROXIES` (w Docker Compose kontener `frontend`, czyli nginx sklepu w przeglądarce) – ostatni wpis `X-Forwarded-For`, który to proxy ustawia na adres swojego klienta. Zaufany jest tylko bezpośredni rozmówca Gateway; od każdego innego (curl na `8080`, kontener w sieci `backend` albo `edge`) `X-Forwarded-For` nie ma znaczenia. Dzięki temu klienci za nginx mają osobne limity (zmienna w sekcji „Zmienne środowiskowe”). Liczy je wtyczka `@fastify/rate-limit` (11.x) z magazynem w Redisie `redis-gateway`, więc wszystkie instancje Gateway dzielą te same limity. Wtyczka nie dodaje limitów do tras sama: Gateway wywołuje limit globalny i limit trasy w kroku 3 obsługi żądania. Okno jest stałe: zaczyna się przy pierwszym żądaniu i po `timeWindowSeconds` licznik znika.
 
 | Limit | Wartość | Dotyczy |
 |---|---|---|
@@ -277,11 +277,11 @@ Liczniki obwodów są w pamięci instancji Gateway i zerują się przy restarcie
 
 Domyślnie lista `cors.allowedOrigins` w KV jest pusta: Gateway nie wysyła nagłówków CORS, a `OPTIONS` dostaje **405**. Frontend i API mają być pod jednym adresem (nginx w etapie 6, Ingress w etapie 7), więc CORS nie jest potrzebny.
 
-Gdy frontend działa pod innym adresem (np. serwer Vite `http://localhost:5173`), dodaj jego źródło do pliku `deploy/consul/config/api-gateway.yaml`:
+Serwer deweloperski Vite (`npm run dev`) też nie potrzebuje CORS: przekazuje `/api` do Gateway przez własne proxy ([frontend/README.md](../../frontend/README.md#zmienne)). Gdy aplikacja w przeglądarce działa pod innym adresem niż API (np. `https://shop.example.com`), dodaj jej źródło do pliku `deploy/consul/config/api-gateway.yaml`:
 
 ```yaml
 cors:
-  allowedOrigins: [http://localhost:5173]
+  allowedOrigins: [https://shop.example.com]
 ```
 
 i wgraj konfigurację do KV z restartem Gateway (sekcja „Konfiguracja w Consul KV”). Wtedy dla źródła z listy (porównanie dokładne: schemat, host i port):
@@ -368,8 +368,11 @@ Nazwy są w [.env.example](.env.example) (bez wartości).
 | `REDIS_HOST` / `REDIS_PORT` | `redis-gateway` / `6379` | `127.0.0.1` / `6379` | Redis na liczniki limitów żądań; niedostępny → ruch bez limitu (sekcja „Limity żądań i circuit breaker”) |
 | `REDIS_PASSWORD` | `REDIS_GATEWAY_PASSWORD` z `deploy/.env` | wartość `REDIS_GATEWAY_PASSWORD` z `deploy/.env` | wymagana; brak → Gateway nie startuje |
 | `JWT_ISSUER` / `JWT_AUDIENCE` | — | — | opcjonalnie; nadpisują KV |
+| `TRUSTED_PROXIES` | `frontend` | — (pusty) | opcjonalnie; poniżej |
 
 Brak wymaganej zmiennej, zły numer portu albo nieznany `LOG_LEVEL` kończą start jedną linią logu z nazwą zmiennej (bez jej wartości).
+
+**`TRUSTED_PROXIES`** – lista po przecinkach: adres IPv4/IPv6 (`172.18.0.5`), zakres CIDR (`10.42.0.0/16`, `fd00::/64`) albo nazwa hosta (`frontend`). Od takiego rozmówcy Gateway przyjmuje adres klienta z ostatniego wpisu `X-Forwarded-For` (limity, `X-Forwarded-For` do usług); od pozostałych liczy się adres połączenia. Ten adres jest w polu `clientIp` logów żądań. Pusta albo brak = nikt nie jest zaufany. Tylko zmienna środowiskowa, nie Consul KV (KV może zmienić każdy z dostępem do Consula). Nazwy hostów Gateway rozwiązuje w DNS przy starcie (czeka najwyżej 2 s) i co 10 s, więc nowy adres kontenera po restarcie jest zaufany najpóźniej po ok. 10 s; zmiana zbioru adresów to linia `info` „Trusted proxies updated” z nazwami i adresami. Nazwa, której nie ma w DNS (np. kontener `frontend` zatrzymany albo usunięty), przestaje być zaufana przy następnym sprawdzeniu DNS, najpóźniej po ok. 10 s – jego dawny adres może dostać inny kontener; przy przejściowym błędzie DNS ostatnio znane adresy zostają najwyżej 60 s od ostatniego udanego rozwiązania, a przed pierwszym sukcesem nazwa nie wskazuje nikogo. Każda taka zmiana stanu to jedno ostrzeżenie „Trusted proxy <nazwa> cannot be resolved…” – w Docker Compose pojawia się ono przy starcie Gateway tylko wtedy, gdy kontener `frontend` jeszcze nie działa (np. pierwsze `up`, bo `frontend` startuje po Gateway); po ok. 10 s od startu frontendu przychodzi „Trusted proxies updated”. Element w złym formacie (np. `front_end`, `10.0.0.0/33`) kończy start komunikatem `Invalid entry in TRUSTED_PROXIES: <element>`. Wpis musi wskazywać tylko proxy, które zawsze nadpisuje `X-Forwarded-For` adresem swojego klienta (nginx frontendu: `X-Forwarded-For $remote_addr`) – zaufany rozmówca może podać dowolny adres klienta.
 
 ## Uruchomienie w Docker Compose
 

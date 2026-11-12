@@ -30,7 +30,7 @@ Pliki w folderze:
 - `rabbitmq/setup.sh` – skrypt, którym `rabbitmq-setup` wgrywa `definitions.json` i zakłada konta usług (nie uruchamia się go ręcznie);
 - `k8s/` – na później. Kubernetes to ostatni etap projektu; do tego czasu infrastruktura i usługi działają w Docker Compose.
 
-Usługi sklepu są w tym samym `compose.yaml` w grupach (tzw. profilach): profil `platform` (API Gateway i Auth Service) i profil `full-shop` (cały sklep, w tym usługi z `platform`; usługa zespołu trafia do niego przy scaleniu jej PR – wzór wpisu w [docs/patterns.md](../docs/patterns.md)). Polecenie bez `--profile` uruchamia tylko infrastrukturę z tabeli; profil `platform` – sekcja „Profil platform (API Gateway i Auth Service)”.
+Usługi sklepu są w tym samym `compose.yaml` w grupach (tzw. profilach): profil `platform` (API Gateway, Auth Service i frontend) i profil `full-shop` (cały sklep, w tym usługi z `platform`; usługa zespołu trafia do niego przy scaleniu jej PR – wzór wpisu w [docs/patterns.md](../docs/patterns.md)). Polecenie bez `--profile` uruchamia tylko infrastrukturę z tabeli; profil `platform` – sekcja „Profil platform (API Gateway, Auth Service i frontend)”.
 
 ## Wymagania
 
@@ -164,22 +164,28 @@ Usługi łączą się z RabbitMQ przez AMQP: w sieci compose host `rabbitmq`, po
 
 Topologię i konta przywraca `rabbitmq-setup` przy każdym `up` (zmiana zrobiona ręcznie w panelu, np. usunięte uprawnienie, wraca do stanu z repo). Wgrywanie dodaje brakujące elementy i aktualizuje polityki, konta i uprawnienia. Istniejące kolejki i exchange pomija bez błędu, więc zmiana typu albo argumentów kolejki w `definitions.json` działa dopiero po czystym starcie (sekcja „RabbitMQ od zera”). Wgrywanie niczego nie usuwa: kolejka, wiązanie albo konto dodane ręcznie w panelu zostaje do czystego startu.
 
-## Profil platform (API Gateway i Auth Service)
+## Profil platform (API Gateway, Auth Service i frontend)
 
-Infrastruktura razem z API Gateway i Auth Service:
+Infrastruktura razem z API Gateway, Auth Service i frontendem (sklep w przeglądarce):
 ```bash
 bash deploy/create-secrets.sh
 docker compose -f deploy/compose.yaml --profile platform up -d --wait --build
 ```
-`--build` buduje obrazy `api-gateway:dev` i `auth-service:dev` z `services/` (pierwszy raz kilka minut). Dochodzą trzy kontenery: `auth-migrate` (jednorazowo stosuje migracje bazy `auth_db` i kończy się kodem 0), `auth-service` (startuje po migracjach i po `rabbitmq-setup`) i `api-gateway`. Stan:
+`--build` buduje obrazy `api-gateway:dev` i `auth-service:dev` z `services/` oraz `frontend:dev` z `frontend/` (pierwszy raz kilka minut). Dochodzą cztery kontenery: `auth-migrate` (jednorazowo stosuje migracje bazy `auth_db` i kończy się kodem 0), `auth-service` (startuje po migracjach i po `rabbitmq-setup`), `api-gateway` i `frontend` (startuje, gdy Gateway jest zdrowy). Stan:
 ```bash
 docker compose -f deploy/compose.yaml --profile platform ps --format '{{.Service}} {{.Status}}'
 ```
-Wynik: `api-gateway`, `auth-service`, `consul`, `postgres`, `rabbitmq` i `redis-gateway` ze statusem `Up … (healthy)`.
+Wynik: `api-gateway`, `auth-service`, `frontend`, `consul`, `postgres`, `rabbitmq` i `redis-gateway` ze statusem `Up … (healthy)`.
 
 Przez pierwsze sekundy po starcie Gateway może jeszcze odpowiadać `503` na `/api/v1/auth/…` – czeka, aż zobaczy w Consulu zdrowy Auth Service. Wtedy powtórz polecenie po kilku sekundach.
 
-**API Gateway** działa pod adresem `http://localhost:8080` i jest jedynym wejściem do usług z laptopa (port tylko na `127.0.0.1`). Sprawdzenie:
+**Frontend (sklep w przeglądarce)** działa pod adresem **http://127.0.0.1:8090** (port tylko na `127.0.0.1`). Kontener `frontend` (nginx bez roota, tylko w sieci `sklep_edge`) serwuje aplikację React i przekazuje żądania `/api/…` do API Gateway, więc aplikacja i API mają jeden adres (bez CORS). Healthcheck kontenera to `/health/live` co 5 s; logi dostępu są w JSON, jedna linia na żądanie, bez nagłówków, ciasteczek i parametrów zapytania (`docker compose -f deploy/compose.yaml logs frontend`). Sprawdzenie:
+```bash
+curl -i http://127.0.0.1:8090/health/ready
+```
+Wynik: `HTTP/1.1 200 OK` i `{"status":"UP"}`. Obraz, nagłówki bezpieczeństwa i praca nad frontendem: [frontend/README.md](../frontend/README.md).
+
+**API Gateway** działa pod adresem `http://localhost:8080` (port tylko na `127.0.0.1`) – to wejście do usług z laptopa dla Postmana, curl i dokumentacji; przeglądarka korzysta z niego przez frontend. Sprawdzenie:
 ```bash
 curl -i http://localhost:8080/health/ready
 ```
@@ -200,16 +206,18 @@ curl -s -o /dev/null -w '%{http_code}\n' -b /tmp/sklep-cookies.txt -c /tmp/sklep
 ```
 Wynik: `200`. Gateway ogranicza logowanie do 5, a rejestrację do 10 żądań na minutę z jednego adresu IP – potem odpowiada `429`. Szczegóły Auth: [services/auth-service/README.md](../services/auth-service/README.md).
 
+**Adres IP klienta za frontendem.** Gateway przyjmuje adres klienta z nagłówka `X-Forwarded-For` tylko od kontenera `frontend` (`TRUSTED_PROXIES: frontend` w `compose.yaml`; nginx frontendu zawsze nadpisuje ten nagłówek adresem swojego klienta). Dzięki temu limity żądań i adres widziany przez Auth i usługi dotyczą prawdziwego klienta, a nie całego frontendu. Od każdego innego rozmówcy (curl na `8080`, inny kontener) nagłówek nie ma znaczenia. W Rancher Desktop wszystkie połączenia z laptopa – przez frontend i bezpośrednio na `8080` – mają ten sam adres (bramka sieci `sklep_edge`), więc z jednego laptopa limity są wspólne; osobne adresy mają tylko kontenery w sieci `sklep_edge`. Gateway sprawdza adres kontenera `frontend` w DNS co 10 s, więc przez kilka sekund po starcie albo odtworzeniu frontendu limity wszystkich jego klientów liczą się razem. Szczegóły: [services/api-gateway/README.md](../services/api-gateway/README.md), zmienna `TRUSTED_PROXIES`.
+
 Plik z ciasteczkiem działa jak hasło do sesji – po testach go usuń:
 ```bash
 rm -f /tmp/sklep-cookies.txt
 ```
 
-W `up`, `stop` i `down` podaje się `--profile platform`, inaczej polecenie pomija kontenery Gateway i Auth (`stop` zostawia je uruchomione, `down` ich nie usuwa). W `ps` i `logs` profil nie jest potrzebny, ale nie szkodzi:
+W `up`, `stop` i `down` podaje się `--profile platform`, inaczej polecenie pomija kontenery Gateway, Auth i frontendu (`stop` zostawia je uruchomione, `down` ich nie usuwa). W `ps` i `logs` profil nie jest potrzebny, ale nie szkodzi:
 ```bash
 docker compose -f deploy/compose.yaml --profile platform ps
 ```
-Podpowiedź `Done. Start: …` na końcu `create-secrets.sh` dotyczy samej infrastruktury; z Gateway i Auth użyj polecenia z początku tej sekcji.
+Podpowiedź `Done. Start: …` na końcu `create-secrets.sh` dotyczy samej infrastruktury; z Gateway, Auth i frontendem użyj polecenia z początku tej sekcji.
 
 Wolumen PostgreSQL utworzony przed etapem 2 nie ma bazy cieni `auth_shadow_db` (potrzebnej tylko do tworzenia migracji Auth). Dodaje ją ponowne uruchomienie skryptu baz, bez utraty danych – polecenie `exec … 01-service-databases.sh` z sekcji „Reset od zera”.
 
@@ -411,18 +419,20 @@ Hasło do własnej usługi uruchamianej z VS Code przenosi się z `deploy/.env` 
 ## Bezpieczeństwo
 
 - Porty są wystawione tylko na `127.0.0.1` – z innych komputerów w sieci są niedostępne.
-- Z usług sklepu port ma tylko API Gateway: `127.0.0.1:8080`. Pozostałe usługi (np. `auth-service`) nie mają portów na laptopie i są osiągalne tylko przez Gateway.
+- Z usług sklepu porty mają tylko API Gateway (`127.0.0.1:8080`) i frontend (sekcja „Profil platform”), który przekazuje `/api/…` do Gateway. Pozostałe usługi (np. `auth-service`) nie mają portów na laptopie i są osiągalne tylko przez Gateway.
 - Każdy kontener działa bez uprawnień roota i dostaje tylko swoje hasła (tabela „Hasła w `deploy/.env`”). Mailpit nie ma logowania – SMTP jest dostępny z laptopa i z sieci compose, panel i API tylko z laptopa (http://127.0.0.1:8025, http://localhost:8025).
 - `deploy/.env` i `deploy/secrets/` **nigdy nie trafiają do repo** (`.gitignore` je pomija) i nie są przekazywane innym osobom – każdy generuje własne.
 
 ## Gdy coś nie działa
 
-**Zajęty port 5432, 8500, 6379, 5672, 15672, 27017, 6380, 8025, 1025 albo 8080** (w komunikacie `port is already allocated` albo `address already in use`). Ten port zajmuje inny kontener albo program, np. compose z `services/user-service/dev/compose.yaml` albo lokalnie zainstalowany PostgreSQL lub MongoDB. Kontenery z ich portami:
+**Zajęty port 5432, 8500, 6379, 5672, 15672, 27017, 6380, 8025, 1025, 8080 albo 8090** (w komunikacie `port is already allocated` albo `address already in use`). Ten port zajmuje inny kontener albo program, np. compose z `services/user-service/dev/compose.yaml` albo lokalnie zainstalowany PostgreSQL lub MongoDB. Kontenery z ich portami:
 ```bash
 docker ps --format '{{.Names}}  {{.Ports}}'
 ```
 Kontenery o nazwach `k8s_…` to wewnętrzny Kubernetes Rancher Desktop – ich nie należy ruszać; szukaj nazwy z numerem portu (np. `5432`).
 Zatrzymaj tamten zestaw (np. `docker compose -f services/user-service/dev/compose.yaml down`) albo pojedynczy kontener (`docker stop <nazwa>`), potem znowu `up -d --wait`.
+
+**Pod adresem frontendu otwiera się inna aplikacja** (albo curl dostaje odpowiedź, która nie pochodzi ze sklepu, np. bez `{"status":"UP"}` z `/health/ready`). Inny program na laptopie może słuchać na tym samym porcie pod adresem IPv6 `[::1]`, a przeglądarka i curl dla `localhost` próbują najpierw IPv6; `docker compose` tego nie wykrywa, bo kontener sklepu używa tylko `127.0.0.1`. Sprawdzenie: `lsof -nP -iTCP:8090 -sTCP:LISTEN`. Otwieraj sklep pod adresem z `127.0.0.1` (jak w poleceniach tej instrukcji) albo zatrzymaj tamten program.
 
 **Brak haseł:** `required variable … is missing a value: Run deploy/create-secrets.sh`. Nie ma pliku `deploy/.env`, ma puste wartości albo brakuje w nim zmiennej dodanej w nowszej wersji repo (np. `ADMIN_PASSWORD`). Rozwiązanie:
 ```bash
@@ -458,4 +468,4 @@ Najczęściej ostatnia linia to `Not_Authorized` (zamiast `imported definitions.
 ```bash
 docker compose -f deploy/compose.yaml logs postgres
 ```
-(zamiast `postgres`: `consul`, `redis-gateway`, `consul-kv-seed`, `rabbitmq`, `rabbitmq-setup`, `mongo`, `redis-cart`, `mailpit`, `api-gateway`, `auth-service`).
+(zamiast `postgres`: `consul`, `redis-gateway`, `consul-kv-seed`, `rabbitmq`, `rabbitmq-setup`, `mongo`, `redis-cart`, `mailpit`, `api-gateway`, `auth-service`, `frontend`).
