@@ -4,7 +4,7 @@ import type { Identity } from '../access/access-control.service';
 /** What the Gateway adds to a request for a service (guidelines 3.2). */
 export interface ForwardedFor {
   requestId: string;
-  // Address of the client connection (request.ip; no trustProxy, decision 18).
+  // Client address (request.ip): the connection address, or the last X-Forwarded-For entry of a trusted proxy (TRUSTED_PROXIES).
   clientIp: string;
   // null = anonymous: no X-User-* headers.
   identity: Identity | null;

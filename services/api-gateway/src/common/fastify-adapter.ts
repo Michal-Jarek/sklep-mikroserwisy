@@ -22,14 +22,22 @@ const CONNECTIONS_CHECKING_INTERVAL_MS = 1_000;
  * - request id and response headers in an onRequest hook, so they are on every response, also 404
  *   and errors raised by Fastify itself (Nest routes those errors to the global exception filter);
  * - X-Gateway-Instance-Id only; X-Instance-Id comes from the services behind the Gateway (decision 19);
- * - no trustProxy (decision 18): the client connects directly, request.ip is the connection address;
+ * - trustProxy only for the direct peer (hop 0) listed in TRUSTED_PROXIES (stage 6, guidelines 3.3): from such a peer
+ *   (the frontend nginx) request.ip is the last X-Forwarded-For entry, from anyone else the connection address;
+ *   request.ip keys the rate limits and is the X-Forwarded-For for the services (request.hostname and
+ *   request.protocol, which would follow X-Forwarded-Host/-Proto, are not used);
  * - clientErrorHandler: malformed requests, too large headers and requests not received in time in the
  *   team format (decision 23, Z22);
  * - frameworkErrors: a URL the router cannot decode (e.g. /api/v1/products/%zz) is rejected before any
  *   hook runs; it gets 400 "Invalid request path" in the team format with the Gateway headers (decision 8).
  */
-export function createFastifyAdapter(instanceId: string, logger: Pick<Logger, 'info'>): FastifyAdapter {
+export function createFastifyAdapter(
+  instanceId: string,
+  logger: Pick<Logger, 'info'>,
+  isTrustedProxy: (address: string) => boolean,
+): FastifyAdapter {
   const adapter = new FastifyAdapter({
+    trustProxy: (address: string, hop: number) => hop === 0 && isTrustedProxy(address),
     genReqId: (req: IncomingMessage) => resolveRequestId(req.headers['x-request-id']),
     bodyLimit: BODY_LIMIT_BYTES,
     requestTimeout: REQUEST_TIMEOUT_MS,

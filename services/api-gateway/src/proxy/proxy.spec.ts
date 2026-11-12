@@ -220,6 +220,8 @@ describe('proxy (HTTP flow on a real server)', () => {
   // A fresh set of circuits for every test (a 5xx in one test must not count in another).
   let breakers = new CircuitBreakers(breakerLogger as unknown as PinoLogger);
   const runs: Promise<unknown>[] = [];
+  // The test client connects from 127.0.0.1: trusted as a proxy (TRUSTED_PROXIES) only when a test says so.
+  let trustLoopback = false;
   const breakersProxy = {
     rejects: (service: string) => breakers.rejects(service),
     run: (...args: Parameters<CircuitBreakers['run']>) => {
@@ -257,7 +259,7 @@ describe('proxy (HTTP flow on a real server)', () => {
         { provide: AccessControl, useValue: { authorize } },
       ],
     }).compile();
-    app = moduleRef.createNestApplication<NestFastifyApplication>(createFastifyAdapter(INSTANCE_ID, logger), {
+    app = moduleRef.createNestApplication<NestFastifyApplication>(createFastifyAdapter(INSTANCE_ID, logger, (address) => trustLoopback && address === '127.0.0.1'), {
       logger: false,
       bodyParser: false,
     });
@@ -277,6 +279,7 @@ describe('proxy (HTTP flow on a real server)', () => {
 
   beforeEach(() => {
     config = CONFIG;
+    trustLoopback = false;
     received.length = 0;
     logLines.length = 0;
     discovery.reset([healthy]);
@@ -670,6 +673,20 @@ describe('proxy (HTTP flow on a real server)', () => {
       expect(line).not.toHaveProperty('userId');
       expect(JSON.stringify(logLines)).not.toContain('"a":1');
     });
+
+    it('clientIp is the client behind a trusted proxy, the connection address otherwise; remoteAddress stays the connection (Z19d)', async () => {
+      trustLoopback = true;
+      await gw('GET', '/products', { headers: { 'x-request-id': 'log-proxied', 'X-Forwarded-For': '1.2.3.4, 10.0.0.7' } });
+      trustLoopback = false;
+      await gw('GET', '/products', { headers: { 'x-request-id': 'log-direct', 'X-Forwarded-For': '9.9.9.9' } });
+      // A request rejected before routing (unknown service) has clientIp too.
+      await gw('GET', '/unknown', { headers: { 'x-request-id': 'log-404' } });
+      const line = (requestId: string, msg = 'request completed') =>
+        logLines.find((item) => item.requestId === requestId && item.msg === msg);
+      expect(line('log-proxied')).toMatchObject({ clientIp: '10.0.0.7', req: expect.objectContaining({ remoteAddress: '127.0.0.1' }) });
+      expect(line('log-direct')).toMatchObject({ clientIp: '127.0.0.1', req: expect.objectContaining({ remoteAddress: '127.0.0.1' }) });
+      expect(line('log-404')).toMatchObject({ clientIp: '127.0.0.1', res: expect.objectContaining({ statusCode: 404 }) });
+    });
   });
 
   describe('rate limits (step 3, decision 20)', () => {
@@ -733,6 +750,38 @@ describe('proxy (HTTP flow on a real server)', () => {
         [`${KEY_PREFIX}global:127.0.0.1`, 6],
         [`${KEY_PREFIX}POST:${LOGIN}:127.0.0.1`, 3],
       ]);
+    });
+
+    it('behind a trusted proxy the last X-Forwarded-For entry is the client: limit keys and the header for the service (stage 6)', async () => {
+      trustLoopback = true;
+      config = limited(300, [{ method: 'POST', path: LOGIN, max: 2, timeWindowSeconds: 60 }]);
+      const proxied = (client: string) => ({
+        headers: { 'X-Forwarded-For': `1.2.3.4, ${client}`, 'X-Forwarded-Host': 'evil', 'X-Real-IP': '1.2.3.4', Forwarded: 'for=1.2.3.4' },
+        body: '{}',
+      });
+      expect((await gw('POST', LOGIN, proxied('10.0.0.1'))).status).toBe(200);
+      expect((await gw('POST', LOGIN, proxied('10.0.0.1'))).status).toBe(200);
+      expectTooMany(await gw('POST', LOGIN, proxied('10.0.0.1')));
+      // Another client behind the same proxy has its own counters.
+      expect((await gw('POST', LOGIN, proxied('10.0.0.2'))).status).toBe(200);
+      expect([...redis.counters.entries()]).toEqual([
+        [`${KEY_PREFIX}global:10.0.0.1`, 3],
+        [`${KEY_PREFIX}POST:${LOGIN}:10.0.0.1`, 3],
+        [`${KEY_PREFIX}global:10.0.0.2`, 1],
+        [`${KEY_PREFIX}POST:${LOGIN}:10.0.0.2`, 1],
+      ]);
+      // The service still gets one address and none of the client forwarding headers (decision 17 of stage 3).
+      expect(received.map((item) => item.headers['x-forwarded-for'])).toEqual(['10.0.0.1', '10.0.0.1', '10.0.0.2']);
+      for (const name of ['x-forwarded-host', 'x-real-ip', 'forwarded']) {
+        expect(received.map((item) => item.headers[name])).toEqual([undefined, undefined, undefined]);
+      }
+    });
+
+    it('without a trusted proxy X-Forwarded-For changes nothing: the connection address counts', async () => {
+      config = limited(300);
+      expect((await gw('GET', '/products', { headers: { 'X-Forwarded-For': '1.2.3.4' } })).status).toBe(200);
+      expect([...redis.counters.keys()]).toEqual([`${KEY_PREFIX}global:127.0.0.1`]);
+      expect(received[0].headers['x-forwarded-for']).toBe('127.0.0.1');
     });
 
     it('health endpoints are not limited', async () => {

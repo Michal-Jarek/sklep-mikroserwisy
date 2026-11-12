@@ -2,7 +2,7 @@
 # RabbitMQ (+ topology and service accounts from deploy/rabbitmq/), MongoDB (Review, Notification),
 # Redis for Cart and Mailpit (SMTP + web UI for emails).
 # Started by default: docker compose -f deploy/compose.yaml up -d --wait
-# Services are added in profiles "platform" (Gateway, Auth) and "full-shop"
+# Services are added in profiles "platform" (Gateway, Auth, frontend) and "full-shop"
 # (team services are added when their PR is merged).
 # Ports only on 127.0.0.1. Passwords from deploy/.env (created by deploy/create-secrets.sh).
 name: sklep
@@ -306,7 +306,7 @@ services:
       retries: 20
       start_period: 10s
 
-  # The only service with a published port: the entry point to the backend (http://localhost:8080).
+  # The entry point to the backend (http://localhost:8080; the frontend forwards /api/ here too).
   # Does not depend on auth-service: public routes work without it, the others answer 503.
   api-gateway:
     image: api-gateway:dev
@@ -320,6 +320,9 @@ services:
       REDIS_HOST: redis-gateway
       REDIS_PORT: "6379"
       REDIS_PASSWORD: ${REDIS_GATEWAY_PASSWORD:?Run deploy/create-secrets.sh}
+      # X-Forwarded-For (client IP for the limits and the services) is trusted only on a connection from the
+      # frontend container (its nginx replaces the header); from anyone else the connection address counts.
+      TRUSTED_PROXIES: frontend
     # backend: Consul, Redis and the services; edge: entry from outside (published port).
     networks: [backend, edge]
     ports:
@@ -337,6 +340,29 @@ services:
       timeout: 3s
       retries: 20
       start_period: 10s
+
+  # Shop in the browser: nginx serves the React app and forwards /api/ to the Gateway
+  # (one address for the app and the API, no CORS). http://127.0.0.1:8090
+  frontend:
+    image: frontend:dev
+    build: ../frontend
+    profiles: [platform, full-shop]
+    user: "101:101"
+    environment:
+      NGINX_ENTRYPOINT_LOCAL_RESOLVERS: "1"
+      NGINX_ENTRYPOINT_QUIET_LOGS: "1"
+      GATEWAY_URL: http://api-gateway:8080
+    networks: [edge]
+    ports:
+      - "127.0.0.1:8090:8080"
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health/live > /dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
 networks:
   # Infrastructure and all services; no outbound access.

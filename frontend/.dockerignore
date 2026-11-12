@@ -1,0 +1,8 @@
+# Build context of the image: sources only. Patterns with **/ also match in subfolders.
+**/node_modules
+**/dist
+**/.env*
+!**/.env.example
+# Test results (Playwright).
+**/playwright-report
+**/test-results
