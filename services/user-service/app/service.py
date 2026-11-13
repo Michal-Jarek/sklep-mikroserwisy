@@ -1,6 +1,8 @@
 """Reguły biznesowe i granice transakcji profilu i adresów."""
 from uuid import UUID
 from fastapi import HTTPException
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from .models import Address, UserProfile
 from .repository import ProfileRepository
@@ -20,16 +22,32 @@ class ProfileService:
     def get(self, user_id: UUID) -> UserView:
         return UserView.model_validate(self.require(user_id))
 
-    def create(self, data: CreateUser) -> UserView:
+    def create(self, data: CreateUser) -> tuple[UserView, bool]:
+        try:
+            return self._create(data)
+        except IntegrityError:
+            # Concurrent Auth retries can race on the primary key. The losing
+            # transaction reads the committed winner and applies the same rule.
+            self.session.rollback()
+            existing = self.repo.get(data.id)
+            if existing is not None and (existing.first_name, existing.last_name, existing.email) == (data.first_name, data.last_name, data.email):
+                return UserView.model_validate(existing), False
+            raise HTTPException(409, "Profil o tym ID ma inne dane") from None
+
+    def _create(self, data: CreateUser) -> tuple[UserView, bool]:
         with self.session.begin():
-            if self.repo.get(data.id) is not None:
-                raise HTTPException(409, "Profil już istnieje")
+            existing = self.repo.get(data.id)
+            if existing is not None:
+                expected = (data.first_name, data.last_name, data.email)
+                if (existing.first_name, existing.last_name, existing.email) != expected:
+                    raise HTTPException(409, "Profil o tym ID ma inne dane")
+                return UserView.model_validate(existing), False
             profile = UserProfile(id=data.id, first_name=data.first_name,
-                                  last_name=data.last_name, email=str(data.email).lower())
+                                  last_name=data.last_name, email=data.email)
             self.session.add(profile)
             self.session.flush()  # Wymusza sprawdzenie ograniczeń UNIQUE przed odpowiedzią.
             result = UserView.model_validate(profile)
-        return result
+        return result, True
 
     def update(self, user_id: UUID, data: UpdateUser) -> UserView:
         with self.session.begin():
@@ -45,7 +63,11 @@ class ProfileService:
 
     def add_address(self, user_id: UUID, data: AddressInput) -> AddressView:
         with self.session.begin():
-            self.require(user_id)
+            # Serialize address additions per profile in PostgreSQL.
+            if self.session.scalar(select(UserProfile).where(UserProfile.id == user_id).with_for_update()) is None:
+                raise HTTPException(404, "Profil nie istnieje")
+            if len(self.repo.addresses(user_id)) >= 50:
+                raise HTTPException(409, "Maksymalnie 50 adresów")
             address = Address(user_id=user_id, **data.model_dump())
             self.session.add(address)
             self.session.flush()

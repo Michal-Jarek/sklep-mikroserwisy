@@ -11,7 +11,9 @@ spec:
     metadata:
       labels: {app: user-service}
     spec:
+      automountServiceAccountToken: false
       securityContext:
+        seccompProfile: {type: RuntimeDefault}
         runAsNonRoot: true
         runAsUser: 1000
         runAsGroup: 1000
@@ -22,6 +24,7 @@ spec:
           imagePullPolicy: IfNotPresent
           ports: [{containerPort: 8082}]
           securityContext:
+            readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
             capabilities: {drop: [ALL]}
           env:
@@ -32,7 +35,7 @@ spec:
               valueFrom:
                 fieldRef: {fieldPath: metadata.name}
             - name: DB_HOST
-              value: user-postgres
+              value: postgres
             - name: DB_NAME
               value: user_db
             - name: DB_USER

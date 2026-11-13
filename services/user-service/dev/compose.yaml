@@ -1,5 +1,5 @@
 services:
-  user-postgres:
+  postgres:
     image: postgres:17-alpine
     environment:
       POSTGRES_DB: user_db
@@ -12,7 +12,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
-  cart-redis:
+  redis-cart:
     image: redis:7.4-alpine
     ports: ["127.0.0.1:6379:6379"]
     volumes: ["cart-data:/data"]
@@ -24,9 +24,6 @@ services:
       retries: 20
   consul:
     image: hashicorp/consul:1.21
-    environment:
-      NO_PROXY: ${NO_PROXY:-127.0.0.1,localhost},user-service,cart-service,consul
-      no_proxy: ${NO_PROXY:-127.0.0.1,localhost},user-service,cart-service,consul
     command: ["agent", "-dev", "-client=0.0.0.0"]
     ports: ["127.0.0.1:8500:8500"]
     healthcheck:
@@ -39,14 +36,14 @@ services:
     image: user-service:0.1.0
     command: ["alembic", "upgrade", "head"]
     environment: &user-env
-      DB_HOST: user-postgres
+      DB_HOST: postgres
       DB_NAME: user_db
       DB_USER: user_service
       DB_PASSWORD: ${DB_PASSWORD:?Ustaw DB_PASSWORD}
       CONSUL_URL: http://consul:8500
-      SERVICE_ADDRESS: user-service
+      SERVICE_ADDRESS: ""
     depends_on:
-      user-postgres: {condition: service_healthy}
+      postgres: {condition: service_healthy}
   user-service:
     build: ..
     image: user-service:0.1.0
@@ -59,12 +56,12 @@ services:
     build: ../../cart-service
     image: cart-service:0.1.0
     environment:
-      REDIS_URL: redis://cart-redis:6379/0
+      REDIS_URL: redis://redis-cart:6379/0
       CONSUL_URL: http://consul:8500
-      SERVICE_ADDRESS: cart-service
+      SERVICE_ADDRESS: ""
     ports: ["127.0.0.1:8085:8085"]
     depends_on:
-      cart-redis: {condition: service_healthy}
+      redis-cart: {condition: service_healthy}
       consul: {condition: service_healthy}
 volumes:
   user-data:

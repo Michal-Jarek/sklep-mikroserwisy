@@ -48,15 +48,15 @@ POST i PATCH dodają pole `inventoryChecked`. GET zwraca zapisane ceny bez wywo�
 
 Product rejestruje się jako `product-service`, Inventory jako `inventory-service`.
 
-- GET `/products/{id}` → 200, co najmniej `{"name":"Książka","price":"19.99"}`. `price` jest napisem z dokładnie dwoma miejscami po kropce; nie liczbą JSON. Brak produktu: 404.
-- GET `/inventory/{id}` → 200, co najmniej `{"available":10}`. `available` oznacza liczbę sztuk możliwych do sprzedaży po odjęciu rezerwacji. Brak wiarygodnego stanu, również odpowiedź 404, oznacza `inventoryChecked:false`. Jeśli brak rekordu ma oznaczać zero sztuk, Inventory powinno zwrócić `{"available":0}`.
+- GET `/products/{id}` → 200, co najmniej `{"name":"Książka","price":"19.99","currency":"PLN"}`. `price` jest napisem z dokładnie dwoma miejscami po kropce; nie liczbą JSON. Brak produktu: 404.
+- GET `/inventory/{id}` → 200, co najmniej `{"available":10}`. `available` oznacza liczbę sztuk możliwych do sprzedaży po odjęciu rezerwacji. 404 oznacza zero sztuk. Brak wiarygodnego stanu oznacza `inventoryChecked:false`. Jeśli brak rekordu ma oznaczać zero sztuk, Inventory powinno zwrócić `{"available":0}`.
 
 
 ## Consul i odporność
 
 Obie aplikacje FastAPI rejestrują się przez API agenta Consul. Nazwy: `user-service`, `cart-service`; każda instancja ma własne ID i adres dostępny dla Consula oraz innych usług. Adres rejestracji w klastrze musi być osiągalny z Consula i innych podów; loopback nie spełnia tego warunku. Cart pobiera tylko zdrowe instancje, cache 10 s, round robin. User nie ma połączeń wychodzących do usług biznesowych.
 
-GET do Product i Inventory: timeout 2 s dla każdej próby HTTP, pierwsze wywołanie + maksymalnie dwa ponowienia, odstępy 100 i 200 ms. Wyszukanie w Consulu ma osobny limit 2 s. Zatem całe wywołanie może trwać dłużej niż 2 s. Circuit breaker w Pythonie: po co najmniej 10 wywołaniach sprawdza ostatnie 10 wyników; co najmniej 5 błędów otwiera obwód na 30 s. Po przerwie przepuszcza jedną próbę half-open. Sukces zamyka obwód, błąd otwiera go ponownie. 404 produktu nie jest awarią i nie podlega ponowieniom.
+Product i Inventory są odczytywane równolegle. Cała zmiana koszyka ma limit 8 s. GET do Product i Inventory: timeout 2 s dla każdej próby HTTP, pierwsze wywołanie + maksymalnie dwa ponowienia, odstępy 200 i 400 ms. Wyszukanie w Consulu ma osobny limit 2 s. Zatem całe wywołanie może trwać dłużej niż 2 s. Circuit breaker w Pythonie: po co najmniej 10 wywołaniach sprawdza ostatnie 10 wyników; co najmniej 5 błędów otwiera obwód na 30 s. Po przerwie przepuszcza jedną próbę half-open. Sukces zamyka obwód, błąd otwiera go ponownie. 4xx poza 408/429 oraz błędna treść 2xx nie są awariami i nie podlegają ponowieniom. Ponawiane są tylko błędy sieci, timeout i 502/503/504; 408, 429 oraz pozostałe 5xx liczą się jako awarie bez ponowień. 404 produktu daje 404 klientowi; 404 Inventory oznacza zero sztuk.
 
 ## Do uzgodnienia przed wspólnym wdrożeniem
 
@@ -64,8 +64,8 @@ GET do Product i Inventory: timeout 2 s dla każdej próby HTTP, pierwsze wywoł
 - Format ceny Product, pole `available` Inventory i polityka finalnej ceny w Order.
 - Order pobiera `/cart` z ID klienta i SERVICE; po opłaceniu woła wewnętrzny DELETE. Obecny kontrakt usuwa cały bieżący koszyk — jeśli podczas zakupu użytkownik dopisze nowe pozycje, też zostaną usunięte. Usunięcie tylko zakupionej migawki wymaga wspólnego rozszerzenia kontraktu (wersji koszyka). Obecna wersja nie obsługuje wersjonowania koszyka.
 - Dostępność Consula, etykiety podów, DNS baz, sekrety i egzekwowanie NetworkPolicy przez CNI.
-- Gateway kieruje `/api/v1/users/...` i `/api/v1/cart/...` po usunięciu `/api/v1`. Nie wystawia POST `/users` ani DELETE `/cart/{userId}` klientowi. Może udostępnić GET `/users/{id}` tylko ADMIN.
-- Consul KV, tracing i metryki są osobnymi rozszerzeniami. Nie wchodzą w zakres bieżącej implementacji.
+- Gateway kieruje `/api/v1/users/...` i `/api/v1/cart/...` po usunięciu `/api/v1`; same usługi nie używają prefiksu (D12). Nie wystawia POST `/users` ani DELETE `/cart/{userId}` klientowi. Może udostępnić GET `/users/{id}` tylko ADMIN.
+- Consul KV obsługuje `logLevel` przy starcie. Zmienne środowiskowe i `.env` mają pierwszeństwo; tracing i metryki pozostają osobnymi rozszerzeniami.
 
 ## Technologia tej implementacji
 

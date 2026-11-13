@@ -9,7 +9,7 @@
 5. `catalog.py` wykonuje GET z timeoutem, ponowieniami i przekazaniem kontekstu. Do ról dodaje SERVICE. Nazwa i cena muszą mieć poprawny format.
 6. Serwis odczytuje obecną pozycję. POST dodaje ilość, PATCH zastępuje ją. Porównuje docelową ilość z dostępnym stanem.
 7. `store.py` wykonuje w Redisie skrypt Lua: porównuje poprzednią wartość, zapisuje nową i ustawia TTL atomowo.
-8. Jeśli inny zapis zdążył zmienić pozycję, serwis odczytuje ją jeszcze raz i ponownie oblicza ilość. Po ośmiu konfliktach zwraca 409.
+8. Jeśli inny zapis zdążył zmienić pozycję, serwis odczytuje ją jeszcze raz i ponownie oblicza ilość. Stosuje do 64 prób z losową krótką przerwą, we wspólnym terminie 8 s; po wyczerpaniu prób zwraca 409.
 9. Odpowiedź zawiera aktualny koszyk, sumę oraz `inventoryChecked`, czyli informację, czy udało się sprawdzić stan magazynowy.
 
 ### Pliki Cart Service
@@ -57,3 +57,5 @@ TTL wynosi 604800 sekund od ostatniej zmiany. POST, PATCH i skuteczne usunięcie
 | Redis nie działa | 503, operacja zgłaszana jako nieudana. |
 
 Circuit breaker jest osobny dla Product i Inventory. Liczy wynik całego wywołania wraz z ponowieniami. 404 jest wynikiem biznesowym, więc nie liczy się jako awaria. Ponowienia obejmują wyłącznie GET, a nie operacje zapisu.
+
+Własny wyłącznik jest celowy (D2): blokada chroni tylko stan, nigdy wywołanie sieciowe. Okno 10, próg 50%, przerwa 30 s i jedna próba half-open są sprawdzane testami. Rejestracja Consul jest sprawdzana co 15 s i odzyskiwana w tle; wyszukiwanie współdzieli tylko odświeżenie konkretnej usługi i zachowuje ostatnie znane adresy.

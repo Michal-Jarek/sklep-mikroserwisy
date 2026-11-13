@@ -7,7 +7,7 @@ Wszystkie pliki tej usługi znajdują się w `services/cart-service/`. Kolekcja 
 - Namespace: `shop`; adres Consula: `http://consul:8500`.
 - Nazwy usług i etykiety podów: `app: user-service`, `app: cart-service` oraz nazwy pozostałych usług z głównego README repozytorium.
 - Własny magazyn danych; brak bezpośredniego dostępu do baz innych usług.
-- Sekrety i infrastruktura są dodawane przez architekta w `deploy/`. Plik `network-policy.proposed.yaml` jest propozycją do wspólnej konfiguracji, a nie aktywnym elementem Deploymentu.
+- Sekrety i infrastruktura są dodawane przez architekta w `deploy/`. Plik `network-policy.proposed.yaml` jest propozycją do przekazania właścicielowi wspólnego `deploy/k8s/`; ten PR nie zmienia plików deploy.
 - Gateway usuwa nagłówki tożsamości klienta i dodaje `X-User-Id`, `X-User-Roles` oraz `X-Request-Id`. JWT weryfikuje Gateway.
 - Dla usług nie są przewidziane publiczne Ingress, NodePort ani LoadBalancer.
 
@@ -19,4 +19,4 @@ Order pobiera GET `/cart` z ID klienta i rolą SERVICE. Po zakupie wywołuje DEL
 
 ## Konfiguracja centralna
 
-Konfiguracja jest odczytywana ze zmiennych środowiskowych i lokalnego `.env`. Odczyt Consul KV `config/<usługa>/data` nie został zaimplementowany; wymaga wspólnego ustalenia sposobu ładowania konfiguracji. Discovery i health checki Consula są zaimplementowane.
+Konfiguracja jest odczytywana ze zmiennych środowiskowych i lokalnego `.env`. Przy starcie odczytywane jest `logLevel` z Consul KV `config/<usługa>/data`. Zmienne środowiskowe i lokalne `.env` mają pierwszeństwo; bez Consula start jest dozwolony. Discovery i health checki Consula są zaimplementowane.

@@ -26,13 +26,17 @@ Profile zawierają ID nadane przez Auth, imię, nazwisko i e-mail. Adresy dostaw
 
 ## Uruchomienie lokalne
 
+Wymagany Python 3.12. W Windows: `py -3.12` zamiast `python3.12`.
+
+Do izolowanego uruchomienia użyj zestawu dev wskazanego poniżej. Wspólne repo ma już infrastrukturę PostgreSQL/Redis/Consul, ale wpisy aplikacji i włączenie wywołania User w Auth wymagają osobnej zmiany właściciela `deploy/`. Ten PR zawiera wyłącznie katalogi User i Cart.
+
 Wariant Compose dla User i Cart: [dev/README.md](dev/README.md).
 
 Bez kontenera aplikacji, z działającą bazą PostgreSQL:
 
 ```sh
 cd services/user-service
-python -m venv .venv
+python3.12 -m venv .venv
 # Linux/macOS: source .venv/bin/activate
 # PowerShell: .\.venv\Scripts\Activate.ps1
 python -m pip install --require-hashes -r requirements-dev.lock
@@ -60,7 +64,7 @@ Domyślnie testy używają tymczasowej SQLite. Dla testowego PostgreSQL należy 
 
 ## Zależności i wdrożenie
 
-W klastrze oczekiwany jest PostgreSQL `user-postgres:5432` i Consul `http://consul:8500`. Hasło bazy pochodzi z Secret `user-db-secret`, klucz `password`. Nazwa hosta bazy jest konfigurowalna. Migracja jest osobnym Jobem wykonywanym przed Deploymentem.
+W klastrze oczekiwany jest PostgreSQL `postgres:5432` i Consul `http://consul:8500`. Hasło bazy pochodzi z Secret `user-db-secret`, klucz `password`. Nazwa hosta bazy jest konfigurowalna. Migracja jest osobnym Jobem wykonywanym przed Deploymentem.
 
 ## Pliki
 
@@ -76,3 +80,13 @@ W klastrze oczekiwany jest PostgreSQL `user-postgres:5432` i Consul `http://cons
 Tożsamość jest przekazywana w nagłówkach z zaufanego Gateway. W klastrze niezbędne są ograniczenia ruchu sieciowego. Usługa nie jest publicznym punktem wejścia do sklepu.
 
 Wyniki sprawdzenia: [docs/WERYFIKACJA.md](docs/WERYFIKACJA.md).
+
+Przykład bezpośredni przy uruchomieniu lokalnym (ID konta zastąp własnym UUID):
+
+```sh
+curl -H "X-User-Id: 11111111-1111-4111-8111-111111111111" -H "X-User-Roles: CUSTOMER" http://127.0.0.1:8082/users/me
+```
+
+Konfiguracja `logLevel` jest czytana przy starcie z `config/user-service/data` (YAML). `LOG_LEVEL` ze środowiska lub `.env` ma pierwszeństwo. Start bez Consula jest dozwolony; rejestracja wraca w tle co 15 s.
+
+Przy uruchomieniu z VS Code z Consulem w Dockerze ustaw `SERVICE_ADDRESS=host.docker.internal` (D13). W kontenerze pozostaw puste — adres zostanie wykryty. ID instancji jest stabilne: nazwa usługi plus hostname; `INSTANCE_ID` pozwala je jawnie nadpisać.

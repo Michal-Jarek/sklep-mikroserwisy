@@ -1,6 +1,7 @@
 """Encje odzwierciedlają tabele; nie zawierają hasła ani ról z Auth."""
+from datetime import datetime, timezone
 from uuid import UUID, uuid4
-from sqlalchemy import ForeignKey, String, Uuid
+from sqlalchemy import DateTime, ForeignKey, String, Uuid
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 class Base(DeclarativeBase):
@@ -11,12 +12,13 @@ class UserProfile(Base):
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
     first_name: Mapped[str] = mapped_column(String(100))
     last_name: Mapped[str] = mapped_column(String(100))
-    email: Mapped[str] = mapped_column(String(254), unique=True)
+    email: Mapped[str] = mapped_column(String(254))
 
 class Address(Base):
     __tablename__ = "addresses"
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("user_profiles.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     street: Mapped[str] = mapped_column(String(200))
     city: Mapped[str] = mapped_column(String(100))
     postal_code: Mapped[str] = mapped_column(String(20))

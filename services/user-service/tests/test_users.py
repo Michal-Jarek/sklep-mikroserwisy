@@ -68,10 +68,11 @@ def test_no_identity_or_invalid_identity(client):
     assert client.get("/users/me", headers=headers(uuid4(), "UNKNOWN")).status_code == 403
 
 
-def test_duplicates_are_conflicts(client):
+def test_profile_creation_is_idempotent_and_auth_owns_email(client):
     user = profile(client)
-    assert client.post("/users", headers=headers(roles="SERVICE"), json=user).status_code == 409
-    assert client.post("/users", headers=headers(roles="SERVICE"), json={**user, "id": str(uuid4())}).status_code == 409
+    assert client.post("/users", headers=headers(roles="SERVICE"), json=user).status_code == 200
+    assert client.post("/users", headers=headers(roles="SERVICE"), json={**user, "id": str(uuid4())}).status_code == 201
+    assert client.post("/users", headers=headers(roles="SERVICE"), json={**user, "firstName": "Inne"}).status_code == 409
 
 
 def test_address_ownership_and_delete(client):
@@ -97,7 +98,7 @@ def test_invalid_input_is_400(client, data):
     user = profile(client)
     response = client.put("/users/me", headers=headers(user["id"]), json=data)
     assert response.status_code == 400
-    assert response.json() == {"status": 400, "error": "BAD_REQUEST", "message": "Niepoprawne dane żądania", "requestId": "user-test"}
+    assert response.json() == {"status": 400, "error": "VALIDATION_ERROR", "message": "Niepoprawne dane żądania", "requestId": "user-test"}
 
 
 def test_malformed_json_uuid_and_route(client):
