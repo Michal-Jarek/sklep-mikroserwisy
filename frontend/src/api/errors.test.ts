@@ -23,6 +23,7 @@ const EXPECTED: [status: number, code: string, message: string][] = [
   [409, 'CONFLICT', 'Operacja koliduje z aktualnym stanem danych.'],
   [409, 'EMAIL_TAKEN', 'Konto z tym adresem e-mail już istnieje.'],
   [409, 'INSUFFICIENT_STOCK', 'Za mało sztuk w magazynie.'],
+  [409, 'PRODUCT_UNAVAILABLE', 'Produkt z koszyka nie jest już dostępny. Usuń go z koszyka.'],
   [409, 'CART_EMPTY', 'Koszyk jest pusty.'],
   [409, 'ORDER_NOT_CANCELLABLE', 'Tego zamówienia nie można już anulować.'],
   [409, 'INVALID_STATUS_TRANSITION', 'Nie można zmienić statusu przesyłki w ten sposób.'],
@@ -45,7 +46,7 @@ describe('error messages', () => {
   });
 
   it('every code of the register, D7, the Gateway table and 3.6 has a message', () => {
-    const codes = ['INVALID_CREDENTIALS', 'EMAIL_TAKEN', 'TOO_MANY_ATTEMPTS', 'INSUFFICIENT_STOCK', 'CART_EMPTY', 'ORDER_NOT_CANCELLABLE', 'INVALID_STATUS_TRANSITION', 'VALIDATION_ERROR', 'UNAUTHORIZED', 'FORBIDDEN', 'NOT_FOUND', 'METHOD_NOT_ALLOWED', 'CONFLICT', 'PAYLOAD_TOO_LARGE', 'UNSUPPORTED_MEDIA_TYPE', 'TOO_MANY_REQUESTS', 'INTERNAL_ERROR', 'SERVICE_UNAVAILABLE', 'REQUEST_TIMEOUT', 'REQUEST_HEADER_FIELDS_TOO_LARGE', 'BAD_GATEWAY', 'GATEWAY_TIMEOUT', 'BAD_REQUEST', 'INTERNAL_SERVER_ERROR'];
+    const codes = ['INVALID_CREDENTIALS', 'EMAIL_TAKEN', 'TOO_MANY_ATTEMPTS', 'INSUFFICIENT_STOCK', 'PRODUCT_UNAVAILABLE', 'CART_EMPTY', 'ORDER_NOT_CANCELLABLE', 'INVALID_STATUS_TRANSITION', 'VALIDATION_ERROR', 'UNAUTHORIZED', 'FORBIDDEN', 'NOT_FOUND', 'METHOD_NOT_ALLOWED', 'CONFLICT', 'PAYLOAD_TOO_LARGE', 'UNSUPPORTED_MEDIA_TYPE', 'TOO_MANY_REQUESTS', 'INTERNAL_ERROR', 'SERVICE_UNAVAILABLE', 'REQUEST_TIMEOUT', 'REQUEST_HEADER_FIELDS_TOO_LARGE', 'BAD_GATEWAY', 'GATEWAY_TIMEOUT', 'BAD_REQUEST', 'INTERNAL_SERVER_ERROR'];
     expect(codes.filter((code) => !ERROR_MESSAGES[code])).toEqual([]);
   });
 

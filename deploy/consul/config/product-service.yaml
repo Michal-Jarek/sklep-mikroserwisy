@@ -1,4 +1,7 @@
 # Configuration of product-service in Consul KV (key config/product-service/data). No credentials here.
-# Owner: to be decided. Changes go through Michal (deploy/ belongs to the platform).
+# Owner: micbanavio. Changes go through Michal (deploy/ belongs to the platform).
 # Read at startup; environment variables override these values. Restart the service after a change.
 logLevel: info
+# Seconds a catalog read (list, details, categories) is kept per instance; a write clears only
+# the cache of the instance that handled it, so other instances may show old data for up to this time.
+cacheTtlSeconds: 60

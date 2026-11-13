@@ -4,6 +4,7 @@ import type { MockProduct, MockState } from '../db';
 import { badRequest, json, noContent, notFound, now, route } from '../http';
 import { MONEY_PATTERN, parseMoney, PRICE_FILTER_PATTERN, toMoney } from '../money';
 import { objectWith, oneOf, pageOf, pageRequest, pathUuid, readBody, text, uuid } from '../validation';
+import { availableOf } from './inventory';
 
 const SORTS: readonly ProductSort[] = ['NAME', 'PRICE_ASC', 'PRICE_DESC', 'NEWEST'];
 const PRODUCT_FIELDS = ['name', 'description', 'price', 'currency', 'categoryId', 'imageUrl'];
@@ -23,7 +24,7 @@ export function productDetail(state: MockState, p: MockProduct): ProductDetail {
   const category = state.categories.find((c) => c.id === p.categoryId) ?? { id: p.categoryId, name: '' };
   const reviews = state.reviews.filter((r) => r.productId === p.id);
   const sum = reviews.reduce((total, r) => total + r.rating, 0);
-  const stock = state.stock[p.id];
+  const available = availableOf(state, p.id);
   return {
     id: p.id,
     name: p.name,
@@ -35,9 +36,7 @@ export function productDetail(state: MockState, p: MockProduct): ProductDetail {
     rating: p.ratingUnavailable
       ? null
       : { average: reviews.length === 0 ? null : Math.round((sum / reviews.length) * 10) / 10, count: reviews.length },
-    availability: stock
-      ? { available: stock.quantity - stock.reserved, inStock: stock.quantity - stock.reserved > 0 }
-      : null,
+    availability: available === null ? null : { available, inStock: available > 0 },
     createdAt: p.createdAt,
     updatedAt: p.updatedAt,
   };

@@ -21,9 +21,14 @@ test('product: rating, availability and their fallbacks', async ({ page }) => {
   await expect(page.getByText('Brak opinii')).toBeVisible();
   await expect(page.getByText('Nikt jeszcze nie ocenił tego produktu.')).toBeVisible();
 
-  await page.goto(`/products/${products.noStock}`);
+  await page.goto(`/products/${products.inventoryUnavailable}`);
   await expect(page.getByText('Dostępność sprawdzimy przy zamówieniu')).toBeVisible();
   await expect(addToCart).toBeEnabled();
+
+  // No stock record = 0 pieces.
+  await page.goto(`/products/${products.noStock}`);
+  await expect(page.getByText('Brak w magazynie')).toBeVisible();
+  await expect(addToCart).toBeDisabled();
 
   await page.goto(`/products/${products.outOfStock}`);
   await expect(page.getByText('Brak w magazynie')).toBeVisible();

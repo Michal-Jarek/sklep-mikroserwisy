@@ -46,9 +46,15 @@ describe('product page', () => {
   });
 
   it('availability null → "Dostępność sprawdzimy przy zamówieniu"', async () => {
-    await renderApp(`/products/${products.noStock}`);
+    await renderApp(`/products/${products.inventoryUnavailable}`);
     expect(await screen.findByText('Dostępność sprawdzimy przy zamówieniu')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Dodaj do koszyka' })).toBeEnabled();
+  });
+
+  it('no stock record = 0 pieces → "Brak w magazynie"', async () => {
+    await renderApp(`/products/${products.noStock}`);
+    expect(await screen.findByText('Brak w magazynie')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Dodaj do koszyka' })).toBeDisabled();
   });
 
   it('inStock false → "Brak w magazynie" and the button is disabled', async () => {
@@ -134,7 +140,7 @@ describe('product page', () => {
 
 describe('product page, logged in', () => {
   it('adds to the cart; without stock data shows that availability is checked at the order', async () => {
-    const { user } = await renderAsCustomer(`/products/${products.noStock}`);
+    const { user } = await renderAsCustomer(`/products/${products.inventoryUnavailable}`);
 
     await user.click(await screen.findByRole('button', { name: 'Dodaj do koszyka' }));
 

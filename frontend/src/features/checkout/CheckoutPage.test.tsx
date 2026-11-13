@@ -116,6 +116,21 @@ describe('checkout page', () => {
     expect(screen.getByRole('link', { name: 'Przejdź do koszyka' })).toHaveAttribute('href', '/cart');
   });
 
+  it('PRODUCT_UNAVAILABLE: message and a link to the cart', async () => {
+    cartWith(MUG);
+    server.use(
+      http.post('*/api/v1/orders', () =>
+        HttpResponse.json({ status: 409, error: 'PRODUCT_UNAVAILABLE', message: 'x', requestId: 'r' }, { status: 409 }),
+      ),
+    );
+    const { user } = await renderAsCustomer('/checkout');
+
+    await placeOrder(user, '4111111111111111');
+
+    expect(await screen.findByText('Produkt z koszyka nie jest już dostępny. Usuń go z koszyka.')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Przejdź do koszyka' })).toHaveAttribute('href', '/cart');
+  });
+
   it('CART_EMPTY goes to the cart', async () => {
     cartWith(MUG);
     server.use(

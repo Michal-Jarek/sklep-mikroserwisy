@@ -1,5 +1,6 @@
 // Mock Cart (contract: docs/frontend-api.md, section Cart). Name and price are copied from the product
-// on every change; stock comes from the mock Inventory (no stock record -> inventoryChecked: false).
+// on every change; stock comes from the mock Inventory (no stock record = 0 pieces -> 409; Inventory
+// "unavailable" -> inventoryChecked: false).
 import type { Cart, CartMutationResponse } from '../../api/types';
 import type { MockState } from '../db';
 import { json, MockApiError, noContent, notFound, requireIdentity, route } from '../http';

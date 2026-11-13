@@ -4,10 +4,17 @@ import type { MockState } from '../db';
 import { json, MockApiError, notFound, route } from '../http';
 import { integer, pathUuid, readBody } from '../validation';
 
-/** Pieces that can still be reserved; null when there is no stock record. */
+/**
+ * Pieces that can still be reserved, as Product and Cart see them: 0 without a stock record
+ * (docs/frontend-api.md: no record = 0 pieces), null when Inventory "does not answer"
+ * (product flag inventoryUnavailable).
+ */
 export function availableOf(state: MockState, productId: string): number | null {
+  if (state.products.find((p) => p.id === productId)?.inventoryUnavailable) {
+    return null;
+  }
   const stock = state.stock[productId];
-  return stock ? stock.quantity - stock.reserved : null;
+  return stock ? stock.quantity - stock.reserved : 0;
 }
 
 function stockView(state: MockState, productId: string): StockLevel {

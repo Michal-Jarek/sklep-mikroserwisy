@@ -28,7 +28,7 @@ export const SEED_IDS = {
     ratingUnavailable: id('a0000000', 2),
     /** rating.count 0, rating.average null. */
     noReviews: id('a0000000', 3),
-    /** availability: null (no stock record) — cart answers inventoryChecked:false, an order gives INSUFFICIENT_STOCK. */
+    /** No stock record = 0 pieces: availability {available: 0, inStock: false}, cart 409, order INSUFFICIENT_STOCK. */
     noStock: id('a0000000', 4),
     /** availability.inStock false (quantity 0). */
     outOfStock: id('a0000000', 5),
@@ -36,6 +36,8 @@ export const SEED_IDS = {
     purchased: id('a0000000', 6),
     /** Only 2 pieces in stock: adding 3 gives 409. */
     lowStock: id('a0000000', 7),
+    /** availability: null (Inventory "unavailable") — cart answers inventoryChecked:false. */
+    inventoryUnavailable: id('a0000000', 8),
   },
   orders: {
     /** DELIVERED, shipment DELIVERED. */
@@ -74,6 +76,7 @@ interface ProductSeed {
   image: string | null;
   stock: MockStock | null;
   ratingUnavailable?: boolean;
+  inventoryUnavailable?: boolean;
 }
 
 const PRODUCTS: ProductSeed[] = [
@@ -84,7 +87,7 @@ const PRODUCTS: ProductSeed[] = [
   { name: 'Patelnia żeliwna', priceCents: 15900, category: 'kitchen', description: 'Patelnia 28 cm do kuchni indukcyjnej.', image: '#18181b', stock: { quantity: 0, reserved: 0 } },
   { name: 'Termos stalowy', priceCents: 5999, category: 'kitchen', description: 'Termos 750 ml, trzyma ciepło 12 godzin.', image: '#0f766e', stock: { quantity: 20, reserved: 0 } },
   { name: 'Mikroserwisy w praktyce', priceCents: 7900, category: 'books', description: 'Projektowanie i wdrażanie systemów z wielu usług.', image: '#7c3aed', stock: { quantity: 2, reserved: 0 } },
-  { name: 'Wzorce projektowe', priceCents: 9900, category: 'books', description: 'Klasyczne wzorce z przykładami.', image: '#6d28d9', stock: { quantity: 12, reserved: 0 } },
+  { name: 'Wzorce projektowe', priceCents: 9900, category: 'books', description: 'Klasyczne wzorce z przykładami.', image: '#6d28d9', stock: { quantity: 12, reserved: 0 }, inventoryUnavailable: true },
   { name: 'Czysty kod', priceCents: 6990, category: 'books', description: 'Jak pisać kod czytelny dla innych.', image: null, stock: { quantity: 10, reserved: 1 } },
   { name: 'Algorytmy', priceCents: 11900, category: 'books', description: 'Algorytmy i struktury danych od podstaw.', image: '#4338ca', stock: { quantity: 8, reserved: 0 } },
   { name: 'Sieci komputerowe', priceCents: 8900, category: 'books', description: 'Protokoły, adresacja i bezpieczeństwo sieci.', image: null, stock: { quantity: 6, reserved: 0 } },
@@ -205,6 +208,7 @@ export function createSeed(): MockState {
     createdAt: day(`2026-10-${(index + 1).toString().padStart(2, '0')}`),
     updatedAt: day(`2026-10-${(index + 1).toString().padStart(2, '0')}`),
     ...(p.ratingUnavailable ? { ratingUnavailable: true } : {}),
+    ...(p.inventoryUnavailable ? { inventoryUnavailable: true } : {}),
   }));
 
   const stock: MockState['stock'] = {};

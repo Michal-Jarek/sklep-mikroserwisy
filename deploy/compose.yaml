@@ -501,6 +501,95 @@ services:
       retries: 20
       start_period: 10s
 
+  # One-off: applies the Product Service database migrations (Alembic, with the demo catalog), then exits.
+  product-migrate:
+    image: product-service:dev
+    build: ../services/product-service
+    profiles: [full-shop]
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: product_db
+      DB_USER: product_service
+      DB_PASSWORD: ${PRODUCT_DB_PASSWORD:?Run deploy/create-secrets.sh}
+    networks: [backend]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  product-service:
+    image: product-service:dev
+    build: ../services/product-service
+    profiles: [full-shop]
+    environment:
+      PORT: "8083"
+      CONSUL_HOST: consul
+      CONSUL_PORT: "8500"
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: product_db
+      DB_USER: product_service
+      DB_PASSWORD: ${PRODUCT_DB_PASSWORD:?Run deploy/create-secrets.sh}
+    networks: [backend]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      consul:
+        condition: service_healthy
+      consul-kv-seed:
+        condition: service_completed_successfully
+      product-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8083/health/ready', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  # Consumer of notification.q (all four events), emails through Mailpit. In "full-shop" only:
+  # with "platform" alone the events wait in notification.q and are sent on the next full-shop start.
+  notification-service:
+    image: notification-service:dev
+    build: ../services/notification-service
+    profiles: [full-shop]
+    environment:
+      PORT: "8087"
+      CONSUL_HOST: consul
+      CONSUL_PORT: "8500"
+      DB_HOST: mongo
+      DB_PORT: "27017"
+      DB_NAME: notification_db
+      DB_USER: notification_service
+      DB_PASSWORD: ${NOTIFICATION_DB_PASSWORD:?Run deploy/create-secrets.sh}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USER: notification-service
+      RABBITMQ_PASSWORD: ${NOTIFICATION_RABBITMQ_PASSWORD:?Run deploy/create-secrets.sh}
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+    networks: [backend]
+    depends_on:
+      mongo:
+        condition: service_healthy
+      consul:
+        condition: service_healthy
+      consul-kv-seed:
+        condition: service_completed_successfully
+      # Start order only (queue and account exist); the consumer reconnects on its own later.
+      rabbitmq-setup:
+        condition: service_completed_successfully
+      mailpit:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8087/health/ready', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
 networks:
   # Infrastructure and all services; no outbound access.
   backend: { internal: true }

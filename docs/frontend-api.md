@@ -26,11 +26,12 @@ Frontend w trybie deweloperskim działa na atrapach MSW (`frontend/src/mocks/`),
 | Usługa | Stan | Źródło kontraktu |
 |---|---|---|
 | Auth | **istnieje w `develop`**, działa w Docker Compose | [README Auth](../services/auth-service/README.md#endpointy) |
-| User | **istnieje w `develop`** (PR #1), poza Docker Compose do czasu poprawek | kod `services/user-service/` |
-| Cart | **istnieje w `develop`** (PR #1), poza Docker Compose do czasu poprawek | kod `services/cart-service/` |
-| Inventory | **w PR #2** (jeszcze nie w `develop`) | kod z PR #2, z identyfikatorami UUID ([D1](decisions.md#d1--identyfikatory)) |
-| Review | **w PR #2** (jeszcze nie w `develop`) | kod z PR #2, z identyfikatorami UUID ([D1](decisions.md#d1--identyfikatory)) |
-| Product | **propozycja v1** | ten dokument |
+| User | **istnieje w `develop`**, działa w Docker Compose | kod `services/user-service/` |
+| Cart | **istnieje w `develop`**, działa w Docker Compose | kod `services/cart-service/` |
+| Inventory | **istnieje w `develop`**, działa w Docker Compose; `productId` jeszcze liczbą zamiast UUID ([D1](decisions.md#d1--identyfikatory)) — do poprawki | kod `services/inventory-service/` |
+| Review | **istnieje w `develop`**, działa w Docker Compose; `productId` jeszcze liczbą zamiast UUID ([D1](decisions.md#d1--identyfikatory)) — do poprawki | kod `services/review-service/` |
+| Product | **istnieje w `develop`** (PR #11), działa w Docker Compose; implementacja kontraktu v1 z tego dokumentu | ten dokument, kod `services/product-service/` |
+| Notification | **istnieje w `develop`** (PR #12), działa w Docker Compose | `GET /notifications/me`: kod `services/notification-service/` |
 | Order | **propozycja v1** | ten dokument; pola jak `order.created` w [events.md](events.md#ordercreated) |
 | Shipping | **propozycja v1** | ten dokument; statusy jak `shipment.status_changed` w [events.md](events.md#shipmentstatus_changed) |
 
@@ -228,9 +229,9 @@ Wejście: `{"productId", "quantity"}`, `quantity` liczba całkowita 1–999. **D
 {"userId": "0b5f5c1e-7f43-4b3c-9d2e-8a4b6a1c2d3e", "currency": "PLN", "items": [ … ], "total": "39.98", "inventoryChecked": true}
 ```
 
-`inventoryChecked: false` — Inventory był niedostępny albo nie ma stanu produktu; dostępność sprawdzi Order przy zamówieniu.
+`inventoryChecked: false` — Inventory był niedostępny; dostępność sprawdzi Order przy zamówieniu. Produkt bez stanu w Inventory (404) ma **0 sztuk** — dodanie kończy się 409 jak przy braku towaru.
 
-Błędy: 400 `VALIDATION_ERROR`, 401, 404 `NOT_FOUND` (nie ma produktu), **409 `CONFLICT`** (za mało sztuk w magazynie albo razem więcej niż 999), 503 `SERVICE_UNAVAILABLE` (Product niedostępny — bez aktualnej ceny nie da się dodać).
+Błędy: 400 `VALIDATION_ERROR`, 401, 404 `NOT_FOUND` (nie ma produktu), **409 `CONFLICT`** (za mało sztuk w magazynie — także produkt bez stanu w Inventory — albo razem więcej niż 999), 503 `SERVICE_UNAVAILABLE` (Product niedostępny — bez aktualnej ceny nie da się dodać).
 
 ### `PATCH /cart/items/{productId}` — zalogowany
 
@@ -292,7 +293,7 @@ Błędy: 400 `VALIDATION_ERROR` (zły parametr).
 ```
 
 - `rating` — z Review (`GET /reviews/summary/{productId}`): `average` zaokrąglona do 0,1, `null` przy `count` 0; **`rating: null`** — Review niedostępny (strona działa dalej).
-- `availability` — z Inventory: `available` = `quantity − reserved`, `inStock` = `available > 0`; **`availability: null`** — Inventory niedostępny albo nie ma stanu produktu.
+- `availability` — z Inventory: `available` = `quantity − reserved`, `inStock` = `available > 0`. Produkt bez stanu w Inventory (404) ma **0 sztuk**: `{"available": 0, "inStock": false}`. **`availability: null`** — tylko gdy Inventory jest niedostępny.
 - Z rolą `SERVICE` (wołają Cart i Order) Product nie woła Review ani Inventory ([D4](decisions.md#d4--lekki-odczyt-produktu)) — `rating` i `availability` są wtedy `null`.
 
 Błędy: 400 (`productId` nie jest UUID), 404 `NOT_FOUND`.
@@ -322,7 +323,7 @@ Wejście:
 {"name": "Kubek ceramiczny", "description": "Kubek 300 ml.", "price": "19.99", "currency": "PLN", "categoryId": "3f2e1d0c-9b8a-4765-8432-10fedcba9876", "imageUrl": null}
 ```
 
-**201** — `ProductDetail` nowego produktu (`rating` `{"average": null, "count": 0}`, `availability` `null` — stan ustawia się w Inventory). Błędy: 400, 401, 403.
+**201** — `ProductDetail` nowego produktu (`rating` `{"average": null, "count": 0}`, `availability` `{"available": 0, "inStock": false}` — stanu jeszcze nie ma, ustawia się go w Inventory). Błędy: 400, 401, 403.
 
 ### `PUT /products/{productId}` — ADMIN
 
@@ -457,7 +458,7 @@ Pozycje zamówienia Order bierze z koszyka klienta (woła Cart), ceny z Product,
 
 **201** — `OrderDetail` ze statusem `PAID` albo `PAYMENT_FAILED` (oba to utworzone zamówienie; frontend rozróżnia po `status`).
 
-Błędy: 400 `VALIDATION_ERROR`, 401, **409 `CART_EMPTY`** — pusty koszyk, **409 `INSUFFICIENT_STOCK`** — za mało sztuk któregoś produktu (także produkt bez stanu w Inventory), 503 `SERVICE_UNAVAILABLE` — Cart, Product, Inventory albo Shipping niedostępne.
+Błędy: 400 `VALIDATION_ERROR`, 401, **409 `CART_EMPTY`** — pusty koszyk, **409 `INSUFFICIENT_STOCK`** — za mało sztuk któregoś produktu (także produkt bez stanu w Inventory), **409 `PRODUCT_UNAVAILABLE`** — produktu z koszyka nie ma już w sklepie (wycofany przez ADMIN; lekki odczyt Product daje 404), frontend prosi o usunięcie go z koszyka, 503 `SERVICE_UNAVAILABLE` — Cart, Product, Inventory albo Shipping niedostępne.
 
 **Przesyłka powstaje asynchronicznie:** Shipping zakłada ją po zdarzeniu `order.created`, więc przez chwilę po `201` `GET /shipments?orderId=` może zwracać pustą listę („W przygotowaniu”).
 
@@ -560,6 +561,7 @@ Kody z tego dokumentu oprócz wspólnych z D7. Rejestr: [decisions.md, D7](decis
 | Auth | 429 | `TOO_MANY_ATTEMPTS` | konto zablokowane na 15 min; z `Retry-After` | istnieje |
 | Inventory, Order | 409 | `INSUFFICIENT_STOCK` | za mało towaru (rezerwacja przy zamówieniu) | istnieje (Inventory) |
 | Order | 409 | `CART_EMPTY` | zamówienie z pustego koszyka | propozycja v1 |
+| Order | 409 | `PRODUCT_UNAVAILABLE` | produkt z koszyka wycofany ze sklepu | propozycja v1 |
 | Order | 409 | `ORDER_NOT_CANCELLABLE` | anulowanie po wysyłce albo w statusie innym niż `NEW`/`PAID` | propozycja v1 |
 | Shipping | 409 | `INVALID_STATUS_TRANSITION` | zmiana statusu przesyłki inna niż o jeden krok naprzód | propozycja v1 |
 

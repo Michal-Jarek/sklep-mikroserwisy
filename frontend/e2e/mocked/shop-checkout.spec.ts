@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { login, resetMocks, SEED_IDS } from '../support/mocks';
+import { failNext, login, resetMocks, SEED_IDS } from '../support/mocks';
 
 const { products } = SEED_IDS;
 
@@ -71,7 +71,9 @@ test('checkout: card ending with 0 fails the payment and keeps the cart', async 
 test('checkout: insufficient stock message', async ({ page }) => {
   await resetMocks(page);
   await login(page, 'customer');
-  await addToCart(page, products.noStock);
+  await addToCart(page, products.regular);
+  // Stock taken by someone else between adding to the cart and ordering.
+  await failNext(page, 'orders', 409, { error: 'INSUFFICIENT_STOCK' });
 
   await page.goto('/checkout');
   await fillCheckout(page, /^Odbiór osobisty/, '4111111111111111');
@@ -80,5 +82,19 @@ test('checkout: insufficient stock message', async ({ page }) => {
   await expect(page.getByText('Za mało sztuk w magazynie.')).toBeVisible();
   await page.getByRole('link', { name: 'Przejdź do koszyka' }).click();
   await expect(page).toHaveURL(/\/cart$/);
-  await expect(page.getByRole('list', { name: 'Pozycje koszyka' })).toContainText('Młynek do kawy');
+  await expect(page.getByRole('list', { name: 'Pozycje koszyka' })).toContainText('Kubek ceramiczny');
+});
+
+test('checkout: product withdrawn from the shop', async ({ page }) => {
+  await resetMocks(page);
+  await login(page, 'customer');
+  await addToCart(page, products.regular);
+  await failNext(page, 'orders', 409, { error: 'PRODUCT_UNAVAILABLE' });
+
+  await page.goto('/checkout');
+  await fillCheckout(page, /^Odbiór osobisty/, '4111111111111111');
+  await page.getByRole('button', { name: 'Zamawiam i płacę' }).click();
+
+  await expect(page.getByText('Produkt z koszyka nie jest już dostępny. Usuń go z koszyka.')).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Przejdź do koszyka' })).toBeVisible();
 });
