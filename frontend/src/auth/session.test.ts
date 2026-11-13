@@ -47,6 +47,7 @@ beforeEach(() => {
 
 afterEach(() => {
   for (const channel of channels.splice(0)) channel.close();
+  vi.useRealTimers();
 });
 
 describe('session start-up', () => {
@@ -68,15 +69,6 @@ describe('session start-up', () => {
     await m.startSession();
 
     expect(m.getSession()).toMatchObject({ status: 'anonymous', userId: null, expiredRedirect: null });
-  });
-
-  it('becomes anonymous without a message on another error', async () => {
-    const m = await load();
-    stubFetch(() => errorResponse(503, 'SERVICE_UNAVAILABLE'));
-
-    await m.startSession();
-
-    expect(m.getSession()).toMatchObject({ status: 'anonymous', expiredRedirect: null });
   });
 
   it('double start sends one refresh request', async () => {
@@ -108,6 +100,128 @@ describe('session start-up', () => {
 
     expect(results).toEqual([true, true, true]);
     expect(refreshCalls(fetchMock)).toBe(1);
+  });
+});
+
+describe('session start-up with a failing Auth (wytyczne 6b 3.9)', () => {
+  /** Times (fake clock) of the refresh requests. */
+  function refreshTimes(answers: (() => Response)[]) {
+    const times: number[] = [];
+    const fetchMock = stubFetch(() => {
+      times.push(Date.now());
+      const answer = answers[Math.min(times.length, answers.length) - 1];
+      return answer();
+    });
+    return { fetchMock, times };
+  }
+
+  const unavailable = () => errorResponse(503, 'SERVICE_UNAVAILABLE');
+  const noConnection = (): Response => {
+    throw new TypeError('Failed to fetch');
+  };
+
+  it('startSession retries once after 503 and is authenticated on 200, 2.5 s later', async () => {
+    vi.useFakeTimers();
+    const m = await load();
+    const { fetchMock, times } = refreshTimes([unavailable, () => tokenResponse(fakeToken({ sub: 'user-5' }))]);
+
+    const started = m.startSession();
+    await vi.advanceTimersByTimeAsync(m.START_RETRY_DELAY_MS - 1);
+    expect(refreshCalls(fetchMock)).toBe(1);
+    expect(m.getSession().status).toBe('loading');
+    await vi.advanceTimersByTimeAsync(1);
+    await started;
+
+    expect(refreshCalls(fetchMock)).toBe(2);
+    expect(times[1] - times[0]).toBeGreaterThanOrEqual(2500);
+    expect(m.getSession()).toMatchObject({ status: 'authenticated', userId: 'user-5', expiredRedirect: null });
+  });
+
+  it('startSession retries once after 503 and is anonymous without a message after a second 503', async () => {
+    vi.useFakeTimers();
+    const m = await load();
+    const { fetchMock } = refreshTimes([unavailable, unavailable]);
+
+    const started = m.startSession();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await started;
+
+    expect(refreshCalls(fetchMock)).toBe(2);
+    expect(m.getSession()).toMatchObject({ status: 'anonymous', userId: null, expiredRedirect: null });
+  });
+
+  it('startSession retries once after a network error (no response)', async () => {
+    vi.useFakeTimers();
+    const m = await load();
+    const { fetchMock, times } = refreshTimes([noConnection, () => tokenResponse(fakeToken())]);
+
+    const started = m.startSession();
+    await vi.advanceTimersByTimeAsync(m.START_RETRY_DELAY_MS);
+    await started;
+
+    expect(refreshCalls(fetchMock)).toBe(2);
+    expect(times[1] - times[0]).toBeGreaterThanOrEqual(2500);
+    expect(m.getSession().status).toBe('authenticated');
+  });
+
+  it('startSession does not retry after 401', async () => {
+    vi.useFakeTimers();
+    const m = await load();
+    const { fetchMock } = refreshTimes([() => errorResponse(401, 'UNAUTHORIZED'), () => tokenResponse(fakeToken())]);
+
+    const started = m.startSession();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await started;
+
+    expect(refreshCalls(fetchMock)).toBe(1);
+    expect(m.getSession()).toMatchObject({ status: 'anonymous', expiredRedirect: null });
+  });
+
+  it('startSession does not retry after 429', async () => {
+    vi.useFakeTimers();
+    const m = await load();
+    const { fetchMock } = refreshTimes([() => errorResponse(429, 'TOO_MANY_REQUESTS', { 'Retry-After': '30' }), () => tokenResponse(fakeToken())]);
+
+    const started = m.startSession();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await started;
+
+    expect(refreshCalls(fetchMock)).toBe(1);
+    expect(m.getSession()).toMatchObject({ status: 'anonymous', expiredRedirect: null });
+  });
+
+  it('startSession keeps the token of another tab that logged in during the wait when the second try fails (C20)', async () => {
+    vi.useFakeTimers();
+    const m = await load();
+    const { fetchMock } = refreshTimes([unavailable, () => tokenResponse(fakeToken({ sub: 'user-6' })), unavailable]);
+
+    const started = m.startSession();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(refreshCalls(fetchMock)).toBe(1);
+    // Another tab logs in during the 2.5 s wait: this tab gets its own token with a refresh.
+    otherTab().postMessage('login');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(refreshCalls(fetchMock)).toBe(2);
+    expect(m.getAccessToken()).not.toBeNull();
+    await vi.advanceTimersByTimeAsync(m.START_RETRY_DELAY_MS);
+    await started;
+
+    expect(refreshCalls(fetchMock)).toBe(3);
+    expect(m.getSession()).toMatchObject({ status: 'authenticated', userId: 'user-6', expiredRedirect: null });
+  });
+
+  it('startSession called twice (StrictMode) with 503 sends at most 2 refreshes', async () => {
+    vi.useFakeTimers();
+    const m = await load();
+    const { fetchMock } = refreshTimes([unavailable, unavailable]);
+
+    const started = Promise.all([m.startSession(), m.startSession()]);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await started;
+    await m.startSession();
+
+    expect(refreshCalls(fetchMock)).toBe(2);
+    expect(m.getSession().status).toBe('anonymous');
   });
 });
 

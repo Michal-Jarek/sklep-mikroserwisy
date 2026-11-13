@@ -127,8 +127,8 @@ export const productHandlers = [
     json([...state.categories].sort((a, b) => a.name.localeCompare(b.name, 'pl'))),
   ),
 
-  route('POST', '/products', async ({ request, state }) => {
-    const input = productInput(state, await readBody(request, PRODUCT_FIELDS));
+  route('POST', '/products', ({ body, state }) => {
+    const input = productInput(state, readBody(body, PRODUCT_FIELDS));
     const timestamp = now();
     const product: MockProduct = {
       id: crypto.randomUUID(),
@@ -144,9 +144,9 @@ export const productHandlers = [
     return json(productDetail(state, product), 201);
   }),
 
-  route('PUT', '/products/:productId', async ({ params, request, state }) => {
+  route('PUT', '/products/:productId', ({ params, body, state }) => {
     const productId = pathUuid(params, 'productId');
-    const input = productInput(state, await readBody(request, PRODUCT_FIELDS));
+    const input = productInput(state, readBody(body, PRODUCT_FIELDS));
     const product = findProduct(state, productId);
     Object.assign(product, {
       name: input.name,

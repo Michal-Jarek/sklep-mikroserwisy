@@ -28,8 +28,8 @@ test('session: register, login, reload keeps the session, logout', async ({ page
 });
 
 // Z19a (C2): POST /auth/logout without 204 (here a 503 from page.route, so Auth never gets it) must not look
-// like a logout: the refresh cookie is still valid. Only the exact message counts — on "/" the catalog shows
-// its own alert (Product is not in compose).
+// like a logout: the refresh cookie is still valid. Only the exact message counts — another alert on "/" (e.g. the
+// catalog when Product is stopped) must not make the test pass or fail.
 test('session: failed logout keeps the session with a message, the next try logs out', async ({ page }) => {
   await registerAndLogIn(page, newAccount());
 

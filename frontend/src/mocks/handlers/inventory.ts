@@ -32,9 +32,9 @@ export const inventoryHandlers = [
     return json(stockView(state, productId));
   }),
 
-  route('PUT', '/inventory/:productId', async ({ params, request, state }) => {
+  route('PUT', '/inventory/:productId', ({ params, body: raw, state }) => {
     const productId = pathUuid(params, 'productId');
-    const body = await readBody(request, ['quantity']);
+    const body = readBody(raw, ['quantity']);
     const quantity = integer(body.quantity, 'quantity', 0, 1_000_000);
     const reserved = state.stock[productId]?.reserved ?? 0;
     if (quantity < reserved) {

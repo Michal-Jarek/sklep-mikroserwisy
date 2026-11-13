@@ -1,0 +1,4 @@
+# Build context = package.json and package-lock.json only (runner, collections and reports are mounted at run time).
+*
+!package.json
+!package-lock.json

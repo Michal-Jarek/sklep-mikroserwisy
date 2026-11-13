@@ -132,17 +132,33 @@ function listenToOtherTabs(): void {
   };
 }
 
+/** Wait before the second refresh at start-up (wytyczne 6b 3.9, decision 15). */
+export const START_RETRY_DELAY_MS = 2500;
+
+/** 5xx or no response: Auth (or the way to it) may be back in a moment. */
+function isServerOrNetworkError(error: unknown): boolean {
+  return error instanceof ApiError && (error.status === 0 || error.status >= 500);
+}
+
 /**
- * Start-up: one refresh (also when called twice, e.g. by StrictMode effects). 200 → logged in;
- * 401 or any other error → anonymous without a message.
+ * Start-up (also when called twice, e.g. by StrictMode effects): a refresh; when it fails with 5xx or
+ * without a response, one more refresh after START_RETRY_DELAY_MS (under the same lock, see refreshSession).
+ * 200 → logged in; 401, another 4xx (e.g. 429) or an error of the second try → anonymous without a message.
+ * A token that came during the start-up (another tab logged in while this one waited) stays.
+ * The session stays `loading` until the last try has finished.
  */
 export function startSession(): Promise<void> {
   starting ??= (async () => {
     listenToOtherTabs();
+    const tokenBeforeStart = getAccessToken();
     try {
-      await refreshSession();
+      await refreshSession().catch(async (error: unknown) => {
+        if (!isServerOrNetworkError(error)) throw error;
+        await new Promise((resolve) => setTimeout(resolve, START_RETRY_DELAY_MS));
+        return refreshSession();
+      });
     } catch {
-      setAccessToken(null);
+      if (getAccessToken() === tokenBeforeStart) setAccessToken(null);
     }
     started = true;
     emit();

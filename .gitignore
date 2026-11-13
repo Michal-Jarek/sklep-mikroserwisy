@@ -36,6 +36,7 @@ htmlcov/
 node_modules/
 dist/
 coverage/
+postman/reports/
 .npm/
 .pnpm-store/
 npm-debug.log*

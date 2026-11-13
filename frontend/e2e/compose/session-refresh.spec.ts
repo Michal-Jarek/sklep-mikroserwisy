@@ -2,7 +2,8 @@ import { expect, test, expectLoggedIn, newAccount, registerAndLogIn } from './he
 
 // Logins in this file: 1.
 test('session: expired access token is refreshed and the request repeated', async ({ page }) => {
-  await registerAndLogIn(page, newAccount());
+  const account = newAccount();
+  await registerAndLogIn(page, account);
 
   // Order of the calls that matter, without token values (they must not end up in test output).
   const calls: string[] = [];
@@ -31,12 +32,13 @@ test('session: expired access token is refreshed and the request repeated', asyn
   await page.getByRole('link', { name: 'Moje konto' }).click();
 
   expect((await refreshed).status()).toBe(200);
-  // User Service is not in compose yet, so after the repeat the page shows the unavailable message (not the login page).
-  await expect(page.getByText('Usługa jest chwilowo niedostępna. Spróbuj ponownie za chwilę.')).toBeVisible();
+  // After the repeat the page shows the profile from User Service (full-shop), not the login page.
+  await expect(page.getByRole('heading', { name: 'Dane' })).toBeVisible();
+  await expect(page.getByLabel('Imię', { exact: true })).toHaveValue(account.firstName);
   await expect(page).toHaveURL(/\/account$/);
   await expectLoggedIn(page);
 
-  // 401 → one refresh → the same request again with a token (then one more GET retry after the 503 of the Gateway).
+  // 401 → one refresh → the same request again with a token.
   expect(rejected).toBe(true);
   expect(calls.slice(0, 3)).toEqual(['profile with token', 'refresh', 'profile with token']);
   expect(calls.filter((call) => call === 'refresh')).toHaveLength(1);

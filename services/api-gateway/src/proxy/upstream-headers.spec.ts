@@ -62,6 +62,14 @@ describe('buildUpstreamHeaders (guidelines 3.2)', () => {
     expect(Object.keys(headers).filter((name) => name.startsWith('x-user-'))).toEqual(['x-user-id', 'x-user-roles']);
   });
 
+  it('removes Referer: the full page address with its query (e.g. a searched e-mail) never reaches a service (Z12)', () => {
+    const headers = buildUpstreamHeaders(
+      { Referer: 'http://127.0.0.1:8090/?q=jan.kowalski6b@example.com', accept: 'application/json' },
+      ANONYMOUS,
+    );
+    expect(headers).toEqual({ accept: 'application/json', 'x-request-id': 'rid-1', 'x-forwarded-for': '172.21.0.1' });
+  });
+
   it('removes the method overrides X-HTTP-Method-Override, X-HTTP-Method and X-Method-Override, whatever the case (Z25)', () => {
     const headers = buildUpstreamHeaders(
       {

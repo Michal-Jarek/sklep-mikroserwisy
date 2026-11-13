@@ -232,6 +232,8 @@ Start całego sklepu:
 ```bash
 docker compose -f deploy/compose.yaml --profile full-shop up -d --wait --build
 ```
+Stany magazynowe 24 produktów startowych ustawia `bash postman/run.sh compose` (folder przygotowania scenariusza, [postman/README.md](../postman/README.md)) — uruchom go po pierwszym starcie zestawu. Gdy Inventory przyjmuje identyfikatory UUID, produkt bez ustawionego stanu ma 0 sztuk i koszyk odmawia dodania (409).
+
 Usługi zespołu nie mają portów na laptopie; z zewnątrz woła się je przez Gateway (`http://localhost:8080/api/v1/users/me`, `…/cart`, `…/inventory/<id>`, `…/reviews?productId=<id>`). Jak zatrzymać usługę z compose na czas pracy z VS Code: [docs/patterns.md](../docs/patterns.md), sekcja 1.
 
 W `up`, `stop` i `down` podaje się `--profile platform`, inaczej polecenie pomija kontenery Gateway, Auth i frontendu (`stop` zostawia je uruchomione, `down` ich nie usuwa). W `ps` i `logs` profil nie jest potrzebny, ale nie szkodzi:

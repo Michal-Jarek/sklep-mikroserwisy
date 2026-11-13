@@ -66,6 +66,8 @@ export interface MockFailure {
   status: number;
   error: string;
   retryAfter?: number;
+  /** Only requests with this method fail and count (failNext option `method`). */
+  method?: string;
   remaining: number;
 }
 

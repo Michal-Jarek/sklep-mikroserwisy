@@ -10,6 +10,12 @@ export interface FailNextOptions {
   retryAfter?: number;
   /** How many next requests to the resource fail (default 1). */
   times?: number;
+  /**
+   * Only requests with this method fail and count (default: every method). Needed when the page keeps sending
+   * other requests to the resource, e.g. the order page polls GET /orders/{id} every 10 s while the test plans
+   * a 409 for POST /orders/{id}/cancel.
+   */
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 }
 
 export interface MockControls {
@@ -40,6 +46,7 @@ export const mockControls: MockControls = {
       error: opts.error ?? defaultErrorCode(status),
       remaining: opts.times ?? 1,
       ...(retryAfter !== undefined ? { retryAfter } : {}),
+      ...(opts.method !== undefined ? { method: opts.method } : {}),
     };
     saveState(state);
   },

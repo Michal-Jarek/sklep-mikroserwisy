@@ -139,6 +139,17 @@ describe('window.__mocks controls', () => {
     expect((await call('POST', '/auth/login', { body: MOCK_ACCOUNTS.customer })).status).toBe(200);
   });
 
+  it('with `method` fails only requests with that method, others do not count', async () => {
+    const token = customerToken();
+    mockControls.failNext('orders', 409, { error: 'ORDER_NOT_CANCELLABLE', method: 'POST' });
+
+    expect((await call('GET', `/orders/${SEED_IDS.orders.paid}`, { token })).status).toBe(200);
+    const cancelled = await call<ErrorBody>('POST', `/orders/${SEED_IDS.orders.paid}/cancel`, { token });
+    expect(cancelled.status).toBe(409);
+    expect(cancelled.body.error).toBe('ORDER_NOT_CANCELLABLE');
+    expect(loadState().failures).toEqual({});
+  });
+
   it('reset brings back the seed data without session and planned errors', async () => {
     await login('customer');
     await call('DELETE', `/products/${SEED_IDS.products.regular}`, { token: adminToken() });
