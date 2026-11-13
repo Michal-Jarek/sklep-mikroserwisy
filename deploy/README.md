@@ -30,7 +30,7 @@ Pliki w folderze:
 - `rabbitmq/setup.sh` – skrypt, którym `rabbitmq-setup` wgrywa `definitions.json` i zakłada konta usług (nie uruchamia się go ręcznie);
 - `k8s/` – na później. Kubernetes to ostatni etap projektu; do tego czasu infrastruktura i usługi działają w Docker Compose.
 
-Usługi sklepu są w tym samym `compose.yaml` w grupach (tzw. profilach): profil `platform` (API Gateway, Auth Service i frontend) i profil `full-shop` (cały sklep, w tym usługi z `platform`; usługa zespołu trafia do niego przy scaleniu jej PR – wzór wpisu w [docs/patterns.md](../docs/patterns.md)). Polecenie bez `--profile` uruchamia tylko infrastrukturę z tabeli; profil `platform` – sekcja „Profil platform (API Gateway, Auth Service i frontend)”.
+Usługi sklepu są w tym samym `compose.yaml` w grupach (tzw. profilach): profil `platform` (API Gateway, Auth Service, User Service i frontend) i profil `full-shop` (cały sklep, w tym usługi z `platform`; usługa zespołu trafia do niego przy scaleniu jej PR – wzór wpisu w [docs/patterns.md](../docs/patterns.md), stan w sekcji „Profil full-shop (usługi zespołu)”). Polecenie bez `--profile` uruchamia tylko infrastrukturę z tabeli; profil `platform` – sekcja „Profil platform (API Gateway, Auth Service i frontend)”.
 
 ## Wymagania
 
@@ -171,11 +171,11 @@ Infrastruktura razem z API Gateway, Auth Service i frontendem (sklep w przegląd
 bash deploy/create-secrets.sh
 docker compose -f deploy/compose.yaml --profile platform up -d --wait --build
 ```
-`--build` buduje obrazy `api-gateway:dev` i `auth-service:dev` z `services/` oraz `frontend:dev` z `frontend/` (pierwszy raz kilka minut). Dochodzą cztery kontenery: `auth-migrate` (jednorazowo stosuje migracje bazy `auth_db` i kończy się kodem 0), `auth-service` (startuje po migracjach i po `rabbitmq-setup`), `api-gateway` i `frontend` (startuje, gdy Gateway jest zdrowy). Stan:
+`--build` buduje obrazy `api-gateway:dev`, `auth-service:dev` i `user-service:dev` z `services/` oraz `frontend:dev` z `frontend/` (pierwszy raz kilka minut). Dochodzi sześć kontenerów: `auth-migrate` i `user-migrate` (jednorazowo stosują migracje baz `auth_db` i `user_db` i kończą się kodem 0), `auth-service` (startuje po migracjach i po `rabbitmq-setup`), `user-service` (startuje po `user-migrate`), `api-gateway` i `frontend` (startuje, gdy Gateway jest zdrowy). User Service jest w tym profilu, bo przy rejestracji Auth zakłada w nim profil klienta (`USER_SERVICE_ENABLED: "true"`); bez niego rejestracja kończy się `503`. Stan:
 ```bash
 docker compose -f deploy/compose.yaml --profile platform ps --format '{{.Service}} {{.Status}}'
 ```
-Wynik: `api-gateway`, `auth-service`, `frontend`, `consul`, `postgres`, `rabbitmq` i `redis-gateway` ze statusem `Up … (healthy)`.
+Wynik: `api-gateway`, `auth-service`, `user-service`, `frontend`, `consul`, `postgres`, `rabbitmq` i `redis-gateway` ze statusem `Up … (healthy)`.
 
 Przez pierwsze sekundy po starcie Gateway może jeszcze odpowiadać `503` na `/api/v1/auth/…` – czeka, aż zobaczy w Consulu zdrowy Auth Service. Wtedy powtórz polecenie po kilku sekundach.
 
@@ -212,6 +212,29 @@ Plik z ciasteczkiem działa jak hasło do sesji – po testach go usuń:
 ```bash
 rm -f /tmp/sklep-cookies.txt
 ```
+
+## Profil full-shop (usługi zespołu)
+
+Profil `full-shop` to wszystko z `platform` oraz usługi zespołu, które mają już wpis w `compose.yaml`:
+
+| Usługa | Zależności w compose | Stan |
+|---|---|---|
+| `user-service` (+ `user-migrate`) | `postgres` (`user_db`), Consul | także w `platform` |
+| `cart-service` | `redis-cart`, Consul | działa; dodanie produktu do koszyka wymaga Product Service (do tego czasu `503`) |
+| `inventory-service` | `postgres` (`inventory_db`), RabbitMQ (`inventory.q`), Consul | wpis gotowy, kod w PR #2 |
+| `review-service` | `mongo` (`review_db`), Consul | wpis gotowy, kod w PR #2 |
+
+Product, Order, Notification i Shipping nie mają jeszcze wpisów (dojdą przy scaleniu ich PR).
+
+Dopóki PR #2 (Inventory, Review) nie jest w `develop`, foldery tych usług nie mają `Dockerfile`, więc samo `--profile full-shop up` kończy się błędem budowania. Do tego czasu podaj usługi z nazwy:
+```bash
+docker compose -f deploy/compose.yaml --profile full-shop up -d --wait --build user-service cart-service api-gateway frontend
+```
+Po scaleniu PR #2:
+```bash
+docker compose -f deploy/compose.yaml --profile full-shop up -d --wait --build
+```
+Usługi zespołu nie mają portów na laptopie; z zewnątrz woła się je przez Gateway (`http://localhost:8080/api/v1/users/me`, `…/cart`, `…/inventory/<id>`, `…/reviews?productId=<id>`). Jak zatrzymać usługę z compose na czas pracy z VS Code: [docs/patterns.md](../docs/patterns.md), sekcja 1.
 
 W `up`, `stop` i `down` podaje się `--profile platform`, inaczej polecenie pomija kontenery Gateway, Auth i frontendu (`stop` zostawia je uruchomione, `down` ich nie usuwa). W `ps` i `logs` profil nie jest potrzebny, ale nie szkodzi:
 ```bash

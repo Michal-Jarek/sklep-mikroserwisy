@@ -2,8 +2,8 @@
 # RabbitMQ (+ topology and service accounts from deploy/rabbitmq/), MongoDB (Review, Notification),
 # Redis for Cart and Mailpit (SMTP + web UI for emails).
 # Started by default: docker compose -f deploy/compose.yaml up -d --wait
-# Services are added in profiles "platform" (Gateway, Auth, frontend) and "full-shop"
-# (team services are added when their PR is merged).
+# Services are added in profiles "platform" (Gateway, Auth, User, frontend) and "full-shop"
+# (everything from platform + team services; a team service is added when its PR is merged).
 # Ports only on 127.0.0.1. Passwords from deploy/.env (created by deploy/create-secrets.sh).
 name: sklep
 
@@ -277,8 +277,8 @@ services:
       # First admin account, created at startup when it does not exist yet.
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@sklep.local}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Run deploy/create-secrets.sh}
-      # Until User Service is in Compose (added when its PR is merged) registration does not call User Service.
-      USER_SERVICE_ENABLED: "false"
+      # Registration creates the profile in User Service (user-service is in both profiles).
+      USER_SERVICE_ENABLED: "true"
       # Publishing events (outbox relay); Auth starts and registers users without RabbitMQ.
       RABBITMQ_HOST: rabbitmq
       RABBITMQ_PORT: "5672"
@@ -363,6 +363,143 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+
+  # ---- Team services (each one is added when its PR is merged) ----
+  # No ports: reachable only inside the backend network, from outside through the Gateway.
+  # The images switch to a non-root user themselves (USER in the Dockerfile).
+  # python:3.12-slim has neither curl nor wget, so the healthchecks use python (urlopen fails on an error status).
+
+  # One-off: applies the User Service database migrations (Alembic), then exits.
+  # In "platform" too: Auth creates the user profile in User Service at registration.
+  user-migrate:
+    image: user-service:dev
+    build: ../services/user-service
+    profiles: [platform, full-shop]
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: user_db
+      DB_USER: user_service
+      DB_PASSWORD: ${USER_DB_PASSWORD:?Run deploy/create-secrets.sh}
+    networks: [backend]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  user-service:
+    image: user-service:dev
+    build: ../services/user-service
+    profiles: [platform, full-shop]
+    environment:
+      PORT: "8082"
+      CONSUL_URL: http://consul:8500
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: user_db
+      DB_USER: user_service
+      DB_PASSWORD: ${USER_DB_PASSWORD:?Run deploy/create-secrets.sh}
+    networks: [backend]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      consul:
+        condition: service_healthy
+      consul-kv-seed:
+        condition: service_completed_successfully
+      user-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8082/health/ready', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  cart-service:
+    image: cart-service:dev
+    build: ../services/cart-service
+    profiles: [full-shop]
+    environment:
+      PORT: "8085"
+      CONSUL_URL: http://consul:8500
+      # Contains the password: only for the Redis client, the service does not log it.
+      REDIS_URL: redis://:${REDIS_CART_PASSWORD:?Run deploy/create-secrets.sh}@redis-cart:6379/0
+    networks: [backend]
+    depends_on:
+      redis-cart:
+        condition: service_healthy
+      consul:
+        condition: service_healthy
+      consul-kv-seed:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8085/health/ready', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  # Tables are created by the service at startup (no separate migration container).
+  inventory-service:
+    image: inventory-service:dev
+    build: ../services/inventory-service
+    profiles: [full-shop]
+    environment:
+      SERVICE_PORT: "8084"
+      CONSUL_HOST: consul
+      CONSUL_PORT: "8500"
+      # Contains the password: only for SQLAlchemy, the service does not log it.
+      DATABASE_URL: postgresql+psycopg2://inventory_service:${INVENTORY_DB_PASSWORD:?Run deploy/create-secrets.sh}@postgres:5432/inventory_db
+      # Consumer of inventory.q (docs/events.md): four variables, no URL with the password.
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USER: inventory-service
+      RABBITMQ_PASSWORD: ${INVENTORY_RABBITMQ_PASSWORD:?Run deploy/create-secrets.sh}
+    networks: [backend]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      consul:
+        condition: service_healthy
+      consul-kv-seed:
+        condition: service_completed_successfully
+      # Start order only (queue and account exist); the consumer reconnects on its own later.
+      rabbitmq-setup:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8084/health/ready', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  review-service:
+    image: review-service:dev
+    build: ../services/review-service
+    profiles: [full-shop]
+    environment:
+      SERVICE_PORT: "8088"
+      CONSUL_HOST: consul
+      CONSUL_PORT: "8500"
+      # Contains the password: only for the MongoDB driver, the service does not log it.
+      MONGODB_URL: mongodb://review_service:${REVIEW_DB_PASSWORD:?Run deploy/create-secrets.sh}@mongo:27017/review_db?authSource=review_db
+      MONGODB_DATABASE: review_db
+    networks: [backend]
+    depends_on:
+      mongo:
+        condition: service_healthy
+      consul:
+        condition: service_healthy
+      consul-kv-seed:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8088/health/ready', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
 
 networks:
   # Infrastructure and all services; no outbound access.
