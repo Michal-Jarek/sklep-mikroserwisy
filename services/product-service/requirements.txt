@@ -1,0 +1,8 @@
+# Versions of docs/patterns.md (fastapi, uvicorn, httpx, PyYAML) and of user-service (database).
+fastapi==0.162.0
+uvicorn==0.54.0
+httpx==0.28.1
+PyYAML==6.0.3
+SQLAlchemy==2.0.41
+psycopg[binary]==3.2.9
+alembic==1.16.2

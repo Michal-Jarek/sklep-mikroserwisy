@@ -1,0 +1,714 @@
+{
+  "info": {
+    "name": "product-service",
+    "description": "Product Service (port 8083) bez Gateway: nagłówki X-User-* wpisane ręcznie, tak jak dodałby je Gateway. Uruchom foldery po kolei (Run collection). Kontrakt: docs/frontend-api.md, sekcja Product.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Zdrowie",
+      "item": [
+        {
+          "name": "GET /health/live",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health/live",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health",
+                "live"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 UP', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().status).to.eql('UP'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /health/ready",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health/ready",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health",
+                "ready"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 UP (database works)', () => pm.response.to.have.status(200));",
+                  "pm.test('X-Instance-Id header', () => pm.response.to.have.header('X-Instance-Id'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Katalog (publiczne)",
+      "item": [
+        {
+          "name": "GET /categories",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/categories",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "categories"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const list = pm.response.json();",
+                  "pm.test('4 categories, each with id and name', () => { pm.expect(list.length).to.be.at.least(4); list.forEach(c => pm.expect(c).to.have.keys('id','name')); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /products",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/products",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const page = pm.response.json();",
+                  "pm.test('page with items, page, size, total', () => pm.expect(page).to.have.keys('items','page','size','total'));",
+                  "pm.test('price is text with 2 decimals (D3)', () => page.items.forEach(p => { pm.expect(p.price).to.be.a('string').and.match(/^[0-9]{1,8}\\.[0-9]{2}$/); pm.expect(p.currency).to.eql('PLN'); }));",
+                  "if (page.items.length) pm.collectionVariables.set('productId', page.items[0].id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /products — szukanie, filtr i sortowanie",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/products?q=kubek&maxPrice=50&sort=PRICE_ASC&page=1&size=5",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "kubek"
+                },
+                {
+                  "key": "maxPrice",
+                  "value": "50"
+                },
+                {
+                  "key": "sort",
+                  "value": "PRICE_ASC"
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "size",
+                  "value": "5"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const items = pm.response.json().items;",
+                  "pm.test('every result costs at most 50.00', () => items.forEach(p => pm.expect(parseFloat(p.price)).to.be.at.most(50)));",
+                  "pm.test('sorted by price ascending', () => { for (let i = 1; i < items.length; i++) pm.expect(parseFloat(items[i].price)).to.be.at.least(parseFloat(items[i-1].price)); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /products/{id} — klient (z oceną i dostępnością)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{customerUserId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/products/{{productId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "{{productId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const p = pm.response.json();",
+                  "pm.test('ProductDetail fields', () => pm.expect(p).to.include.keys('id','name','description','price','currency','category','imageUrl','rating','availability','createdAt','updatedAt'));",
+                  "pm.test('rating and availability are an object or null (Review / Inventory may be down)', () => { pm.expect(p.rating === null || typeof p.rating === 'object').to.be.true; pm.expect(p.availability === null || typeof p.availability === 'object').to.be.true; });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /products/{id} — lekki odczyt dla usług (D4)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-User-Roles",
+                "value": "SERVICE"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/products/{{productId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "{{productId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const p = pm.response.json();",
+                  "pm.test('id, name, price, currency', () => pm.expect(p).to.include.keys('id','name','price','currency'));",
+                  "pm.test('no rating and no availability with SERVICE', () => { pm.expect(p.rating).to.be.null; pm.expect(p.availability).to.be.null; });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Administrator",
+      "item": [
+        {
+          "name": "POST /products",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{adminUserId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "ADMIN"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/products",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Kubek termiczny\",\n  \"description\": \"Kubek 400 ml.\",\n  \"price\": \"39.99\",\n  \"currency\": \"PLN\",\n  \"categoryId\": \"{{kitchenCategoryId}}\",\n  \"imageUrl\": null\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));",
+                  "const p = pm.response.json();",
+                  "pm.test('new product, no reviews, no stock yet', () => { pm.expect(p.name).to.eql('Kubek termiczny'); pm.expect(p.price).to.eql('39.99'); pm.expect(p.rating).to.eql({average: null, count: 0}); pm.expect(p.availability).to.be.null; });",
+                  "pm.collectionVariables.set('createdProductId', p.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "PUT /products/{id}",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{adminUserId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "ADMIN"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/products/{{createdProductId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "{{createdProductId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Kubek termiczny XL\",\n  \"description\": \"Kubek 400 ml.\",\n  \"price\": \"44.50\",\n  \"currency\": \"PLN\",\n  \"categoryId\": \"{{kitchenCategoryId}}\",\n  \"imageUrl\": null\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('changed', () => { const p = pm.response.json(); pm.expect(p.name).to.eql('Kubek termiczny XL'); pm.expect(p.price).to.eql('44.50'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "DELETE /products/{id}",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{adminUserId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "ADMIN"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/products/{{createdProductId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "{{createdProductId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /products/{id} — po usunięciu: 404",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/products/{{createdProductId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "{{createdProductId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('error NOT_FOUND in the team format', () => { const b = pm.response.json(); pm.expect(b.error).to.eql('NOT_FOUND'); pm.expect(b).to.have.keys('status','error','message','requestId'); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Błędy",
+      "item": [
+        {
+          "name": "GET /products/123 — nie UUID: 400 (D1)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/products/123",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "123"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error VALIDATION_ERROR in the team format', () => { const b = pm.response.json(); pm.expect(b.error).to.eql('VALIDATION_ERROR'); pm.expect(b).to.have.keys('status','error','message','requestId'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /products?minPrice=50&maxPrice=10 — 400",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/products?minPrice=50&maxPrice=10",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products"
+              ],
+              "query": [
+                {
+                  "key": "minPrice",
+                  "value": "50"
+                },
+                {
+                  "key": "maxPrice",
+                  "value": "10"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error VALIDATION_ERROR in the team format', () => { const b = pm.response.json(); pm.expect(b.error).to.eql('VALIDATION_ERROR'); pm.expect(b).to.have.keys('status','error','message','requestId'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /products bez logowania — 401",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/products",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Kubek termiczny\",\n  \"description\": \"Kubek 400 ml.\",\n  \"price\": \"39.99\",\n  \"currency\": \"PLN\",\n  \"categoryId\": \"{{kitchenCategoryId}}\",\n  \"imageUrl\": null\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('error UNAUTHORIZED in the team format', () => { const b = pm.response.json(); pm.expect(b.error).to.eql('UNAUTHORIZED'); pm.expect(b).to.have.keys('status','error','message','requestId'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /products jako klient — 403",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{customerUserId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/products",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Kubek termiczny\",\n  \"description\": \"Kubek 400 ml.\",\n  \"price\": \"39.99\",\n  \"currency\": \"PLN\",\n  \"categoryId\": \"{{kitchenCategoryId}}\",\n  \"imageUrl\": null\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 403', () => pm.response.to.have.status(403));",
+                  "pm.test('error FORBIDDEN in the team format', () => { const b = pm.response.json(); pm.expect(b.error).to.eql('FORBIDDEN'); pm.expect(b).to.have.keys('status','error','message','requestId'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /products — cena jako liczba: 400 (D3)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{adminUserId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "ADMIN"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/products",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Kubek termiczny\",\n  \"description\": \"Kubek 400 ml.\",\n  \"price\": 39.99,\n  \"currency\": \"PLN\",\n  \"categoryId\": \"{{kitchenCategoryId}}\",\n  \"imageUrl\": null\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('error VALIDATION_ERROR in the team format', () => { const b = pm.response.json(); pm.expect(b.error).to.eql('VALIDATION_ERROR'); pm.expect(b).to.have.keys('status','error','message','requestId'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /products/ — ukośnik na końcu: 404 (D12)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/products/",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                ""
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', () => pm.response.to.have.status(404));",
+                  "pm.test('error NOT_FOUND in the team format', () => { const b = pm.response.json(); pm.expect(b.error).to.eql('NOT_FOUND'); pm.expect(b).to.have.keys('status','error','message','requestId'); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "pm.request.headers.upsert({key: 'X-Request-Id', value: 'postman-' + Date.now()});"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "productId",
+      "value": "a0000000-0000-4000-8000-000000000001"
+    },
+    {
+      "key": "createdProductId",
+      "value": ""
+    },
+    {
+      "key": "kitchenCategoryId",
+      "value": "c0000000-0000-4000-8000-000000000001"
+    },
+    {
+      "key": "adminUserId",
+      "value": "b0000000-0000-4000-8000-000000000002"
+    },
+    {
+      "key": "customerUserId",
+      "value": "b0000000-0000-4000-8000-000000000001"
+    }
+  ]
+}

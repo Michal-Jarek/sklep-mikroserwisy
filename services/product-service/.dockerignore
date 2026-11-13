@@ -1,0 +1,13 @@
+# Local secrets, environments, caches and tests never go into the image (D17).
+# **/ matches in every folder of the build context, also in the top one.
+**/.env
+**/.env.*
+**/.venv
+**/venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/tests
+postman
+k8s
+.git
