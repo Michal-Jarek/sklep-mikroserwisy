@@ -1,0 +1,2029 @@
+{
+  "info": {
+    "name": "shop-purchase",
+    "description": "Purchase scenario through the shop entrance (nginx of the frontend -> API Gateway): registration, welcome e-mail, login, catalog, product page, stock (ADMIN), cart and access denials. Run with bash postman/run.sh compose (postman/README.md). Checks are named [S<nn>]; checks of team services that do not accept UUID yet (Inventory, Review) or do not exist (Order, Shipping) are skipped with a reason. At most 2 logins per run (rate limit 5/min).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// S90, S91 (decision 9): every answer of the shop API has X-Request-Id, every error the D7 body.",
+          "const url = pm.variables.replaceIn(pm.request.url.toString());",
+          "const baseUrl = pm.variables.get('baseUrl');",
+          "if (url.startsWith(`${baseUrl}/`)) {",
+          "  const requestId = pm.response.headers.get('X-Request-Id');",
+          "  pm.test('[S91] X-Request-Id header', () => pm.expect(requestId, 'X-Request-Id').to.be.a('string').and.not.empty);",
+          "  if (pm.response.code >= 400) {",
+          "    pm.test(`[S90] error ${pm.response.code} in the D7 format {status, error, message, requestId}`, () => {",
+          "      const error = pm.response.json();",
+          "      pm.expect(Object.keys(error).sort(), 'fields').to.eql(['error', 'message', 'requestId', 'status']);",
+          "      pm.expect(error.status, 'status').to.eql(pm.response.code);",
+          "      pm.expect(error.error, 'error').to.match(/^[A-Z][A-Z_]*$/);",
+          "      pm.expect(error.message, 'message').to.be.a('string');",
+          "      pm.expect(error.requestId, 'requestId').to.eql(requestId);",
+          "    });",
+          "  }",
+          "}"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "pStock",
+      "value": "a0000000-0000-4000-8000-000000000010"
+    },
+    {
+      "key": "pEmpty",
+      "value": "a0000000-0000-4000-8000-000000000012"
+    },
+    {
+      "key": "kitchenCategoryId",
+      "value": "c0000000-0000-4000-8000-000000000001"
+    },
+    {
+      "key": "unknownProductId",
+      "value": "f0000000-0000-4000-8000-000000000000"
+    },
+    {
+      "key": "runId",
+      "value": ""
+    },
+    {
+      "key": "customerEmail",
+      "value": ""
+    },
+    {
+      "key": "customerPassword",
+      "value": ""
+    },
+    {
+      "key": "customerId",
+      "value": ""
+    },
+    {
+      "key": "customerToken",
+      "value": ""
+    },
+    {
+      "key": "adminToken",
+      "value": ""
+    },
+    {
+      "key": "inventoryUuid",
+      "value": ""
+    },
+    {
+      "key": "reviewUuid",
+      "value": ""
+    },
+    {
+      "key": "orderRegistered",
+      "value": ""
+    },
+    {
+      "key": "shippingRegistered",
+      "value": ""
+    },
+    {
+      "key": "seedQueue",
+      "value": ""
+    },
+    {
+      "key": "seedProductId",
+      "value": ""
+    },
+    {
+      "key": "seedQuantity",
+      "value": ""
+    },
+    {
+      "key": "mailPollStart",
+      "value": ""
+    },
+    {
+      "key": "productTotal",
+      "value": ""
+    },
+    {
+      "key": "catalogIds",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "00 setup",
+      "description": "Probes: which team services accept UUID productId (Inventory, Review) and which are registered in Consul (Order, Shipping). Dependent checks are skipped with one of the 4 fixed reasons.",
+      "item": [
+        {
+          "name": "Probe inventory-service UUID support",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Run setup. run.mjs puts runId and customerEmail into the environment; the Postman app has neither,",
+                  "// so a new pair (a new customer account) is made for every run there.",
+                  "if (!pm.environment.get('customerEmail')) {",
+                  "  const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);",
+                  "  const runId = `${stamp}-${Math.floor(Math.random() * 0x10000).toString(16).padStart(4, '0')}`;",
+                  "  pm.collectionVariables.set('runId', runId);",
+                  "  pm.collectionVariables.set('customerEmail', `scenario-${runId}@sklep.local`);",
+                  "}",
+                  "pm.environment.set('skipped', '[]');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// S01: 200/404 = UUID supported; 400 VALIDATION_ERROR with \"integer\" in the message = UUID rejected, the dependent",
+                  "// checks are skipped. Any other answer fails this probe and the dependent checks run (and fail) instead of being skipped.",
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json();",
+                  "} catch (e) {",
+                  "  body = {};",
+                  "}",
+                  "let support = '';",
+                  "if (pm.response.code === 200 || pm.response.code === 404) {",
+                  "  support = 'true';",
+                  "} else if (pm.response.code === 400 && body.error === 'VALIDATION_ERROR' && /integer/.test(String(body.message))) {",
+                  "  support = 'false';",
+                  "}",
+                  "pm.collectionVariables.set('inventoryUuid', support);",
+                  "pm.test('[S01] inventory-service answers 200/404 (UUID supported) or 400 VALIDATION_ERROR \"integer\" (UUID rejected)', () => {",
+                  "  if (support === '') {",
+                  "    pm.expect.fail(`unexpected answer ${pm.response.code}`);",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/inventory/{{pStock}}"
+          }
+        },
+        {
+          "name": "Probe review-service UUID support",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// S02: 200/404 = UUID supported; 400 VALIDATION_ERROR with \"integer\" in the message = UUID rejected, the dependent",
+                  "// checks are skipped. Any other answer fails this probe and the dependent checks run (and fail) instead of being skipped.",
+                  "let body = {};",
+                  "try {",
+                  "  body = pm.response.json();",
+                  "} catch (e) {",
+                  "  body = {};",
+                  "}",
+                  "let support = '';",
+                  "if (pm.response.code === 200 || pm.response.code === 404) {",
+                  "  support = 'true';",
+                  "} else if (pm.response.code === 400 && body.error === 'VALIDATION_ERROR' && /integer/.test(String(body.message))) {",
+                  "  support = 'false';",
+                  "}",
+                  "pm.collectionVariables.set('reviewUuid', support);",
+                  "pm.test('[S02] review-service answers 200/404 (UUID supported) or 400 VALIDATION_ERROR \"integer\" (UUID rejected)', () => {",
+                  "  if (support === '') {",
+                  "    pm.expect.fail(`unexpected answer ${pm.response.code}`);",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/reviews?productId={{pStock}}"
+          }
+        },
+        {
+          "name": "Probe order-service in Consul",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// S03: an empty list in the Consul catalog = order-service not registered. A registered order-service is in the",
+                  "// catalog whatever its health checks say, so an unhealthy one fails S80 instead of being skipped.",
+                  "const list = pm.response.code === 200 ? pm.response.json() : null;",
+                  "pm.collectionVariables.set('orderRegistered', Array.isArray(list) ? String(list.length > 0) : '');",
+                  "pm.test('[S03] Consul answers 200 with a list for order-service', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "  pm.expect(Array.isArray(list), 'list').to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{consulUrl}}/v1/catalog/service/order-service"
+          }
+        },
+        {
+          "name": "Probe shipping-service in Consul",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// S03: an empty list in the Consul catalog = shipping-service not registered. A registered shipping-service is in the",
+                  "// catalog whatever its health checks say, so an unhealthy one fails S81 instead of being skipped.",
+                  "const list = pm.response.code === 200 ? pm.response.json() : null;",
+                  "pm.collectionVariables.set('shippingRegistered', Array.isArray(list) ? String(list.length > 0) : '');",
+                  "pm.test('[S03] Consul answers 200 with a list for shipping-service', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "  pm.expect(Array.isArray(list), 'list').to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{consulUrl}}/v1/catalog/service/shipping-service"
+          }
+        }
+      ]
+    },
+    {
+      "name": "01 preparation",
+      "description": "Admin login and the stock of the 24 seed products (decision 7): Algorytmy 5, Bazy danych 0, the other 22 products 25. PUT sets an absolute value, so every run starts from the same stock.",
+      "item": [
+        {
+          "name": "Log in as admin",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The body is built here, so any character of the password stays valid JSON.",
+                  "pm.request.body.update(JSON.stringify({ email: pm.variables.get('adminEmail'), password: pm.variables.get('adminPassword') }));",
+                  "pm.collectionVariables.unset('adminToken');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Payload of a JWT (base64url). Only the claims are checked; the token is never printed or compared by value.",
+                  "const decodeBase64 = require('atob');",
+                  "const jwtClaims = (token) => {",
+                  "  const part = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');",
+                  "  return JSON.parse(decodeBase64(part + '='.repeat((4 - (part.length % 4)) % 4)));",
+                  "};",
+                  "pm.test('[S10] admin login: 200, ADMIN in the token roles', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "  const token = pm.response.json().accessToken;",
+                  "  pm.expect(typeof token, 'accessToken type').to.eql('string');",
+                  "  pm.expect(jwtClaims(token).roles, 'roles').to.include('ADMIN');",
+                  "  pm.collectionVariables.set('adminToken', token);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/auth/login",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{adminEmail}}\", \"password\": \"{{adminPassword}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "List seed products",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skipped together with \"Set stock of seed products\", which records the skip (S11).",
+                  "if (pm.collectionVariables.get('inventoryUuid') === 'false') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// S11: the seed products are the ones with this id prefix; the queue drives \"Set stock of seed products\".",
+                  "const SEED_PREFIX = 'a0000000-0000-4000-8000-0000000000';",
+                  "const ids = pm.response.code === 200 ? pm.response.json().items.map((product) => product.id).filter((id) => id.startsWith(SEED_PREFIX)) : [];",
+                  "pm.test('[S11] 24 seed products in the catalog', () => pm.expect(ids.length, 'seed products').to.eql(24));",
+                  "const quantity = (id) => (id === pm.collectionVariables.get('pStock') ? 5 : id === pm.collectionVariables.get('pEmpty') ? 0 : 25);",
+                  "pm.collectionVariables.set('seedQueue', JSON.stringify(ids.map((id) => [id, quantity(id)])));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/products?size=100"
+          }
+        },
+        {
+          "name": "Set stock of seed products",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// One PUT per seed product: the item repeats itself (setNextRequest) until the queue is empty.",
+                  "const queue = JSON.parse(pm.collectionVariables.get('seedQueue') || '[]');",
+                  "if (pm.collectionVariables.get('inventoryUuid') === 'false') {",
+                  "  const skipped = JSON.parse(pm.environment.get('skipped') || '[]');",
+                  "  skipped.push({ item: pm.info.requestName, reason: 'inventory-service rejects UUID productId', checks: [\"S11\"] });",
+                  "  pm.environment.set('skipped', JSON.stringify(skipped));",
+                  "  pm.execution.skipRequest();",
+                  "} else if (queue.length === 0) {",
+                  "  // \"List seed products\" failed; its [S11] assertion shows it.",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  const [id, quantity] = queue.shift();",
+                  "  pm.collectionVariables.set('seedQueue', JSON.stringify(queue));",
+                  "  pm.collectionVariables.set('seedProductId', id);",
+                  "  pm.collectionVariables.set('seedQuantity', String(quantity));",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const id = pm.collectionVariables.get('seedProductId');",
+                  "const quantity = Number(pm.collectionVariables.get('seedQuantity'));",
+                  "pm.test(`[S11] stock of ${id} set to ${quantity}`, () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "  pm.expect(pm.response.json().quantity, 'quantity').to.eql(quantity);",
+                  "});",
+                  "if (JSON.parse(pm.collectionVariables.get('seedQueue') || '[]').length > 0) {",
+                  "  pm.execution.setNextRequest(pm.info.requestId);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/inventory/{{seedProductId}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"quantity\": {{seedQuantity}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Get stock of Algorytmy without a token",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skipped while inventory-service rejects UUID (probe S01); runs by itself once it accepts them.",
+                  "if (pm.collectionVariables.get('inventoryUuid') === 'false') {",
+                  "  const skipped = JSON.parse(pm.environment.get('skipped') || '[]');",
+                  "  skipped.push({ item: pm.info.requestName, reason: 'inventory-service rejects UUID productId', checks: [\"S12\"] });",
+                  "  pm.environment.set('skipped', JSON.stringify(skipped));",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S12] stock of Algorytmy without a token: 200, available 5, inStock true', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "  const stock = pm.response.json();",
+                  "  pm.expect(stock.available, 'available').to.eql(5);",
+                  "  pm.expect(stock.inStock, 'inStock').to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/inventory/{{pStock}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "02 registration",
+      "description": "Registration of a new customer (as Scenario-<runId>@sklep.local, stored in lower case as scenario-<runId>@sklep.local) and the welcome e-mail sent by Notification after the user.registered event.",
+      "item": [
+        {
+          "name": "Register the customer",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Random password of the scenario customer (24 characters; Auth needs 10-72 bytes), kept in memory only.",
+                  "const chars = 'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';",
+                  "pm.collectionVariables.set('customerPassword', Array.from({ length: 24 }, () => chars[Math.floor(Math.random() * chars.length)]).join(''));",
+                  "pm.collectionVariables.unset('customerId');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Registered as Scenario-<runId>@sklep.local: Auth stores the e-mail in lower case, which is customerEmail.",
+                  "pm.test('[S20] registration with a capital letter in the e-mail: 201, id UUID, e-mail in lower case, roles [\"CUSTOMER\"], no accessToken', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(201);",
+                  "  const account = pm.response.json();",
+                  "  pm.expect(account.id, 'id').to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);",
+                  "  pm.expect(account.email, 'email').to.eql(pm.variables.get('customerEmail'));",
+                  "  pm.expect(account.roles, 'roles').to.eql(['CUSTOMER']);",
+                  "  pm.expect('accessToken' in account, 'accessToken in the body').to.be.false;",
+                  "  pm.collectionVariables.set('customerId', account.id);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/auth/register",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"Scenario-{{runId}}@sklep.local\", \"password\": \"{{customerPassword}}\", \"firstName\": \"Scenario\", \"lastName\": \"Customer\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Register the same e-mail again",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S21] same e-mail again: 409 EMAIL_TAKEN', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(409);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('EMAIL_TAKEN');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/auth/register",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"Scenario-{{runId}}@sklep.local\", \"password\": \"{{customerPassword}}\", \"firstName\": \"Scenario\", \"lastName\": \"Customer\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Register with a 5-character password",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S22] password of 5 characters: 400 VALIDATION_ERROR', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(400);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('VALIDATION_ERROR');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/auth/register",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"scenario-{{runId}}-short@sklep.local\", \"password\": \"abc12\", \"firstName\": \"Scenario\", \"lastName\": \"Customer\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Welcome e-mail in Mailpit",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('mailPollStart')) {",
+                  "  pm.collectionVariables.set('mailPollStart', String(Date.now()));",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// S23: the e-mail comes after the user.registered event, so Mailpit is polled every 1 s for up to 30 s.",
+                  "const search = pm.response.code === 200 ? pm.response.json() : null;",
+                  "const count = search ? search.messages_count : 0;",
+                  "if (count === 0 && Date.now() - Number(pm.collectionVariables.get('mailPollStart')) < 30000) {",
+                  "  pm.execution.setNextRequest(pm.info.requestId);",
+                  "  setTimeout(() => {}, 1000);",
+                  "} else {",
+                  "  pm.collectionVariables.unset('mailPollStart');",
+                  "  pm.test('[S23] exactly 1 welcome e-mail to the customer, subject \"Witamy w sklepie\"', () => {",
+                  "    pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "    pm.expect(count, 'messages').to.eql(1);",
+                  "    pm.expect(search.messages[0].Subject, 'subject').to.eql('Witamy w sklepie');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mailpitUrl}}/api/v1/search?query=to:{{customerEmail}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "03 login",
+      "description": "Login of the new customer (the second and last login of the run, decision 8) and the own profile.",
+      "item": [
+        {
+          "name": "Log in as the customer",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('customerToken');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Payload of a JWT (base64url). Only the claims are checked; the token is never printed or compared by value.",
+                  "const decodeBase64 = require('atob');",
+                  "const jwtClaims = (token) => {",
+                  "  const part = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');",
+                  "  return JSON.parse(decodeBase64(part + '='.repeat((4 - (part.length % 4)) % 4)));",
+                  "};",
+                  "pm.test('[S30] customer login: 200, Bearer, expiresIn 900, JWT with sub, roles, iss, aud', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "  const login = pm.response.json();",
+                  "  pm.expect(login.tokenType, 'tokenType').to.eql('Bearer');",
+                  "  pm.expect(login.expiresIn, 'expiresIn').to.eql(900);",
+                  "  pm.expect(typeof login.accessToken, 'accessToken type').to.eql('string');",
+                  "  pm.expect(login.accessToken.split('.').length, 'parts of the JWT').to.eql(3);",
+                  "  const claims = jwtClaims(login.accessToken);",
+                  "  pm.expect(claims.sub, 'sub').to.eql(pm.collectionVariables.get('customerId'));",
+                  "  pm.expect(claims.roles, 'roles').to.eql(['CUSTOMER']);",
+                  "  pm.expect(claims.iss, 'iss').to.eql('sklep-auth');",
+                  "  pm.expect(claims.aud, 'aud').to.eql('sklep-api');",
+                  "  pm.collectionVariables.set('customerToken', login.accessToken);",
+                  "});",
+                  "// Only the attributes are compared; the cookie value is never printed.",
+                  "pm.test('[S30] Set-Cookie refresh_token: HttpOnly, Secure, SameSite=Strict, Path=/api/v1/auth', () => {",
+                  "  const parts = (pm.response.headers.get('Set-Cookie') || '').split(';').map((part) => part.trim());",
+                  "  pm.expect(/^refresh_token=[^\\s]+$/.test(parts[0]), 'refresh_token cookie').to.be.true;",
+                  "  ['HttpOnly', 'Secure', 'SameSite=Strict', 'Path=/api/v1/auth'].forEach((attribute) => {",
+                  "    pm.expect(parts.slice(1).includes(attribute), attribute).to.be.true;",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/auth/login",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{customerEmail}}\", \"password\": \"{{customerPassword}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Get own profile",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S31] own profile: 200, id = sub, email = customer e-mail', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "  const profile = pm.response.json();",
+                  "  pm.expect(profile.id, 'id').to.eql(pm.collectionVariables.get('customerId'));",
+                  "  pm.expect(profile.email, 'email').to.eql(pm.variables.get('customerEmail'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/users/me"
+          }
+        }
+      ]
+    },
+    {
+      "name": "04 catalog",
+      "description": "Catalog without a token: list, search, category, sort, pages, validation, categories, product page (availability from Inventory, rating from Review).",
+      "item": [
+        {
+          "name": "List products (size 100)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const SEED_IDS = Array.from({ length: 24 }, (_, i) => `a0000000-0000-4000-8000-0000000000${String(i + 1).padStart(2, '0')}`);",
+                  "pm.test('[S40] page {items, page, size, total} with all 24 seed products, prices as text, PLN', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "  const page = pm.response.json();",
+                  "  pm.expect(Object.keys(page).sort(), 'fields').to.eql(['items', 'page', 'size', 'total']);",
+                  "  const ids = page.items.map((product) => product.id);",
+                  "  // S43 and S44 compare with this page: the number of products and the ids in the default order (NAME).",
+                  "  pm.collectionVariables.set('productTotal', String(page.total));",
+                  "  pm.collectionVariables.set('catalogIds', JSON.stringify(ids));",
+                  "  pm.expect(page.total, 'total').to.be.at.least(24);",
+                  "  pm.expect(SEED_IDS.filter((id) => !ids.includes(id)), 'missing seed products').to.eql([]);",
+                  "  page.items.forEach((product) => {",
+                  "    pm.expect(product.price, `price of ${product.id}`).to.match(/^[0-9]{1,8}\\.[0-9]{2}$/);",
+                  "    pm.expect(product.currency, `currency of ${product.id}`).to.eql('PLN');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/products?size=100"
+          }
+        },
+        {
+          "name": "Search products for ALGORYTM",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S41] q=ALGORYTM finds Algorytmy', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "  pm.expect(pm.response.json().items.map((product) => product.name), 'names').to.include('Algorytmy');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/products?q=ALGORYTM"
+          }
+        },
+        {
+          "name": "Filter products by category Kuchnia",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S42] categoryId of Kuchnia: at least 1 product, all of that category', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "  const products = pm.response.json().items;",
+                  "  pm.expect(products.length, 'products').to.be.at.least(1);",
+                  "  products.forEach((product) => pm.expect(product.categoryId, `category of ${product.id}`).to.eql(pm.collectionVariables.get('kitchenCategoryId')));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/products?categoryId={{kitchenCategoryId}}"
+          }
+        },
+        {
+          "name": "Sort products by price ascending",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Amounts are compared in grosze (integers), never as floating point numbers.",
+                  "const cents = (amount) => {",
+                  "  const [zloty, grosze] = amount.split('.');",
+                  "  return Number(zloty) * 100 + Number(grosze);",
+                  "};",
+                  "pm.test('[S43] sort=PRICE_ASC&size=100: min(total of S40, 100) items, prices do not decrease', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "  const prices = pm.response.json().items.map((product) => cents(product.price));",
+                  "  pm.expect(prices.length, 'items').to.eql(Math.min(Number(pm.collectionVariables.get('productTotal')), 100));",
+                  "  prices.slice(1).forEach((price, i) => pm.expect(price, `price at position ${i + 2}`).to.be.at.least(prices[i]));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/products?sort=PRICE_ASC&size=100"
+          }
+        },
+        {
+          "name": "List products page 2 of size 5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S44] page=2&size=5: page 2, size 5, exactly the items 6-10 of S40, total as in S40', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "  const page = pm.response.json();",
+                  "  pm.expect(page.page, 'page').to.eql(2);",
+                  "  pm.expect(page.size, 'size').to.eql(5);",
+                  "  pm.expect(page.items.length, 'items').to.eql(5);",
+                  "  // Same default order (NAME) as S40 (size 100): page 2 of size 5 holds its items 6-10.",
+                  "  const expected = JSON.parse(pm.collectionVariables.get('catalogIds') || '[]').slice(5, 10);",
+                  "  pm.expect(page.items.map((product) => product.id), 'ids of the items 6-10 of S40').to.eql(expected);",
+                  "  pm.expect(page.total, 'total').to.eql(Number(pm.collectionVariables.get('productTotal')));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/products?page=2&size=5"
+          }
+        },
+        {
+          "name": "List products page 99 of size 5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S44] page=99&size=5: 200 with no items', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "  pm.expect(pm.response.json().items, 'items').to.eql([]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/products?page=99&size=5"
+          }
+        },
+        {
+          "name": "List products with page 0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S45] page=0: 400 VALIDATION_ERROR', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(400);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('VALIDATION_ERROR');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/products?page=0"
+          }
+        },
+        {
+          "name": "List products with size 101",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S45] size=101: 400 VALIDATION_ERROR', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(400);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('VALIDATION_ERROR');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/products?size=101"
+          }
+        },
+        {
+          "name": "List categories",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S46] categories: at least 4 entries {id, name}', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "  const categories = pm.response.json();",
+                  "  pm.expect(categories.length, 'categories').to.be.at.least(4);",
+                  "  categories.forEach((category) => pm.expect(Object.keys(category).sort(), 'fields').to.eql(['id', 'name']));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/categories"
+          }
+        },
+        {
+          "name": "Get product Algorytmy",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const product = pm.response.code === 200 ? pm.response.json() : {};",
+                  "pm.test('[S47] product page: 200, fields of ProductDetail, category is an object', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "  ['id', 'name', 'description', 'price', 'currency', 'category', 'imageUrl', 'rating', 'availability', 'createdAt', 'updatedAt'].forEach((field) => {",
+                  "    pm.expect(field in product, field).to.be.true;",
+                  "  });",
+                  "  pm.expect(product.id, 'id').to.eql(pm.collectionVariables.get('pStock'));",
+                  "  pm.expect(product.category, 'category').to.be.an('object');",
+                  "  pm.expect(Object.keys(product.category).sort(), 'category fields').to.eql(['id', 'name']);",
+                  "});",
+                  "// S47a needs Inventory with UUID (probe S01): otherwise skipped, and the fallback (availability null) is checked.",
+                  "if (pm.collectionVariables.get('inventoryUuid') === 'false') {",
+                  "  const skipped = JSON.parse(pm.environment.get('skipped') || '[]');",
+                  "  skipped.push({ item: pm.info.requestName, reason: 'inventory-service rejects UUID productId', checks: [\"S47a\"] });",
+                  "  pm.environment.set('skipped', JSON.stringify(skipped));",
+                  "  pm.test('[fallback] availability is null while inventory-service rejects UUID', () => pm.expect(product.availability).to.eql(null));",
+                  "} else {",
+                  "  pm.test('[S47a] availability {available: 5, inStock: true}', () => pm.expect(product.availability).to.eql({ available: 5, inStock: true }));",
+                  "}",
+                  "// S47r needs Review with UUID (probe S02): otherwise skipped, and the fallback (rating null) is checked.",
+                  "if (pm.collectionVariables.get('reviewUuid') === 'false') {",
+                  "  const skipped = JSON.parse(pm.environment.get('skipped') || '[]');",
+                  "  skipped.push({ item: pm.info.requestName, reason: 'review-service rejects UUID productId', checks: [\"S47r\"] });",
+                  "  pm.environment.set('skipped', JSON.stringify(skipped));",
+                  "  pm.test('[fallback] rating is null while review-service rejects UUID', () => pm.expect(product.rating).to.eql(null));",
+                  "} else {",
+                  "  pm.test('[S47r] rating is an object {average, count}', () => {",
+                  "    pm.expect(product.rating, 'rating').to.be.an('object');",
+                  "    pm.expect(Object.keys(product.rating).sort(), 'rating fields').to.eql(['average', 'count']);",
+                  "    pm.expect(product.rating.count, 'count').to.be.a('number');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/products/{{pStock}}"
+          }
+        },
+        {
+          "name": "Get an unknown product",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S48] unknown product: 404 NOT_FOUND', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(404);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('NOT_FOUND');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/products/{{unknownProductId}}"
+          }
+        },
+        {
+          "name": "Get a product with id 123",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S48] product id 123: 400 VALIDATION_ERROR', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(400);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('VALIDATION_ERROR');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/products/123"
+          }
+        }
+      ]
+    },
+    {
+      "name": "05 admin access",
+      "description": "ADMIN endpoints as the customer and without a token (Gateway rules).",
+      "item": [
+        {
+          "name": "Set stock as the customer",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S50] PUT /inventory as the customer: 403 FORBIDDEN', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(403);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('FORBIDDEN');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/inventory/{{pStock}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"quantity\": 5}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Set stock without a token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S50] PUT /inventory without a token: 401 UNAUTHORIZED', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(401);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('UNAUTHORIZED');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/inventory/{{pStock}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"quantity\": 5}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Create a product as the customer",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S51] POST /products as the customer: 403 FORBIDDEN', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(403);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('FORBIDDEN');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/products",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Scenario product\", \"description\": \"\", \"price\": \"1.00\", \"currency\": \"PLN\", \"categoryId\": \"{{kitchenCategoryId}}\", \"imageUrl\": null}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Create a product as the customer with X-User-Roles ADMIN",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S51] POST /products as the customer with X-User-Roles: ADMIN: 403 FORBIDDEN', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(403);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('FORBIDDEN');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "ADMIN"
+              }
+            ],
+            "url": "{{baseUrl}}/products",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Scenario product\", \"description\": \"\", \"price\": \"1.00\", \"currency\": \"PLN\", \"categoryId\": \"{{kitchenCategoryId}}\", \"imageUrl\": null}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "06 cart",
+      "description": "Cart of the customer: prices from Product, stock check in Inventory (S63, S64 need Inventory with UUID).",
+      "item": [
+        {
+          "name": "Get the empty cart",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S60] empty cart: 200, no items, total \"0.00\"', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "  const cart = pm.response.json();",
+                  "  pm.expect(cart.items, 'items').to.eql([]);",
+                  "  pm.expect(cart.total, 'total').to.eql('0.00');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/cart"
+          }
+        },
+        {
+          "name": "Add 2 x Algorytmy",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Amounts are compared in grosze (integers), never as floating point numbers.",
+                  "const cents = (amount) => {",
+                  "  const [zloty, grosze] = amount.split('.');",
+                  "  return Number(zloty) * 100 + Number(grosze);",
+                  "};",
+                  "const cart = pm.response.code === 200 ? pm.response.json() : { items: [] };",
+                  "pm.test('[S61] add 2 x Algorytmy: 200, amounts as text, subtotal = unitPrice x 2, total = sum of subtotals', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "  const line = cart.items.find((item) => item.productId === pm.collectionVariables.get('pStock'));",
+                  "  pm.expect(line, 'cart line of Algorytmy').to.be.an('object');",
+                  "  pm.expect(line.quantity, 'quantity').to.eql(2);",
+                  "  [line.unitPrice, line.subtotal, cart.total].forEach((amount) => pm.expect(amount, 'amount').to.be.a('string').and.match(/^[0-9]{1,8}\\.[0-9]{2}$/));",
+                  "  pm.expect(cents(line.subtotal), 'subtotal').to.eql(cents(line.unitPrice) * 2);",
+                  "  pm.expect(cents(cart.total), 'total').to.eql(cart.items.reduce((sum, item) => sum + cents(item.subtotal), 0));",
+                  "});",
+                  "pm.test('[S61] inventoryChecked as the inventory probe (S01)', () => {",
+                  "  pm.expect(cart.inventoryChecked, 'inventoryChecked').to.eql(pm.collectionVariables.get('inventoryUuid') === 'true');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/cart/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"productId\": \"{{pStock}}\", \"quantity\": 2}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Set Algorytmy quantity to 3",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S62] set quantity to 3: 200, quantity 3', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "  const line = pm.response.json().items.find((item) => item.productId === pm.collectionVariables.get('pStock'));",
+                  "  pm.expect(line && line.quantity, 'quantity').to.eql(3);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/cart/items/{{pStock}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"quantity\": 3}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Add 3 more Algorytmy (6 > stock 5)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skipped while inventory-service rejects UUID (probe S01); runs by itself once it accepts them.",
+                  "if (pm.collectionVariables.get('inventoryUuid') === 'false') {",
+                  "  const skipped = JSON.parse(pm.environment.get('skipped') || '[]');",
+                  "  skipped.push({ item: pm.info.requestName, reason: 'inventory-service rejects UUID productId', checks: [\"S63\"] });",
+                  "  pm.environment.set('skipped', JSON.stringify(skipped));",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S63] 6 pieces with stock 5: 409 CONFLICT', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(409);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('CONFLICT');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/cart/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"productId\": \"{{pStock}}\", \"quantity\": 3}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Add Bazy danych (stock 0)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skipped while inventory-service rejects UUID (probe S01); runs by itself once it accepts them.",
+                  "if (pm.collectionVariables.get('inventoryUuid') === 'false') {",
+                  "  const skipped = JSON.parse(pm.environment.get('skipped') || '[]');",
+                  "  skipped.push({ item: pm.info.requestName, reason: 'inventory-service rejects UUID productId', checks: [\"S64\"] });",
+                  "  pm.environment.set('skipped', JSON.stringify(skipped));",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S64] product with stock 0: 409 CONFLICT', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(409);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('CONFLICT');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/cart/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"productId\": \"{{pEmpty}}\", \"quantity\": 1}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Add quantity 1000",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S65] quantity 1000: 400 VALIDATION_ERROR', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(400);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('VALIDATION_ERROR');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/cart/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"productId\": \"{{pStock}}\", \"quantity\": 1000}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Add quantity 0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S65] quantity 0: 400 VALIDATION_ERROR', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(400);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('VALIDATION_ERROR');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/cart/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"productId\": \"{{pStock}}\", \"quantity\": 0}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Add an unknown product",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S66] unknown product: 404 NOT_FOUND', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(404);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('NOT_FOUND');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/cart/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"productId\": \"{{unknownProductId}}\", \"quantity\": 1}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Remove Algorytmy",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S67] remove Algorytmy: 204', () => pm.expect(pm.response.code, 'status').to.eql(204));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/cart/items/{{pStock}}"
+          }
+        },
+        {
+          "name": "Remove Algorytmy again",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S67] remove again (idempotent): 204', () => pm.expect(pm.response.code, 'status').to.eql(204));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/cart/items/{{pStock}}"
+          }
+        },
+        {
+          "name": "Get the cart after removal",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S67] cart after removal: 200, no items', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "  pm.expect(pm.response.json().items, 'items').to.eql([]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/cart"
+          }
+        }
+      ]
+    },
+    {
+      "name": "07 access denials",
+      "description": "Internal endpoints are blocked at the Gateway (404), X-User-* headers from the client are replaced and GET /users/{id} is for ADMIN only (403).",
+      "item": [
+        {
+          "name": "Internal POST /users",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S70] internal POST /users: 404 NOT_FOUND', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(404);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('NOT_FOUND');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/users",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Internal DELETE /cart/{userId}",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S70] internal DELETE /cart/{userId}: 404 NOT_FOUND', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(404);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('NOT_FOUND');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/cart/{{customerId}}"
+          }
+        },
+        {
+          "name": "Internal POST /inventory/reservations",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S70] internal POST /inventory/reservations: 404 NOT_FOUND', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(404);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('NOT_FOUND');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/inventory/reservations",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Internal GET /orders/purchased",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S70] internal GET /orders/purchased: 404 NOT_FOUND', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(404);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('NOT_FOUND');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/purchased?productId={{pStock}}"
+          }
+        },
+        {
+          "name": "Cart with forged X-User-Id and X-User-Roles",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S71] forged X-User-Id and X-User-Roles: 200, cart of the own sub', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "  pm.expect(pm.response.json().userId, 'userId').to.eql(pm.collectionVariables.get('customerId'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              },
+              {
+                "key": "X-User-Id",
+                "value": "b0000000-0000-4000-8000-000000000001"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "ADMIN,SERVICE"
+              }
+            ],
+            "url": "{{baseUrl}}/cart"
+          }
+        },
+        {
+          "name": "Cart without a token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S72] cart without a token: 401 UNAUTHORIZED', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(401);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('UNAUTHORIZED');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/cart"
+          }
+        },
+        {
+          "name": "Cart with a malformed token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S72] cart with the token abc.def.ghi: 401 UNAUTHORIZED', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(401);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('UNAUTHORIZED');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer abc.def.ghi"
+              }
+            ],
+            "url": "{{baseUrl}}/cart"
+          }
+        },
+        {
+          "name": "Profile by the own id as the customer",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// S73: GET /users/{id} is for ADMIN only, also with the own id; the customer has /users/me.",
+                  "pm.test('[S73] GET /users/{own id} as the customer: 403 FORBIDDEN', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(403);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('FORBIDDEN');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/users/{{customerId}}"
+          }
+        },
+        {
+          "name": "Profile of another user as the customer",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S73] GET /users/{other id} as the customer: 403 FORBIDDEN', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(403);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('FORBIDDEN');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/users/b0000000-0000-4000-8000-000000000001"
+          }
+        }
+      ]
+    },
+    {
+      "name": "08 order (stage 8)",
+      "description": "Placeholder of the order flow (stage 8): skipped while Order and Shipping are not registered in Consul, failing once they are.",
+      "item": [
+        {
+          "name": "Order flow (stage 8)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// S80: the order flow comes in stage 8. Without order-service the check is skipped; once order-service is registered",
+                  "// in Consul this item fails, so a registration before stage 8 cannot pass unnoticed.",
+                  "if (pm.collectionVariables.get('orderRegistered') === 'false') {",
+                  "  const skipped = JSON.parse(pm.environment.get('skipped') || '[]');",
+                  "  skipped.push({ item: pm.info.requestName, reason: 'order-service not registered', checks: [\"S80\"] });",
+                  "  pm.environment.set('skipped', JSON.stringify(skipped));",
+                  "} else {",
+                  "  pm.test('[S80] order flow (stage 8)', () => pm.expect.fail('order flow is implemented in stage 8'));",
+                  "}",
+                  "pm.execution.skipRequest();"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/orders"
+          }
+        },
+        {
+          "name": "Shipping flow (stage 8)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// S81: the shipping flow comes in stage 8. Without shipping-service the check is skipped; once shipping-service is registered",
+                  "// in Consul this item fails, so a registration before stage 8 cannot pass unnoticed.",
+                  "if (pm.collectionVariables.get('shippingRegistered') === 'false') {",
+                  "  const skipped = JSON.parse(pm.environment.get('skipped') || '[]');",
+                  "  skipped.push({ item: pm.info.requestName, reason: 'shipping-service not registered', checks: [\"S81\"] });",
+                  "  pm.environment.set('skipped', JSON.stringify(skipped));",
+                  "} else {",
+                  "  pm.test('[S81] shipping flow (stage 8)', () => pm.expect.fail('shipping flow is implemented in stage 8'));",
+                  "}",
+                  "pm.execution.skipRequest();"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/shipping/methods"
+          }
+        }
+      ]
+    }
+  ]
+}

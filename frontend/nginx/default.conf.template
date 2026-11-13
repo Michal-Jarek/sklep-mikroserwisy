@@ -44,6 +44,11 @@ server {
     absolute_redirect off;
     root /usr/share/nginx/html;
     access_log /dev/stdout frontend_json;
+    # Error and warning entries of nginx contain the request line with the query string (e.g. "connect() failed ...
+    # request: "GET /api/v1/products?q=..."), so request handling logs only crit and above; every failed request is
+    # still in the JSON access log (status, upstreamStatus, requestId). Start-up messages come from nginx.conf (not
+    # changed). For a diagnosis lower the level for a while (frontend README, "Logi").
+    error_log /var/log/nginx/error.log crit;
 
     # Header lines up to 32 KB reach the Gateway, which answers 431 for too large headers itself.
     large_client_header_buffers 4 32k;

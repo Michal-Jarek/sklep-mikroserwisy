@@ -29,8 +29,8 @@ const summary = (o: OrderDetail): OrderSummary => ({
 });
 
 export const orderHandlers = [
-  route('POST', '/orders', async (ctx) => {
-    const body = await readBody(ctx.request, ['shippingMethod', 'shippingAddress', 'payment']);
+  route('POST', '/orders', (ctx) => {
+    const body = readBody(ctx.body, ['shippingMethod', 'shippingAddress', 'payment']);
     const { state } = ctx;
     const shippingMethod = oneOf(body.shippingMethod, 'shippingMethod', state.shippingMethods.map((m) => m.code)) as ShippingMethodCode;
     const address = objectWith(body.shippingAddress, ADDRESS_FIELDS, 'shippingAddress');

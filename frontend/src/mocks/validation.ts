@@ -3,11 +3,14 @@ import { badRequest, isUuid } from './http';
 
 export type JsonObject = Record<string, unknown>;
 
-/** JSON object with only the allowed keys (unknown fields -> 400, as in Auth, User and Cart). */
-export async function readBody(request: Request, allowed: string[]): Promise<JsonObject> {
+/**
+ * JSON object with only the allowed keys (unknown fields -> 400, as in Auth, User and Cart), read from the raw
+ * request body (RouteContext.body); synchronous, see route() in http.ts.
+ */
+export function readBody(raw: string, allowed: string[]): JsonObject {
   let body: unknown;
   try {
-    body = await request.json();
+    body = JSON.parse(raw);
   } catch {
     throw badRequest('Request body must be JSON');
   }

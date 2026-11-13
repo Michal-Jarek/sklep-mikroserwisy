@@ -46,16 +46,16 @@ function changeItem(state: MockState, userId: string, productId: string, amount:
 export const cartHandlers = [
   route('GET', '/cart', (ctx) => json(cartView(ctx.state, requireIdentity(ctx).userId))),
 
-  route('POST', '/cart/items', async (ctx) => {
-    const body = await readBody(ctx.request, ['productId', 'quantity']);
+  route('POST', '/cart/items', (ctx) => {
+    const body = readBody(ctx.body, ['productId', 'quantity']);
     const productId = uuid(body.productId, 'productId');
     const quantity = integer(body.quantity, 'quantity', 1, 999);
     return json(changeItem(ctx.state, requireIdentity(ctx).userId, productId, quantity, true));
   }),
 
-  route('PATCH', '/cart/items/:productId', async (ctx) => {
+  route('PATCH', '/cart/items/:productId', (ctx) => {
     const productId = pathUuid(ctx.params, 'productId');
-    const body = await readBody(ctx.request, ['quantity']);
+    const body = readBody(ctx.body, ['quantity']);
     const quantity = integer(body.quantity, 'quantity', 1, 999);
     return json(changeItem(ctx.state, requireIdentity(ctx).userId, productId, quantity, false));
   }),

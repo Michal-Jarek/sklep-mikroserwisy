@@ -46,6 +46,34 @@ export function serializeError(error: unknown): unknown {
   return raw instanceof ResponseErrorSummary ? { type: raw.type, message: raw.message } : error;
 }
 
+/** Request as pino-std-serializers gives it to a custom serializer (url is already originalUrl when set). */
+interface SerializedRequest {
+  id: unknown;
+  method: string;
+  url: string;
+  headers: Record<string, unknown>;
+  remoteAddress?: string;
+  remotePort?: number;
+}
+
+/**
+ * Request serializer of the request logger: the path without the query string, no query and params.
+ * Search parameters can carry personal data (e.g. an e-mail in ?q=). The same goes for Referer: with
+ * Referrer-Policy same-origin every API call of the page /?q=... carries the full page address, so its
+ * query is cut too (in a copy of the headers, req stays unchanged). Headers stay, redacted by REDACTED_PATHS.
+ */
+export function serializeRequest(req: SerializedRequest): SerializedRequest {
+  const referer = req.headers.referer;
+  return {
+    id: req.id,
+    method: req.method,
+    url: (req.url ?? '').split('?', 1)[0],
+    headers: typeof referer === 'string' ? { ...req.headers, referer: referer.split('?', 1)[0] } : req.headers,
+    remoteAddress: req.remoteAddress,
+    remotePort: req.remotePort,
+  };
+}
+
 /** A health check from Consul: only health paths count, so a client cannot hide other requests with this User-Agent. */
 export function isConsulHealthCheck(req: IncomingMessage): boolean {
   // When pino-http asks, the Nest middleware layer (middie) has already cut req.url down to "/"; originalUrl keeps it.
@@ -77,7 +105,7 @@ export function loggerModuleParams(logger: Logger): Params {
         ...value,
         err: new ResponseErrorSummary(error.name, error.message),
       }),
-      serializers: { err: serializeError },
+      serializers: { req: serializeRequest, err: serializeError },
     },
   };
 }

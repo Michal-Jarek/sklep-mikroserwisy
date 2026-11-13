@@ -1,0 +1,9 @@
+{
+  "name": "shop-scenario",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Purchase scenario of the shop run with newman in a container (postman/run.sh)",
+  "dependencies": {
+    "newman": "6.2.3"
+  }
+}

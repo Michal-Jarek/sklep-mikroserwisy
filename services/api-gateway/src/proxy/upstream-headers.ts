@@ -14,8 +14,9 @@ export interface ForwardedFor {
 const HOP_BY_HOP = ['connection', 'keep-alive', 'proxy-connection', 'te', 'trailer', 'transfer-encoding', 'upgrade'];
 
 // Never passed on from the client: credentials (the Gateway checks the token itself), addresses it could fake,
-// Expect (Node has already answered 100 Continue and the body is read; undici refuses to send the header)
-// and method overrides (a service filter would turn POST into DELETE behind the access rules, Z25).
+// Expect (Node has already answered 100 Continue and the body is read; undici refuses to send the header),
+// method overrides (a service filter would turn POST into DELETE behind the access rules, Z25) and Referer
+// (the full page address with its query, e.g. a searched e-mail; no service reads it, services log it, Z12).
 const REQUEST_REMOVED = [
   'authorization',
   'proxy-authorization',
@@ -25,6 +26,7 @@ const REQUEST_REMOVED = [
   'x-http-method-override',
   'x-http-method',
   'x-method-override',
+  'referer',
 ];
 const REQUEST_REMOVED_PREFIXES = ['x-user-', 'x-forwarded-'];
 
@@ -54,7 +56,7 @@ function withoutHopByHop<T extends Record<string, unknown>>(headers: T): Record<
 /**
  * Headers of a request for a service (decision 17, guidelines 3.2, Z25). Removes Authorization, every
  * X-User-* and X-Forwarded-* header of the client (any case, any number of times), Forwarded,
- * X-Real-IP, Expect, the method overrides X-HTTP-Method-Override, X-HTTP-Method and X-Method-Override,
+ * X-Real-IP, Expect, the method overrides X-HTTP-Method-Override, X-HTTP-Method and X-Method-Override, Referer,
  * every header with "_" in its name (like nginx with underscores_in_headers off: WSGI servers read
  * X_User_Roles as X-User-Roles) and hop-by-hop headers; Content-Length too, because the HTTP client
  * computes it from the body it actually sends. Sets X-Request-Id, X-Forwarded-For (one address, replaced)

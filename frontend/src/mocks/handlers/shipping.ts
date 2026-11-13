@@ -61,9 +61,9 @@ export const shippingHandlers = [
     return json(pageOf(newestFirst(found).map(view), paging));
   }),
 
-  route('PATCH', '/shipments/:shipmentId/status', async (ctx) => {
+  route('PATCH', '/shipments/:shipmentId/status', (ctx) => {
     const shipmentId = pathUuid(ctx.params, 'shipmentId');
-    const body = await readBody(ctx.request, ['status']);
+    const body = readBody(ctx.body, ['status']);
     const target = oneOf(body.status, 'status', STATUSES);
     const { state } = ctx;
     const shipment = state.shipments.find((s) => s.id === shipmentId);

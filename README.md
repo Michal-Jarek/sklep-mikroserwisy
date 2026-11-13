@@ -55,7 +55,7 @@ Technologia usługi z właścicielem jest ustalona. Przy usłudze bez właścici
 | `deploy/consul/` | Konfiguracja usług w Consul KV (klucze `config/<usługa>/data`). |
 | `deploy/mongo/` | Skrypt zakładający bazy i użytkowników MongoDB (Review, Notification). |
 | `deploy/rabbitmq/` | Kolejki, exchange `shop.events`, użytkownicy RabbitMQ. |
-| `postman/` | Scenariusz zakupu przez Gateway i wspólne środowiska Postmana. |
+| `postman/` | Scenariusz zakupu i pokazy przez wejście sklepu (newman w kontenerze, `bash postman/run.sh compose`); opis: [postman/README.md](postman/README.md). |
 | `docs/` | Dokumenty dla zespołu (decyzje, wzorce, zdarzenia), raport, prezentacja, diagramy. |
 | `.github/` | CODEOWNERS, szablon PR, później automatyczne testy (CI). |
 

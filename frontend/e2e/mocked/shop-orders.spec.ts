@@ -16,8 +16,9 @@ test('orders: cancel before shipment and not cancellable message', async ({ page
   await expect(page).toHaveURL(new RegExp(`/orders/${orders.paid}$`));
   await expect(page.getByText('Numer śledzenia pojawi się po nadaniu paczki')).toBeVisible();
 
-  // Order changed meanwhile (409 ORDER_NOT_CANCELLABLE): message, the order is reloaded
-  await failNext(page, 'orders', 409, { error: 'ORDER_NOT_CANCELLABLE' });
+  // Order changed meanwhile (409 ORDER_NOT_CANCELLABLE): message, the order is reloaded. Only the POST fails:
+  // the page polls GET /orders/{id} every 10 s, and a poll between failNext and the click would use the error up.
+  await failNext(page, 'orders', 409, { error: 'ORDER_NOT_CANCELLABLE', method: 'POST' });
   await cancelButton.click();
   await page.getByRole('alertdialog').getByRole('button', { name: 'Tak, anuluj' }).click();
   await expect(page.getByText('Tego zamówienia nie można już anulować.')).toBeVisible();

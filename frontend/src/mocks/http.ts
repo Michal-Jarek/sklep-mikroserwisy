@@ -18,6 +18,8 @@ export interface RouteContext {
   identity: Identity | null;
   state: MockState;
   requestId: string;
+  /** Raw request body ("" without one), read before the state is loaded; parse it with readBody(). */
+  body: string;
 }
 
 type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -169,9 +171,9 @@ function resourceOf(path: string): string {
   return path.split('/').filter(Boolean)[0] ?? '';
 }
 
-function plannedFailure(state: MockState, resource: string, requestId: string): Response | null {
+function plannedFailure(state: MockState, resource: string, method: string, requestId: string): Response | null {
   const failure = state.failures[resource];
-  if (!failure) {
+  if (!failure || (failure.method !== undefined && failure.method !== method)) {
     return null;
   }
   failure.remaining -= 1;
@@ -189,11 +191,15 @@ async function respondDelay(): Promise<void> {
   }
 }
 
-export type Resolver = (ctx: RouteContext) => Response | Promise<Response>;
+/** Synchronous on purpose (see route()). */
+export type Resolver = (ctx: RouteContext) => Response;
 
 /**
  * One mock endpoint. `path` is the contract path with `:param` (without /api/v1).
  * Order: delay -> planned failure -> Gateway access rule -> handler.
+ * Loading, changing and saving the state happen without waiting in between (the body is read before the state is
+ * loaded, resolvers are synchronous): otherwise an overlapping request or window.__mocks could save the state in
+ * between and its change would be overwritten (stage 6b L2, concurrency.test.ts).
  */
 export function route(method: Method, path: string, resolver: Resolver): HttpHandler {
   const factory = { GET: http.get, POST: http.post, PUT: http.put, PATCH: http.patch, DELETE: http.delete }[method];
@@ -202,9 +208,10 @@ export function route(method: Method, path: string, resolver: Resolver): HttpHan
     const url = new URL(request.url);
     const servicePath = url.pathname.slice(API_PREFIX.length);
     const requestId = requestIdOf(request);
+    const body = await request.text();
     const state = loadState();
 
-    const failure = plannedFailure(state, resourceOf(servicePath), requestId);
+    const failure = plannedFailure(state, resourceOf(servicePath), method, requestId);
     if (failure) {
       saveState(state);
       return failure;
@@ -225,13 +232,14 @@ export function route(method: Method, path: string, resolver: Resolver): HttpHan
     }
 
     try {
-      const response = await resolver({
+      const response = resolver({
         request,
         params: params as Record<string, string>,
         url,
         identity,
         state,
         requestId,
+        body,
       });
       saveState(state);
       response.headers.set('X-Request-Id', requestId);

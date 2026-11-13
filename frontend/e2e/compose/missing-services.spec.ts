@@ -1,18 +1,33 @@
-import { expect, test } from './helpers';
+import { expect, test, newAccount, registerAndLogIn } from './helpers';
 
-// No login. Product Service is not in compose yet: the Gateway answers 503 SERVICE_UNAVAILABLE.
+// Order and Shipping are not in compose yet: they are not registered in Consul, so the Gateway answers
+// 503 SERVICE_UNAVAILABLE (the client repeats a GET once after 503, decision 12 of stage 6, then shows the message).
+// The checkout needs a non-empty cart; precondition as in shop-flow.spec.ts (stock set by `bash postman/run.sh compose`).
 // CSP violations are collected by the `cspViolations` fixture of helpers.ts (every compose test).
-test('missing services: catalog shows the unavailable message without CSP violations', async ({ page, cspViolations }) => {
+// Logins in this file: 1.
+const UNAVAILABLE = 'Usługa jest chwilowo niedostępna. Spróbuj ponownie za chwilę.';
+const ALGORYTMY = 'a0000000-0000-4000-8000-000000000010';
+
+test('missing services: orders and shipping methods show the unavailable message, the catalog works', async ({ page }) => {
+  await registerAndLogIn(page, newAccount());
+
+  // Catalog (Product) works.
   await page.goto('/');
+  await expect(page.getByRole('list', { name: 'Produkty' }).getByRole('listitem').first()).toBeVisible();
 
-  await expect(page.getByText('Usługa jest chwilowo niedostępna. Spróbuj ponownie za chwilę.')).toBeVisible();
-  await expect(page.getByText(/^Kod zgłoszenia: /)).toBeVisible();
-  await page.getByRole('button', { name: 'Spróbuj ponownie' }).click();
-  await expect(page.getByText('Usługa jest chwilowo niedostępna. Spróbuj ponownie za chwilę.')).toBeVisible();
+  // Order history (Order Service).
+  await page.getByRole('link', { name: 'Zamówienia' }).click();
+  await expect(page).toHaveURL(/\/orders$/);
+  await expect(page.getByText(UNAVAILABLE)).toBeVisible();
+  await expect(page.getByText(/^Kod zgłoszenia: \S+/)).toBeVisible();
 
-  // The rest of the app keeps working: the login page with the form (Radix/sonner styles under the CSP).
-  await page.getByRole('link', { name: 'Zaloguj', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Zaloguj się' })).toBeVisible();
-
-  expect(cspViolations).toEqual([]);
+  // Shipping methods in the checkout (Shipping Service); the rest of the checkout is shown.
+  await page.goto(`/products/${ALGORYTMY}`);
+  await page.getByRole('button', { name: 'Dodaj do koszyka' }).click();
+  await expect(page.getByText('Produkt jest w koszyku.')).toBeVisible();
+  await page.goto('/checkout');
+  await expect(page.getByRole('heading', { name: '1. Adres dostawy' })).toBeVisible();
+  await expect(page.getByText(UNAVAILABLE)).toBeVisible();
+  await expect(page.getByText(/^Kod zgłoszenia: \S+/)).toBeVisible();
+  await expect(page.getByRole('radiogroup', { name: 'Sposób dostawy' })).toHaveCount(0);
 });

@@ -1,0 +1,303 @@
+{
+  "info": {
+    "name": "shop-resilience",
+    "description": "Resilience demo, run folder by folder by postman/resilience-demo.sh, which stops and starts services between the folders. 'review down': review-service stopped. 'product down': product-service stopped. 'recovered': product-service started again.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "review down",
+      "item": [
+        {
+          "name": "Product page while review-service is down",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[R1] product page answers 200', () => pm.response.to.have.status(200));",
+                  "pm.test('[R1] rating is null (review-service unavailable)', () => {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body).to.have.property('rating');",
+                  "    pm.expect(body.rating).to.equal(null);",
+                  "});",
+                  "pm.test('[R1] answered within 3000 ms', () => pm.expect(pm.response.responseTime).to.be.at.most(3000));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/products/{{pStock}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "{{pStock}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "product down",
+      "item": [
+        {
+          "name": "Register customer",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// customerEmail comes from run.mjs; in the Postman app a unique address is generated here.",
+                  "// Collection variable only: in the Postman app an environment value would stay and be reused by shop-purchase.",
+                  "if (!pm.variables.get('customerEmail')) {",
+                  "    pm.collectionVariables.set('customerEmail', 'resilience-' + Date.now() + '@sklep.local');",
+                  "}",
+                  "// Random throwaway password (24 characters), kept only in a collection variable of this run.",
+                  "const chars = 'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';",
+                  "let password = '';",
+                  "for (let i = 0; i < 24; i++) {",
+                  "    password += chars[Math.floor(Math.random() * chars.length)];",
+                  "}",
+                  "pm.collectionVariables.set('customerPassword', password);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('setup: customer registered (201)', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "register"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{customerEmail}}\",\n  \"password\": \"{{customerPassword}}\",\n  \"firstName\": \"Resilience\",\n  \"lastName\": \"Demo\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Log in customer",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('setup: customer logged in (200, Bearer token)', () => {",
+                  "    pm.response.to.have.status(200);",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.tokenType).to.equal('Bearer');",
+                  "    pm.expect(String(body.accessToken).split('.').length, 'parts of the JWT').to.eql(3);",
+                  "    pm.collectionVariables.set('accessToken', body.accessToken);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{customerEmail}}\",\n  \"password\": \"{{customerPassword}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Add product to cart while product-service is down",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[R2] cart answers 503', () => pm.response.to.have.status(503));",
+                  "pm.test('[R2] error SERVICE_UNAVAILABLE in the shared error format', () => {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(Object.keys(body).sort()).to.eql(['error', 'message', 'requestId', 'status']);",
+                  "    pm.expect(body.status).to.equal(503);",
+                  "    pm.expect(body.error).to.equal('SERVICE_UNAVAILABLE');",
+                  "    pm.expect(body.message).to.be.a('string').and.not.empty;",
+                  "    pm.expect(body.requestId).to.equal(pm.response.headers.get('X-Request-Id'));",
+                  "});",
+                  "pm.test('[R2] answered within 5000 ms', () => pm.expect(pm.response.responseTime).to.be.at.most(5000));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/cart/items",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "cart",
+                "items"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"productId\": \"{{pStock}}\",\n  \"quantity\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "recovered",
+      "item": [
+        {
+          "name": "Product page after product-service is back",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Polls the product page every 1 s for at most 30 s: product-service needs a few seconds to start",
+                  "// and the API Gateway keeps its list of instances for up to 10 s.",
+                  "const url = pm.variables.replaceIn('{{baseUrl}}/products/{{pStock}}');",
+                  "const started = Date.now();",
+                  "pm.collectionVariables.set('recoveryMs', -1);",
+                  "function poll() {",
+                  "    pm.sendRequest({ url: url, method: 'GET' }, (err, res) => {",
+                  "        const elapsed = Date.now() - started;",
+                  "        if (!err && res.code === 200) {",
+                  "            pm.collectionVariables.set('recoveryMs', elapsed);",
+                  "            console.log('product page answered 200 after ' + elapsed + ' ms');",
+                  "            return;",
+                  "        }",
+                  "        if (elapsed >= 30000) {",
+                  "            console.log('product page did not answer 200 within 30 s');",
+                  "            return;",
+                  "        }",
+                  "        setTimeout(poll, 1000);",
+                  "    });",
+                  "}",
+                  "poll();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const recoveryMs = Number(pm.collectionVariables.get('recoveryMs'));",
+                  "pm.test('[R3] product page answers 200 again', () => pm.response.to.have.status(200));",
+                  "pm.test('[R3] product-service back within 30 s', () => {",
+                  "    pm.expect(recoveryMs).to.be.at.least(0);",
+                  "    pm.expect(recoveryMs).to.be.at.most(30000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/products/{{pStock}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "products",
+                "{{pStock}}"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "pStock",
+      "value": "a0000000-0000-4000-8000-000000000010"
+    },
+    {
+      "key": "customerPassword",
+      "value": ""
+    },
+    {
+      "key": "accessToken",
+      "value": ""
+    },
+    {
+      "key": "recoveryMs",
+      "value": ""
+    }
+  ]
+}

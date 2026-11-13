@@ -39,8 +39,8 @@ const addressView = ({ id, street, city, postalCode, countryCode }: Address): Ad
 export const userHandlers = [
   route('GET', '/users/me', (ctx) => json(profileOf(ctx.state, requireIdentity(ctx)))),
 
-  route('PUT', '/users/me', async (ctx) => {
-    const body = await readBody(ctx.request, ['firstName', 'lastName']);
+  route('PUT', '/users/me', (ctx) => {
+    const body = readBody(ctx.body, ['firstName', 'lastName']);
     const firstName = text(body.firstName, 'firstName', 1, 100);
     const lastName = text(body.lastName, 'lastName', 1, 100);
     const profile = profileOf(ctx.state, requireIdentity(ctx));
@@ -54,8 +54,8 @@ export const userHandlers = [
     return json(ctx.state.addresses.filter((a) => a.userId === profile.id).map(addressView));
   }),
 
-  route('POST', '/users/me/addresses', async (ctx) => {
-    const body = await readBody(ctx.request, ['street', 'city', 'postalCode', 'countryCode']);
+  route('POST', '/users/me/addresses', (ctx) => {
+    const body = readBody(ctx.body, ['street', 'city', 'postalCode', 'countryCode']);
     const street = text(body.street, 'street', 1, 200);
     const city = text(body.city, 'city', 1, 100);
     const postalCode = text(body.postalCode, 'postalCode', 1, 20);

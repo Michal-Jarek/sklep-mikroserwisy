@@ -80,7 +80,7 @@ Dwa projekty w `playwright.config.ts`:
 | Projekt | Testy | Przeciw czemu |
 |---|---|---|
 | `mocked` | `e2e/mocked/` | serwer Vite w trybie atrap, który Playwright uruchamia sam (`127.0.0.1:5174`) |
-| `compose` | `e2e/compose/` | obraz `frontend` z prawdziwym Gateway i Auth (`E2E_BASE_URL`, domyślnie adres sklepu z compose); serwer Vite nie startuje |
+| `compose` | `e2e/compose/` | obraz `frontend` z prawdziwymi usługami profilu `full-shop` (`E2E_BASE_URL`, domyślnie adres sklepu z compose); serwer Vite nie startuje |
 
 Testy uruchamia się w kontenerze z obrazem Playwright (przeglądarki są w obrazie, `node_modules` z macOS nie działają w Linuksie, więc kontener robi własne `npm ci`). Z katalogu głównego repozytorium:
 
@@ -105,6 +105,27 @@ for f in frontend/e2e/compose/*.spec.ts; do
 done
 ```
 
+Pliki projektu `compose`:
+
+| Plik | Co sprawdza |
+|---|---|
+| `session-login.spec.ts`, `session-refresh.spec.ts`, `session-storage.spec.ts`, `session-tabs.spec.ts` | sesja: rejestracja, logowanie, odświeżanie, wylogowanie, karty |
+| `auth-errors.spec.ts` | błędy logowania, limit prób |
+| `shop-flow.spec.ts` | rejestracja → logowanie → katalog → strona produktu `Algorytmy` → „Dodaj do koszyka” → koszyk (ilość 1, suma = cena) |
+| `missing-services.spec.ts` | Order i Shipping nie działają: historia zamówień i sposoby dostawy przy zamówieniu pokazują „Usługa jest chwilowo niedostępna…” z kodem zgłoszenia, katalog działa |
+| `auth-unavailable.spec.ts` | start aplikacji przy zatrzymanym Auth (tylko z `E2E_AUTH_STOPPED=1`, opis niżej) |
+
+- **Warunek wstępny `shop-flow.spec.ts` i `missing-services.spec.ts`:** produkt `Algorytmy` musi mieć stan magazynowy (po poprawce identyfikatorów UUID w Inventory koszyk odrzuca produkt bez stanu kodem `409`). Stany ustawia scenariusz Postman — przed testami uruchom `bash postman/run.sh compose` (`postman/README.md`).
+- **`auth-unavailable.spec.ts`** bez zmiennej `E2E_AUTH_STOPPED=1` jest pomijany (`skipped`). Playwright w kontenerze nie zatrzyma Auth, więc robi się to ręcznie i po teście uruchamia Auth z powrotem:
+
+  ```bash
+  docker compose -f deploy/compose.yaml --profile full-shop stop auth-service
+  # polecenie docker run jak w pętli wyżej, z dodatkowym -e E2E_AUTH_STOPPED=1 i plikiem e2e/compose/auth-unavailable.spec.ts
+  # nie `start`: uruchomiłby ponownie jednorazowe usługi zależne (consul-kv-seed nadpisuje konfigurację w Consulu)
+  docker compose -f deploy/compose.yaml --profile full-shop up -d --no-deps --no-recreate --wait auth-service
+  ```
+
+  Test sprawdza dokładnie dwa żądania `POST /api/v1/auth/refresh` (drugie co najmniej 2 s po pierwszym), widoczny katalog i link „Zaloguj” oraz brak komunikatu o błędzie sesji.
 - Plik testu podaje się **przed** `--project=…` (`--project` przyjmuje kilka wartości i zabrałby nazwę pliku).
 - Limit logowania to 5 na minutę z jednego adresu IP – w Gateway (Redis) i w Auth (pamięć procesu). Kolejne kontenery często dostają ten sam adres IP, dlatego pętla przed każdym plikiem zeruje liczniki Gateway w Redisie (`FLUSHALL` w `redis-gateway`, hasło rozwija powłoka kontenera) i restartuje Auth (zeruje jego licznik). Każdy plik loguje się najwyżej 4 razy; wyjątek to `auth-errors.spec.ts`, który celowo przekracza limit (6 logowań).
 - `http://frontend:8080` nie jest bezpiecznym kontekstem przeglądarki (jest nim tylko `https` albo `localhost`/`127.0.0.1`), a bez niego Chromium odrzuca ciasteczko `Secure` z Auth i nie daje `navigator.locks` ani `crypto.randomUUID`. Projekt `compose` uruchamia więc pełny Chromium (`channel: 'chromium'`) z flagą `--unsafely-treat-insecure-origin-as-secure=<adres>`; domyślny „headless shell” tej flagi nie obsługuje.
@@ -128,7 +149,7 @@ src/
   styles/           style komponentów shadcn/ui
   test/             konfiguracja i pomocnicze funkcje testów
 e2e/
-  compose/          E2E na prawdziwym Gateway i Auth
+  compose/          E2E na prawdziwych usługach (profil full-shop)
   mocked/           E2E na atrapach
   support/          pomocnicze funkcje E2E atrap
 ```
@@ -137,7 +158,7 @@ e2e/
 
 - **Access token tylko w pamięci** modułu `src/auth/token.ts` – nie trafia do `localStorage`, `sessionStorage`, ciasteczek, adresu strony ani logów konsoli. Rola i identyfikator użytkownika są odczytywane z treści tokenu tylko na potrzeby interfejsu; uprawnienia sprawdza Gateway.
 - **Refresh token** jest w ciasteczku `refresh_token` (`HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/api/v1/auth`), które ustawia Auth. Skrypt strony go nie widzi.
-- **Start aplikacji:** jedno `POST /auth/refresh` (także przy podwójnym uruchomieniu efektów w `StrictMode`). `200` – zalogowany, każdy błąd – niezalogowany, bez komunikatu.
+- **Start aplikacji:** `POST /auth/refresh` (jedno także przy podwójnym uruchomieniu efektów w `StrictMode`). `200` – zalogowany. Kod `5xx` albo brak odpowiedzi (Auth albo Gateway chwilowo niedostępne) – jedno ponowienie po 2,5 s, pod tą samą blokadą między kartami; do końca prób aplikacja jest w stanie „startuje”. `401`, inny kod `4xx` (np. `429`) albo błąd drugiej próby – niezalogowany, bez komunikatu. Razem najwyżej dwa odświeżenia na start.
 - **Odświeżanie:** token, który wygasa za mniej niż 30 s, jest odświeżany przed żądaniem. Odpowiedź `401` na żądanie z tokenem (poza `/auth/*`) → jedno odświeżenie wspólne dla wszystkich równoczesnych żądań → jedno powtórzenie żądania. Gdy odświeżenie dostanie `401`, sesja jest czyszczona, a użytkownik trafia na `/login?returnTo=<bieżąca strona>` z komunikatem „Sesja wygasła. Zaloguj się ponownie.”. `returnTo` przyjmuje tylko ścieżki w sklepie. Błąd odświeżenia inny niż `401` (np. `503`, `429`, brak połączenia) nie blokuje żądania: idzie ono z bieżącym tokenem — trasa publiczna działa (Gateway traktuje wygasły token jak brak tokenu), trasa wymagająca logowania dostaje `401` i jeszcze jedno odświeżenie. Czas wygaśnięcia tokenu jest liczony od chwili jego otrzymania (`exp − iat`), więc źle ustawiony zegar komputera nie wymusza odświeżania.
 - **Wylogowanie:** `POST /auth/logout` pod tą samą blokadą. Auth zawsze odpowiada `204`; inna odpowiedź (`429`, `502`, `503`, brak połączenia) pochodzi z Gateway, nginx albo sieci — ciasteczko odświeżania jest wtedy nadal ważne, więc sesja zostaje, a nagłówek pokazuje „Nie udało się wylogować. Spróbuj ponownie za chwilę.”.
 - **Blokada między kartami:** Auth wymienia refresh token przy każdym odświeżeniu, a ponowne użycie wymienionego tokenu unieważnia całą sesję (log `Refresh token reuse detected`). Karty jednej przeglądarki dzielą ciasteczko, więc odświeżają się po kolei pod blokadą Web Locks `sklep-auth-refresh` – następna karta wysyła już nowe ciasteczko. Logowanie i wylogowanie w jednej karcie trafia do pozostałych przez `BroadcastChannel('sklep-auth')`.
@@ -216,7 +237,7 @@ Dostępne tylko w trybie atrap:
 | Wywołanie | Działanie |
 |---|---|
 | `window.__mocks.reset()` | dane startowe, bez sesji i zaplanowanych błędów (potem przeładuj stronę) |
-| `window.__mocks.failNext(resource, status, { error, retryAfter, times })` | następne `times` (domyślnie 1) żądań do zasobu `resource` (pierwszy segment ścieżki: `products`, `auth`, `reviews`…) dostaje błąd `status` w formacie D7; `error` domyślnie wg statusu (429 `TOO_MANY_REQUESTS` z `Retry-After: 30`, 503 `SERVICE_UNAVAILABLE`…) |
+| `window.__mocks.failNext(resource, status, { error, retryAfter, times, method })` | następne `times` (domyślnie 1) żądań do zasobu `resource` (pierwszy segment ścieżki: `products`, `auth`, `reviews`…) dostaje błąd `status` w formacie D7; `error` domyślnie wg statusu (429 `TOO_MANY_REQUESTS` z `Retry-After: 30`, 503 `SERVICE_UNAVAILABLE`…); z `method` (np. `'POST'`) błąd dostają i liczą się tylko żądania z tą metodą |
 
 Przykłady: `window.__mocks.failNext('reviews', 503, { times: 3 })`, potem wejście na stronę produktu — sekcja opinii pokaże „Usługa jest chwilowo niedostępna”; `window.__mocks.failNext('auth', 429, { error: 'TOO_MANY_ATTEMPTS', retryAfter: 840 })` — logowanie pokaże blokadę konta.
 
@@ -229,6 +250,10 @@ Zaplanowane błędy są w stanie atrap, więc przeżywają przeładowanie strony
 | `GET` z 502/503/504 przy wejściu na stronę | 3 | w trybie deweloperskim `<StrictMode>` montuje stronę dwa razy: TanStack Query przerywa pierwsze żądanie i wysyła je ponownie, a przerwane żądanie i tak dochodzi do atrap i zużywa jeden błąd (service worker MSW nie przekazuje przerwania do handlera); do tego jedno ponowienie |
 
 Inne statusy (4xx, 429) nie są ponawiane, więc przy wejściu na stronę wystarcza `times: 2`, a później `times: 1`.
+
+Strona szczegółów zamówienia odpytuje `GET /orders/{id}` co 10 s — błąd zaplanowany dla anulowania (`POST /orders/{id}/cancel`) trzeba ograniczyć do metody (`method: 'POST'`), inaczej odpytanie między `failNext` a kliknięciem może go zużyć.
+
+Handlery atrap wczytują, zmieniają i zapisują stan bez czekania pomiędzy (treść żądania `route()` czyta przed wczytaniem stanu, handlery są synchroniczne). Dzięki temu nakładające się żądania i `window.__mocks` nie nadpisują sobie zmian (`src/mocks/concurrency.test.ts`).
 
 W testach E2E (projekt `mocked`) te same funkcje udostępnia `e2e/support/mocks.ts`: `login(page, 'customer' | 'admin')`, `resetMocks(page)`, `failNext(page, resource, status, opts)`. Playwright `page.route` nie widzi żądań obsłużonych przez atrapy (odpowiada service worker), dlatego błędy w trybie `mocked` wymusza się przez `failNext`.
 
@@ -333,7 +358,18 @@ Odpowiedzi aplikacji (poza `/api/`) mają `Content-Security-Policy` (skrypty, st
 
 ### Logi
 
-Log dostępu: jedna linia JSON na żądanie na standardowym wyjściu kontenera, pola `time`, `level`, `service` (`frontend`), `requestId`, `method`, `path` (bez parametrów zapytania), `status`, `durationMs`, `upstreamStatus` (status od Gateway; puste dla plików aplikacji). Bez nagłówków, ciasteczek i parametrów zapytania. Błędy samego nginx mają format nginx.
+Log dostępu: jedna linia JSON na żądanie na standardowym wyjściu kontenera, pola `time`, `level`, `service` (`frontend`), `requestId`, `method`, `path` (bez parametrów zapytania), `status`, `durationMs`, `upstreamStatus` (status od Gateway; puste dla plików aplikacji). Bez nagłówków, ciasteczek i parametrów zapytania.
+
+Log błędów nginx dla obsługi żądań ma poziom `crit` (`error_log /var/log/nginx/error.log crit;` w bloku `server` szablonu `nginx/default.conf.template`). Wpisy poziomów `error` i `warn` zawierają linię żądania razem z parametrami zapytania (np. `connect() failed … request: "GET /api/v1/products?q=…"` przy zatrzymanym Gateway), a w parametrach mogą być dane osobowe. Każde nieudane żądanie i tak jest w logu dostępu (`status`, `upstreamStatus`, `requestId`); nie ma tylko technicznej przyczyny błędu. Komunikaty startowe nginx (z `/etc/nginx/nginx.conf`) mają poziom `notice` jak dotąd.
+
+Przy diagnozie poziom można chwilowo obniżyć w działającym kontenerze (zmiana znika przy odtworzeniu kontenera):
+
+```bash
+docker compose -f deploy/compose.yaml exec frontend sh -c \
+  "sed -i 's#error.log crit;#error.log warn;#' /etc/nginx/conf.d/default.conf && nginx -s reload"
+```
+
+Po diagnozie: `docker compose -f deploy/compose.yaml --profile full-shop up -d --force-recreate --no-deps frontend` (konfiguracja wraca z szablonu w obrazie).
 
 ```bash
 docker compose -f deploy/compose.yaml logs --no-log-prefix frontend | tail -3

@@ -48,8 +48,8 @@ function password(value: unknown, minBytes: number): string {
 }
 
 export const authHandlers = [
-  route('POST', '/auth/register', async ({ request, state }) => {
-    const body = await readBody(request, ['email', 'password', 'firstName', 'lastName']);
+  route('POST', '/auth/register', ({ body: raw, state }) => {
+    const body = readBody(raw, ['email', 'password', 'firstName', 'lastName']);
     const account = {
       id: crypto.randomUUID(),
       email: email(body.email),
@@ -74,8 +74,8 @@ export const authHandlers = [
     return json(response, 201);
   }),
 
-  route('POST', '/auth/login', async ({ request, state }) => {
-    const body = await readBody(request, ['email', 'password']);
+  route('POST', '/auth/login', ({ body: raw, state }) => {
+    const body = readBody(raw, ['email', 'password']);
     const login = { email: email(body.email), password: password(body.password, 1) };
     const account = state.accounts.find((a) => a.email === login.email && a.password === login.password);
     if (!account) {

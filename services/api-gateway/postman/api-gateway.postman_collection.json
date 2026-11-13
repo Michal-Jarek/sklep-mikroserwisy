@@ -400,19 +400,20 @@
           }
         },
         {
-          "name": "Own profile with a token (503, no User Service)",
+          "name": "Own profile with a token",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status is 503', () => pm.response.to.have.status(503));",
-                  "const body = pm.response.json();",
-                  "pm.test('Gateway error 503 SERVICE_UNAVAILABLE in the team format', () => {",
-                  "  pm.expect(body).to.eql({ status: 503, error: 'SERVICE_UNAVAILABLE', message: 'Service is unavailable, try again later', requestId: pm.response.headers.get('X-Request-Id') });",
-                  "});",
-                  "pm.test('no X-Instance-Id (the answer of the Gateway, not of a service)', () => pm.expect(pm.response.headers.has('X-Instance-Id')).to.be.false);"
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('answered by User Service (X-Instance-Id user-service-...)', () => pm.expect(pm.response.headers.get('X-Instance-Id')).to.match(/^user-service-/));",
+                  "// The sub claim of the access token from \"Log in\" (base64url payload), compared with the profile id.",
+                  "const decodeBase64 = require('atob');",
+                  "const payload = pm.collectionVariables.get('accessToken').split('.')[1].replace(/-/g, '+').replace(/_/g, '/');",
+                  "const claims = JSON.parse(decodeBase64(payload + '='.repeat((4 - (payload.length % 4)) % 4)));",
+                  "pm.test('profile id = sub of the token (X-User-Id set by the Gateway)', () => pm.expect(pm.response.json().id).to.eql(claims.sub));"
                 ]
               }
             }
@@ -437,7 +438,7 @@
                 "me"
               ]
             },
-            "description": "The token is valid, but user-service has no instance in Consul (not in Docker Compose yet), so the Gateway answers 503."
+            "description": "The token is valid: the Gateway sets X-User-Id from it and User Service answers with the profile of that user (created at registration)."
           }
         },
         {

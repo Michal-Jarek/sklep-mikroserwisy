@@ -30,8 +30,8 @@ export const reviewHandlers = [
     return json(pageOf(newestFirst(state.reviews.filter((r) => r.productId === productId)), paging));
   }),
 
-  route('POST', '/reviews', async (ctx) => {
-    const body = await readBody(ctx.request, ['productId', 'rating', 'comment']);
+  route('POST', '/reviews', (ctx) => {
+    const body = readBody(ctx.body, ['productId', 'rating', 'comment']);
     const productId = uuid(body.productId, 'productId');
     const rating = integer(body.rating, 'rating', 1, 5);
     const text = comment(body.comment);
