@@ -41,3 +41,13 @@ Sprawdzenie na laptopie z Windows 11 (Docker Desktop), przy wspólnej infrastruk
 - Ruchu przez API Gateway i Kubernetesa.
 
 Ostrzeżenie `StarletteDeprecationWarning` w pytest pochodzi z klienta testowego FastAPI i nie wpływa na wynik.
+
+## Poprawki po przeglądzie PR #11 (13 listopada 2026)
+
+| Uwaga | Poprawka | Jak sprawdzono |
+|---|---|---|
+| Lekki odczyt `SERVICE` przez cache: druga instancja podawała Cart starą cenę i wycofany produkt | `Catalog.get(..., use_cache=False)` dla roli `SERVICE` (D4) | pytest: zmiana ceny i wycofanie zapisane „przez inną instancję” prosto w bazie; `SERVICE` widzi zmianę od razu, katalog dalej z cache |
+| Zawieszony Consul ustawiał żądania w kolejce (4, 8 … 20 s) | zapytanie do Consula bez wspólnej blokady, równoczesne żądania czekają na jedno zapytanie; porażka zapamiętana na 10 s także bez wcześniejszej listy | pytest: 5 równoległych żądań przy Consulu bez odpowiedzi kończy się po jednym czasie oczekiwania, Consul zapytany raz; kolejne żądanie go nie pyta |
+| Brak manifestów Kubernetes | `k8s/migration-job.yaml`, `k8s/app.yaml`, `k8s/README.md` | `kubeconform -strict`, schemat Kubernetes 1.30: 3 zasoby poprawne; wdrożenia w klastrze nie wykonano |
+
+pytest po poprawkach: **38 testów** na SQLite i na PostgreSQL 16, wszystkie przeszły. Nowe testy nie przechodzą na kodzie sprzed poprawek.

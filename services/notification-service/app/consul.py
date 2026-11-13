@@ -128,46 +128,59 @@ class _Instances:
 
 class Discovery:
     """Healthy instances of another service: /v1/health/service/<name>?passing, kept 10 s,
-    round robin; when Consul fails, the last known list; an instance without a connection
-    is skipped until the next refresh (D13). A fixed URL (tests, local work) skips Consul."""
+    round robin; when Consul fails, the last known list (or none) is kept another 10 s, so
+    Consul is not asked on every request; an instance without a connection is skipped until
+    the next refresh (D13). A fixed URL (tests, local work) skips Consul.
+
+    Requests that need a refresh at the same time share one Consul query (no lock around the
+    query), so a hanging Consul costs every request at most one timeout (2 s), not a queue."""
 
     def __init__(self, consul: httpx.AsyncClient | None, fixed: dict[str, str] | None = None):
         self.consul = consul
         self.fixed = {name: url.rstrip("/") for name, url in (fixed or {}).items() if url}
         self.cache: dict[str, _Instances] = {}
-        self.lock = asyncio.Lock()
+        self.pending: dict[str, asyncio.Task] = {}
 
     async def pick(self, name: str) -> str | None:
         if name in self.fixed:
             return self.fixed[name]
         if self.consul is None:
             return None
-        async with self.lock:
-            entry = self.cache.get(name)
-            if entry is None or entry.expires_at <= monotonic():
-                try:
-                    response = await self.consul.get(f"/v1/health/service/{name}", params={"passing": "true"})
-                    response.raise_for_status()
-                    urls = []
-                    for node in response.json():
-                        service = node["Service"]
-                        address = service.get("Address") or node["Node"]["Address"]
-                        urls.append(f"http://{address}:{int(service['Port'])}")
-                    entry = _Instances(urls, monotonic() + DISCOVERY_CACHE_SECONDS)
-                    self.cache[name] = entry
-                except Exception as exc:
-                    logger.warning("Consul lookup failed, using the last known instances",
-                                   extra={"fields": {"target": name, **reason(exc)["fields"]}})
-                    if entry is None:
-                        return None
-                    # Do not ask Consul again on every request while it is down.
-                    entry.expires_at = monotonic() + DISCOVERY_CACHE_SECONDS
-            usable = [url for url in entry.urls if url not in entry.dropped]
-            if not usable:
-                return None
-            url = usable[entry.index % len(usable)]
-            entry.index += 1
-            return url
+        entry = self.cache.get(name)
+        if entry is None or entry.expires_at <= monotonic():
+            task = self.pending.get(name)
+            if task is None:
+                task = asyncio.create_task(self._refresh(name))
+                self.pending[name] = task
+                task.add_done_callback(lambda _, name=name: self.pending.pop(name, None))
+            # shield: a cancelled request must not cancel the query other requests wait for.
+            entry = await asyncio.shield(task)
+        usable = [url for url in entry.urls if url not in entry.dropped]
+        if not usable:
+            return None
+        url = usable[entry.index % len(usable)]
+        entry.index += 1
+        return url
+
+    async def _refresh(self, name: str) -> _Instances:
+        """One Consul query; never raises. A failure keeps the last list, or remembers an empty
+        one, for another DISCOVERY_CACHE_SECONDS."""
+        try:
+            response = await self.consul.get(f"/v1/health/service/{name}", params={"passing": "true"})
+            response.raise_for_status()
+            urls = []
+            for node in response.json():
+                service = node["Service"]
+                address = service.get("Address") or node["Node"]["Address"]
+                urls.append(f"http://{address}:{int(service['Port'])}")
+            entry = _Instances(urls, monotonic() + DISCOVERY_CACHE_SECONDS)
+        except Exception as exc:
+            logger.warning("Consul lookup failed, using the last known instances",
+                           extra={"fields": {"target": name, **reason(exc)["fields"]}})
+            entry = self.cache.get(name) or _Instances([], 0.0)  # remember the failure too
+            entry.expires_at = monotonic() + DISCOVERY_CACHE_SECONDS
+        self.cache[name] = entry
+        return entry
 
     def drop(self, name: str, url: str) -> None:
         """No connection to this instance: skip it until the list is refreshed."""

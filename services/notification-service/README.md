@@ -41,7 +41,11 @@ Przez Gateway: `GET /api/v1/notifications/me`. Trasa `notifications` jest już w
 
 - Kolejkę `notification.q` otwiera **pasywnie**: exchange, kolejki, wiązania i DLQ zakłada platforma. `prefetch = 10`, potwierdzanie ręczne.
 - Wiadomość, której nie da się przetworzyć, idzie od razu do `notification.dlq` przez `nack(requeue=False)`. Dotyczy to: złego JSON, złej koperty, `type` innego niż klucz routingu, nieznanej `version` i złych pól `payload`. Nigdy nie ma `requeue=True`.
-- Błąd chwilowy (User, SMTP albo MongoDB nie działa) daje 3 próby w procesie, z odstępem 5 s, a potem 30 s. Po trzeciej nieudanej wiadomość trafia do DLQ.
+- `eventId` musi być UUID (inaczej DLQ). `requestId` spoza reguły `[A-Za-z0-9._-]{1,64}` (np. ze znakami spoza ASCII) usługa zastępuje nowym UUID, bo trafia on do nagłówka `X-Request-Id` wywołania User.
+- Usługa wymaga tylko pól `payload`, których używa w e-mailach (tabela „Pola, których używają odbiorcy” w `docs/events.md`). Nowe wymagane pole trzeba dopisać też tam.
+- Błąd chwilowy (User, SMTP albo MongoDB nie działa) daje 3 próby w procesie, z odstępem 5 s, a potem 30 s, każdy z losowym dodatkiem do 50 % (żeby seria zdarzeń nie wracała w tej samej chwili). Po trzeciej nieudanej wiadomość trafia do DLQ.
+- Trwała odmowa User (4xx poza 404, 408 i 429 albo odpowiedź niezgodna z kontraktem) to od razu DLQ z logiem `error`, bez ponowień.
+- Co 15 s odbiorca sprawdza, czy kolejka jeszcze istnieje. Usunięta kolejka kończy odbiorcę: log `Event consumer stopped` z przyczyną i `/health/ready` 503 do restartu usługi. Przerwa w działaniu RabbitMQ go nie kończy, bo połączenie wznawia się samo.
 - Nieznany typ zdarzenia albo status przesyłki bez e-maila kończy się `ack` bez działania.
 - **Idempotencja:** przed wysłaniem usługa sprawdza, czy `eventId` jest już w bazie. Po wysłaniu zapisuje go w kolekcji `notifications` z unikalnym indeksem. To kolejność „najpierw e-mail, potem `eventId`” z events.md: w rzadkim przypadku klient dostanie drugi e-mail, ale żaden nie zginie. Gdy po wysłaniu nie uda się zapisać `eventId`, usługa **nie** wysyła ponownie, tylko zapisuje błąd w logu.
 - Logi zawierają `eventId`, `type`, `requestId` i `userId`, ale nigdy adresu e-mail ani treści zdarzenia.
@@ -66,6 +70,7 @@ Treść powstaje z szablonów Jinja2 z automatycznym escapowaniem HTML, a nagł�
 | `app/consul.py`, `app/web.py`, `app/logs.py`, `app/breaker.py`, `app/config.py` | Consul i KV, format błędów i nagłówki, logi JSON, wyłącznik, ustawienia (te same wzorce co Product) |
 | `tests/` | testy pytest z atrapami RabbitMQ, MongoDB, SMTP i User |
 | `postman/` | kolekcja Postman: wysyła testowe zdarzenie i sprawdza e-mail w Mailpit |
+| `k8s/` | manifesty Kubernetes (Deployment, Service) i instrukcja w `k8s/README.md` |
 
 ## Uruchomienie z VS Code (Windows)
 

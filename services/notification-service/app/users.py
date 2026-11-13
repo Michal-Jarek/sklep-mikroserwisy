@@ -27,6 +27,11 @@ class UserUnavailable(Exception):
     """User gave no usable answer: the event is tried again later (consumer retries, then DLQ)."""
 
 
+class PermanentError(Exception):
+    """User refused for good (4xx other than 404, 408, 429, or an answer outside the contract):
+    trying again gets the same answer, so the event goes to the DLQ at once (docs/events.md, rule 4)."""
+
+
 @dataclass(frozen=True)
 class Recipient:
     email: str
@@ -59,9 +64,9 @@ class UserClient:
         if response.status_code == 404:
             return None
         if response.status_code != 200:
-            # 400, 401, 403...: a working service refuses; trying again will not help, but the event
-            # is not lost: it goes through the consumer retries to the DLQ, where someone can see it.
-            raise UserUnavailable(f"user-service answered {response.status_code}")
+            # 400, 401, 403...: a working service refuses, trying again gets the same answer.
+            # 408, 429 and 5xx never get here (temporary, counted by the breaker).
+            raise PermanentError(f"user-service answered {response.status_code}")
         try:
             data = response.json()
             email, first_name = data["email"], data["firstName"]
@@ -69,7 +74,7 @@ class UserClient:
                 raise ValueError("email or firstName")
         except (ValueError, KeyError, TypeError) as exc:
             logger.error("User answered outside the contract", extra=reason(exc))
-            raise UserUnavailable("user-service answered outside the contract") from None
+            raise PermanentError("user-service answered outside the contract") from None
         return Recipient(email=email, first_name=first_name)
 
     async def _attempts(self, path: str, headers: dict, deadline: float, first: str) -> httpx.Response:

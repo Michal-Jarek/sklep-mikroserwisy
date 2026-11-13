@@ -22,7 +22,7 @@ Kontrakt (ścieżki, pola, kody błędów): [docs/frontend-api.md, sekcja Produc
 |---|---|---|---|
 | GET | `/products?q=&categoryId=&minPrice=&maxPrice=&sort=&page=&size=` | publiczny | 200 strona `ProductSummary` |
 | GET | `/products/{productId}` | publiczny | 200 `ProductDetail` z `rating` i `availability` |
-| GET | `/products/{productId}` z rolą `SERVICE` | inne usługi (Cart, Order, Review) | 200, **bez** wywołań Review i Inventory (`rating`, `availability` = `null`, D4) |
+| GET | `/products/{productId}` z rolą `SERVICE` | inne usługi (Cart, Order, Review) | 200, **bez** wywołań Review i Inventory (`rating`, `availability` = `null`) i **z pominięciem cache**, prosto z bazy (D4) |
 | GET | `/categories` | publiczny | 200 lista alfabetycznie |
 | POST | `/products` | ADMIN | 201 `ProductDetail` |
 | PUT | `/products/{productId}` | ADMIN | 200 `ProductDetail` (pełna zamiana) |
@@ -57,7 +57,7 @@ Z rolą `SERVICE` (wołają Cart, Order i Review) Product w ogóle nie woła Rev
 
 ### Cache
 
-Katalog czyta się dużo częściej, niż się go zmienia, więc wyniki zapytań do bazy (listy, szczegóły, kategorie) są trzymane w pamięci przez `cacheTtlSeconds` (domyślnie 60 s). To odpowiednik Caffeine z instrukcji (zagadnienie 2). Każdy `POST`, `PUT` i `DELETE` czyści cały cache tej instancji. Przy kilku instancjach zmiana zrobiona przez inną instancję jest widoczna najpóźniej po czasie TTL. Ocena i dostępność nie są cache'owane, bo należą do innych usług.
+Katalog czyta się dużo częściej, niż się go zmienia, więc wyniki zapytań do bazy (listy, szczegóły, kategorie) są trzymane w pamięci przez `cacheTtlSeconds` (domyślnie 60 s). To odpowiednik Caffeine z instrukcji (zagadnienie 2). Każdy `POST`, `PUT` i `DELETE` czyści cały cache tej instancji. Przy kilku instancjach zmiana zrobiona przez inną instancję jest widoczna w katalogu najpóźniej po czasie TTL. Lekki odczyt z rolą `SERVICE` (Cart, Order) zawsze czyta bazę, bo koszyk i zamówienie zapisują cenę (D4). Ocena i dostępność nie są cache'owane, bo należą do innych usług.
 
 ### Dane startowe
 
@@ -80,6 +80,7 @@ Migracja `0002_demo_catalog` dodaje 4 kategorie i 24 produkty, te same (z tymi s
 | `app/models.py`, `migrations/` | tabele i migracje Alembic |
 | `tests/` | testy pytest |
 | `postman/` | kolekcja Postman i środowisko lokalne |
+| `k8s/` | manifesty Kubernetes (Job migracji, Deployment, Service) i instrukcja w `k8s/README.md` |
 
 ## Uruchomienie z VS Code (Windows)
 

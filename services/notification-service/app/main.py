@@ -24,6 +24,15 @@ def iso_utc(value) -> str:
     return value.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def log_consumer_end(task: asyncio.Task) -> None:
+    """Nobody awaits the consumer task: without this its end and its exception would leave no trace."""
+    if task.cancelled():
+        return  # shutdown
+    exc = task.exception()
+    logger.error("Event consumer stopped, /health/ready answers 503", extra={"fields": {
+        "reason": type(exc).__name__ if exc else "finished", "detail": str(exc)[:300] if exc else ""}})
+
+
 def create_app(settings: Settings | None = None, store: Store | None = None, mailer=None,
                transport: httpx.AsyncBaseTransport | None = None) -> FastAPI:
     """store, mailer, transport: only for tests (no MongoDB, SMTP or network)."""
@@ -56,6 +65,7 @@ def create_app(settings: Settings | None = None, store: Store | None = None, mai
             app.state.consumer_task = None
             if settings.consumer_enabled:
                 app.state.consumer_task = asyncio.create_task(consumer.run())
+                app.state.consumer_task.add_done_callback(log_consumer_end)
             else:
                 # Allowed only in tests and local work (docs/events.md, "Konta, uprawnienia i zmienne").
                 logger.warning("RABBITMQ_HOST is not set, the event consumer is off")

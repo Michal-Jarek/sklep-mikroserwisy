@@ -133,6 +133,41 @@ def test_detail_light_read_for_service(client, services):
     assert services.requests == []
 
 
+def change_in_database(database_url, **values):
+    """A write made by another instance of Product: the cache of this instance is not cleared."""
+    import uuid
+
+    from sqlalchemy import create_engine, update
+    from sqlalchemy.orm import Session
+
+    from app.models import Product
+
+    engine = create_engine(database_url)
+    with Session(engine) as session, session.begin():
+        session.execute(update(Product).where(Product.id == uuid.UUID(KUBEK)).values(**values))
+    engine.dispose()
+
+
+def test_light_read_skips_cache(client, database_url):
+    # D4, review of PR #11: Cart must get the new price at once, not after the cache TTL.
+    from decimal import Decimal
+
+    assert client.get(f"/products/{KUBEK}").json()["price"] == "19.99"  # now in the cache
+    change_in_database(database_url, price=Decimal("29.99"))
+    assert client.get(f"/products/{KUBEK}").json()["price"] == "19.99"  # catalog: cache, up to 60 s
+    service = client.get(f"/products/{KUBEK}", headers={"X-User-Roles": "SERVICE"}).json()
+    assert service["price"] == "29.99"
+
+
+def test_light_read_does_not_see_withdrawn_product(client, database_url):
+    from datetime import UTC, datetime
+
+    assert client.get(f"/products/{KUBEK}").status_code == 200  # now in the cache
+    change_in_database(database_url, deleted_at=datetime.now(UTC))
+    response = client.get(f"/products/{KUBEK}", headers={"X-User-Roles": "SERVICE"})
+    assert response.status_code == 404 and response.json()["error"] == "NOT_FOUND"
+
+
 def test_detail_when_review_and_inventory_are_down(client, services):
     def down(request):
         raise httpx.ConnectError("refused", request=request)

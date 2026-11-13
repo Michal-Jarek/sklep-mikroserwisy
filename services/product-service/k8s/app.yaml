@@ -1,0 +1,85 @@
+# Product Service in namespace shop: Deployment and Service (ClusterIP). Order: README.md in this folder.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: product-service
+  namespace: shop
+  labels: {app: product-service}
+spec:
+  replicas: 2  # two instances: round robin of the Gateway and X-Instance-Id (load balancing)
+  selector:
+    matchLabels: {app: product-service}
+  template:
+    metadata:
+      labels: {app: product-service}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 15  # the service stops in < 10 s (D17)
+      securityContext:
+        seccompProfile: {type: RuntimeDefault}
+        runAsNonRoot: true
+        runAsUser: 10001  # the same numeric user as in the Dockerfile (D17)
+        runAsGroup: 10001
+      containers:
+        - name: product-service
+          image: product-service:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports: [{name: http, containerPort: 8083}]
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          env:
+            - name: PORT
+              value: "8083"
+            # Registration in Consul: the pod address and a unique instance id (D13).
+            - name: SERVICE_ADDRESS
+              valueFrom:
+                fieldRef: {fieldPath: status.podIP}
+            - name: INSTANCE_ID
+              valueFrom:
+                fieldRef: {fieldPath: metadata.name}
+            - name: CONSUL_HOST
+              value: consul
+            - name: CONSUL_PORT
+              value: "8500"
+            - name: DB_HOST
+              value: postgres
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              value: product_db
+            - name: DB_USER
+              value: product_service
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: product-db-secret, key: password}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 384Mi}
+          startupProbe:
+            httpGet: {path: /health/live, port: http}
+            periodSeconds: 5
+            failureThreshold: 24
+          livenessProbe:
+            httpGet: {path: /health/live, port: http}
+            periodSeconds: 10
+          readinessProbe:
+            # 503 while PostgreSQL does not answer: no traffic to this pod (D15).
+            httpGet: {path: /health/ready, port: http}
+            periodSeconds: 10
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: tmp, emptyDir: {sizeLimit: 16Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: product-service
+  namespace: shop
+  labels: {app: product-service}
+spec:
+  type: ClusterIP
+  selector: {app: product-service}
+  ports: [{name: http, port: 8083, targetPort: http}]
