@@ -1,0 +1,8 @@
+# Versions of docs/patterns.md (fastapi, uvicorn, httpx, PyYAML) and docs/events.md (aio-pika).
+fastapi==0.162.0
+uvicorn==0.54.0
+httpx==0.28.1
+PyYAML==6.0.3
+aio-pika==9.5.4
+pymongo==4.13.2
+Jinja2==3.1.6
