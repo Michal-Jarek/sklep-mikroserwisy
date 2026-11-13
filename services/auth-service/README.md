@@ -84,7 +84,7 @@ Nazwy są w [.env.example](.env.example) (bez wartości).
 | `JWT_ISSUER` / `JWT_AUDIENCE` | — | — | opcjonalnie; nadpisują KV |
 | `ADMIN_EMAIL` | `${ADMIN_EMAIL:-admin@sklep.local}` | puste albo dowolny e-mail | pierwsze konto ADMIN (sekcja „Konto administratora”) |
 | `ADMIN_PASSWORD` | `ADMIN_PASSWORD` z `deploy/.env` | puste albo 10–72 bajty | |
-| `USER_SERVICE_ENABLED` | `"false"` (do czasu, aż User Service będzie w Docker Compose) | `false` | domyślnie `true`; `false` → rejestracja bez wywołania User Service |
+| `USER_SERVICE_ENABLED` | `"true"` (User Service jest w profilach `platform` i `full-shop`) | `false` | domyślnie `true`; `false` → rejestracja bez wywołania User Service |
 | `RABBITMQ_HOST` / `RABBITMQ_PORT` | `rabbitmq` / `5672` | `127.0.0.1` / `5672` | port domyślnie `5672` |
 | `RABBITMQ_USER` | `auth-service` | `auth-service` | konto z prawem publikacji tylko `user.registered` |
 | `RABBITMQ_PASSWORD` | `AUTH_RABBITMQ_PASSWORD` z `deploy/.env` | wartość `AUTH_RABBITMQ_PASSWORD` z `deploy/.env` | |
@@ -110,7 +110,7 @@ Wywołanie: `POST http://<instancja user-service z Consula>/users`, nagłówki `
 - Circuit breaker (`opossum`) obejmuje całe wywołanie razem z ponowieniem: gdy w ciągu 60 s było co najmniej 10 wywołań i ponad połowa z nich zakończyła się błędem, przez 30 s kolejne rejestracje dostają 503 od razu, bez wywołania User Service. Potem jedno wywołanie próbne: sukces zamyka obwód. Odpowiedzi 4xx inne niż 408 i 429 (np. 409) nie liczą się jako awaria User Service.
 - Transakcja ma limit 10 s (dwie próby po 2 s, odstęp i zapytanie do Consula).
 
-`USER_SERVICE_ENABLED=false` (w Docker Compose do czasu, aż User Service tam będzie): rejestracja zapisuje samo konto bez wywołania User Service, a log dostaje ostrzeżenie `User Service call is disabled …` z `userId` nowego konta.
+`USER_SERVICE_ENABLED=false` (np. przy pracy z VS Code bez User Service): rejestracja zapisuje samo konto bez wywołania User Service, a log dostaje ostrzeżenie `User Service call is disabled …` z `userId` nowego konta.
 
 ## Zdarzenia
 
