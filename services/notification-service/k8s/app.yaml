@@ -1,0 +1,99 @@
+# Notification Service in namespace shop: Deployment and Service (ClusterIP). Order: README.md in this folder.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-service
+  namespace: shop
+  labels: {app: notification-service}
+spec:
+  # Several instances share notification.q; the unique index on eventId stops a second e-mail.
+  replicas: 1
+  selector:
+    matchLabels: {app: notification-service}
+  template:
+    metadata:
+      labels: {app: notification-service}
+    spec:
+      automountServiceAccountToken: false
+      # Unacked messages go back to the broker on stop; the service stops in < 10 s (D17).
+      terminationGracePeriodSeconds: 15
+      securityContext:
+        seccompProfile: {type: RuntimeDefault}
+        runAsNonRoot: true
+        runAsUser: 10001  # the same numeric user as in the Dockerfile (D17)
+        runAsGroup: 10001
+      containers:
+        - name: notification-service
+          image: notification-service:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports: [{name: http, containerPort: 8087}]
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          env:
+            - name: PORT
+              value: "8087"
+            - name: SERVICE_ADDRESS
+              valueFrom:
+                fieldRef: {fieldPath: status.podIP}
+            - name: INSTANCE_ID
+              valueFrom:
+                fieldRef: {fieldPath: metadata.name}
+            - name: CONSUL_HOST
+              value: consul
+            - name: CONSUL_PORT
+              value: "8500"
+            - name: DB_HOST
+              value: mongo
+            - name: DB_PORT
+              value: "27017"
+            - name: DB_NAME
+              value: notification_db
+            - name: DB_USER
+              value: notification_service
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: notification-db-secret, key: password}
+            - name: RABBITMQ_HOST
+              value: rabbitmq
+            - name: RABBITMQ_PORT
+              value: "5672"
+            - name: RABBITMQ_USER
+              value: notification-service
+            - name: RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: notification-rabbitmq-secret, key: password}
+            - name: SMTP_HOST
+              value: mailpit
+            - name: SMTP_PORT
+              value: "1025"
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          startupProbe:
+            httpGet: {path: /health/live, port: http}
+            periodSeconds: 5
+            failureThreshold: 24
+          livenessProbe:
+            httpGet: {path: /health/live, port: http}
+            periodSeconds: 10
+          readinessProbe:
+            # 503 while MongoDB does not answer or the event consumer has stopped (docs/events.md).
+            httpGet: {path: /health/ready, port: http}
+            periodSeconds: 10
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: tmp, emptyDir: {sizeLimit: 16Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-service
+  namespace: shop
+  labels: {app: notification-service}
+spec:
+  type: ClusterIP
+  selector: {app: notification-service}
+  ports: [{name: http, port: 8087, targetPort: http}]

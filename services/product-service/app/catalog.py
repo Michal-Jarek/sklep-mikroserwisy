@@ -104,8 +104,10 @@ class Catalog:
 
         return self.cache.get_or_load(key, load)
 
-    def get(self, product_id: uuid.UUID) -> dict:
-        """ProductDetail without rating and availability; 404 also for a withdrawn product (D4)."""
+    def get(self, product_id: uuid.UUID, use_cache: bool = True) -> dict:
+        """ProductDetail without rating and availability; 404 also for a withdrawn product (D4).
+        use_cache=False reads the database: Cart and Order save the price, and another instance
+        of Product may have changed it within the cache TTL (D4)."""
 
         def load() -> dict | None:
             with self.session_factory() as session:
@@ -114,7 +116,7 @@ class Catalog:
                     return None
                 return detail(product)
 
-        result = self.cache.get_or_load(("product", product_id), load)
+        result = self.cache.get_or_load(("product", product_id), load) if use_cache else load()
         if result is None:
             raise HTTPException(404, "Product not found")
         return result

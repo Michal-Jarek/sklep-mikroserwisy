@@ -1,0 +1,49 @@
+# Tables and demo catalog in product_db (alembic upgrade head). Run before app.yaml: README.md.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: product-db-migration
+  namespace: shop
+  labels: {app: product-db-migration}
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels: {app: product-db-migration}
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile: {type: RuntimeDefault}
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+      containers:
+        - name: migrate
+          image: product-service:0.1.0
+          imagePullPolicy: IfNotPresent
+          command: [alembic, upgrade, head]
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          env:
+            - name: DB_HOST
+              value: postgres
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              value: product_db
+            - name: DB_USER
+              value: product_service
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: product-db-secret, key: password}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: tmp, emptyDir: {sizeLimit: 16Mi}}

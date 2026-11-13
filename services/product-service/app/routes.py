@@ -58,9 +58,12 @@ async def list_products(
 @router.head("/products/{product_id}", include_in_schema=False)
 @router.get("/products/{product_id}", response_model=ProductDetail, tags=["products"])
 async def get_product(product_id: uuid.UUID, cat: CatalogDep, extra: EnrichmentDep, who: Caller):
-    product = dict(await run_in_threadpool(cat.get, product_id))
-    if "SERVICE" in who.roles:
-        # Light read for Cart, Order and Review: no calls to Review or Inventory (D4).
+    light = "SERVICE" in who.roles
+    # Light read for Cart, Order and Review (D4): straight from the database, because the cache of
+    # this instance does not see a price change made on another instance.
+    product = dict(await run_in_threadpool(cat.get, product_id, not light))
+    if light:
+        # No calls to Review or Inventory (D4).
         product["rating"], product["availability"] = None, None
     else:
         product["rating"], product["availability"] = await extra.for_product(product_id, who)

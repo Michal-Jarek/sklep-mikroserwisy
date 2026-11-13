@@ -4,7 +4,9 @@
 - prefetch 10, manual ack after the effect; never nack with requeue=True.
 - A message that can never be processed (bad JSON, wrong envelope, type different from the routing
   key, unknown version, bad payload) -> nack(requeue=False) at once -> notification.dlq.
-- A temporary error (User, SMTP or MongoDB down): 3 attempts, 5 s then 30 s apart, then the DLQ.
+- A temporary error (User, SMTP or MongoDB down): 3 attempts, 5 s then 30 s apart plus a random
+  extra of up to 50 %, then the DLQ. A permanent refusal of User (4xx other than 404, 408, 429, or an
+  answer outside the contract): the DLQ at once, no retries.
 - Idempotency: the eventId is checked before sending and saved with a unique index after the e-mail
   went out ("e-mail first, then eventId": a rare second e-mail rather than a lost one).
 
@@ -18,6 +20,7 @@ Which e-mails:
 
 import asyncio
 import json
+import random
 import socket
 import uuid
 from collections.abc import Awaitable, Callable
@@ -31,11 +34,18 @@ from .config import SERVICE_NAME, Settings
 from .logs import logger, request_id_var, user_id_var
 from .mailer import SHIPPING_METHODS, Mail, render
 from .store import Store, new_entry
-from .users import UserClient
+from .users import PermanentError, UserClient
+from .web import REQUEST_ID_PATTERN
 
 QUEUE = "notification.q"
 PREFETCH = 10
 MAX_CONNECT_DELAY = 30
+# Each retry delay gets a random extra of up to 50 %: events that failed together must not come back
+# together, because a half-open circuit breaker lets only one call through (docs/events.md, rule 4).
+RETRY_SPREAD = 0.5
+# Seconds between checks that the queue still exists. A deleted queue cancels the consumer on the
+# broker side without any error in the client; the check ends the task instead (log + 503).
+QUEUE_CHECK_SECONDS = 15
 ENVELOPE_FIELDS = ("eventId", "type", "version", "occurredAt", "requestId", "payload")
 TEXT_FIELDS = ("eventId", "type", "occurredAt", "requestId")
 
@@ -55,8 +65,10 @@ class UserRegistered(Payload):
     firstName: Annotated[str, StringConstraints(strip_whitespace=True, max_length=100)]
 
 
+# Only the payload fields the e-mails use are required (docs/events.md, "Pola, których używają
+# odbiorcy"); a new required field means a change in that table too.
+
 class OrderLine(Payload):
-    productId: uuid.UUID
     name: Text
     quantity: Annotated[int, Field(ge=1)]
     unitPrice: Money
@@ -73,7 +85,6 @@ class OrderCreated(Payload):
 
 
 class CancelledLine(Payload):
-    productId: uuid.UUID
     quantity: Annotated[int, Field(ge=1)]
 
 
@@ -84,7 +95,6 @@ class OrderCancelled(Payload):
 
 
 class ShipmentStatusChanged(Payload):
-    shipmentId: uuid.UUID
     orderId: uuid.UUID
     userId: uuid.UUID
     newStatus: Literal["PREPARING", "SHIPPED", "IN_TRANSIT", "DELIVERED", "CANCELLED"]
@@ -118,6 +128,15 @@ def parse_event(body: bytes, routing_key: str | None) -> tuple[dict, Payload | N
         raise InvalidEvent("version is not an integer")
     if not isinstance(event["payload"], dict):
         raise InvalidEvent("payload is not an object")
+    try:
+        if str(uuid.UUID(event["eventId"])) != event["eventId"].lower():
+            raise ValueError
+    except ValueError:
+        raise InvalidEvent("eventId is not a UUID") from None
+    if not REQUEST_ID_PATTERN.fullmatch(event["requestId"]):
+        # It goes into the X-Request-Id header to User: a character outside the rule (e.g. non-ASCII)
+        # would fail every call and open the circuit breaker for all customers. A new id, like the Gateway.
+        event["requestId"] = str(uuid.uuid4())
     # RabbitMQ checks the sender's permissions against the routing key, not the body:
     # only the routing key tells who could have sent the event.
     if event["type"] != routing_key:
@@ -146,6 +165,7 @@ class Consumer:
     retry_delays: tuple[float, ...] = (5, 30)
     # After the e-mail went out, saving the eventId is tried this many extra times, never with a resend.
     record_delays: tuple[float, ...] = (1, 5)
+    queue_check_seconds: float = QUEUE_CHECK_SECONDS
 
     def __init__(self, settings: Settings, store: Store, mailer, users: UserClient):
         self.settings = settings
@@ -189,6 +209,11 @@ class Consumer:
                     return
                 await self.mailer.send(mail)
                 break
+            except PermanentError as exc:
+                logger.error("Event refused for good, moved to the DLQ",
+                             extra={"fields": {**fields, "reason": str(exc)}})
+                await message.nack(requeue=False)
+                return
             except Exception as exc:
                 # Only the class of the exception: its message may contain personal data.
                 why = type(exc).__name__
@@ -198,7 +223,7 @@ class Consumer:
                     return
                 logger.warning("Event failed, will retry",
                                extra={"fields": {**fields, "attempt": attempt, "reason": why}})
-                await asyncio.sleep(self.retry_delays[attempt - 1])
+                await asyncio.sleep(self.retry_delays[attempt - 1] * random.uniform(1, 1 + RETRY_SPREAD))
 
         await self.remember(event, payload, mail)
         logger.info("E-mail sent", extra={"fields": {**fields, "subject": mail.subject}})
@@ -267,8 +292,9 @@ class Consumer:
                 delay = min(delay * 2, MAX_CONNECT_DELAY)
 
     async def run(self) -> None:
-        """Background task of the service. Ends only on a bug or missing access to the queue,
-        which makes /health/ready 503. A broker outage does not end it: connect_robust reconnects."""
+        """Background task of the service. Ends on a bug, missing access to the queue or a deleted
+        queue, which makes /health/ready 503 (the reason is logged by main.py). A broker outage
+        does not end it: connect_robust reconnects."""
         await self.wait_for("MongoDB", self.store.ensure_indexes)
         settings = self.settings
         connection = await self.wait_for("RabbitMQ", lambda: aio_pika.connect_robust(
@@ -286,4 +312,14 @@ class Consumer:
             # Manual acknowledgement: every message ends with ack() or nack(requeue=False).
             await queue.consume(self.on_message)
             logger.info("Consumer started", extra={"fields": {"queue": QUEUE}})
-            await asyncio.Future()  # until the task is cancelled (shutdown)
+            # Until the task is cancelled (shutdown). A deleted queue cancels the consumer on the broker
+            # without any error here, so the queue is checked from time to time (docs/events.md).
+            while True:
+                await asyncio.sleep(self.queue_check_seconds)
+                try:
+                    await channel.get_queue(QUEUE, ensure=True)
+                except aio_pika.exceptions.ChannelNotFoundEntity:
+                    raise  # the queue is gone: end the task
+                except (aio_pika.exceptions.AMQPError, ConnectionError, asyncio.TimeoutError) as exc:
+                    # A broker outage: connect_robust reconnects by itself, the next check tries again.
+                    logger.warning("Queue check skipped", extra={"fields": {"reason": type(exc).__name__}})
