@@ -1,0 +1,137 @@
+{
+  "info": {
+    "name": "Order Service",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8086"
+    },
+    {
+      "key": "userId",
+      "value": "11111111-1111-4111-8111-111111111111"
+    },
+    {
+      "key": "checkoutKey",
+      "value": "22222222-2222-4222-8222-222222222222"
+    },
+    {
+      "key": "orderId",
+      "value": ""
+    },
+    {
+      "key": "productId",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Złóż zamówienie",
+      "request": {
+        "method": "POST",
+        "url": "{{baseUrl}}/orders",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "{{userId}}"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "CUSTOMER"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "{{checkoutKey}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"shippingAddress\": {\n    \"firstName\": \"Jan\",\n    \"lastName\": \"Kot\",\n    \"street\": \"Polna 1\",\n    \"postalCode\": \"00-001\",\n    \"city\": \"Warszawa\",\n    \"countryCode\": \"PL\"\n  },\n  \"shippingMethod\": \"COURIER\",\n  \"payment\": {\n    \"cardNumber\": \"4111111111111111\"\n  }\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "if (pm.response.code === 201) pm.collectionVariables.set('orderId', pm.response.json().id);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Lista zamówień",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/orders",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "{{userId}}"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "CUSTOMER"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Szczegóły",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/orders/{{orderId}}",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "{{userId}}"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "CUSTOMER"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Anuluj",
+      "request": {
+        "method": "POST",
+        "url": "{{baseUrl}}/orders/{{orderId}}/cancel",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "{{userId}}"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "CUSTOMER"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Sprawdź zakup",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/orders/purchased?userId={{userId}}&productId={{productId}}",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "{{userId}}"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "SERVICE"
+          }
+        ]
+      }
+    }
+  ]
+}

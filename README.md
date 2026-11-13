@@ -13,15 +13,17 @@ Projekt zespołowy: sklep zbudowany z 10 mikroserwisów, frontendu w React i wsp
 | [Product Service](services/product-service/) | `product-service` | 8083 | Michał ([@micbanavio](https://github.com/micbanavio)) | Python · FastAPI, PostgreSQL |
 | [Inventory Service](services/inventory-service/) | `inventory-service` | 8084 | Aleksandra ([@akrzeszewska](https://github.com/akrzeszewska)) | Python · FastAPI |
 | [Cart Service](services/cart-service/) | `cart-service` | 8085 | Karola ([@karola2001km-blip](https://github.com/karola2001km-blip)) | Python, Redis |
-| [Order Service](services/order-service/) | `order-service` | 8086 | _do ustalenia_ | Java · Spring Boot (sugestia) |
+| [Order Service](services/order-service/) | `order-service` | 8086 | _do ustalenia_ | Python · FastAPI, PostgreSQL, RabbitMQ |
 | [Notification Service](services/notification-service/) | `notification-service` | 8087 | Michał ([@micbanavio](https://github.com/micbanavio)) | Python · FastAPI, MongoDB, RabbitMQ |
 | [Review Service](services/review-service/) | `review-service` | 8088 | Aleksandra ([@akrzeszewska](https://github.com/akrzeszewska)) | Python · FastAPI, MongoDB |
-| [Shipping Service](services/shipping-service/) | `shipping-service` | 8089 | _do ustalenia_ | Python · FastAPI (sugestia) |
+| [Shipping Service](services/shipping-service/) | `shipping-service` | 8089 | _do ustalenia_ | Python · FastAPI, PostgreSQL, RabbitMQ |
 | [Frontend](frontend/) | `frontend` | – | Michał ([@Michal-Jarek](https://github.com/Michal-Jarek)) | React (Vite) |
 
 Sklep w przeglądarce: **http://127.0.0.1:8090** — kontener `frontend` z profilu `platform` ([deploy/README.md, „Profil platform”](deploy/README.md#profil-platform-api-gateway-auth-service-i-frontend)).
 
 Technologia usługi z właścicielem jest ustalona. Przy usłudze bez właściciela technologia jest sugestią — nowy właściciel wybiera ją razem z Michałem i zgłasza Michałowi, który dopisuje go do tej tabeli i do `.github/CODEOWNERS`.
+
+Instrukcja i stan weryfikacji: [Order i Shipping w Rancher Desktop](docs/order-shipping.md).
 
 ## Pierwsze kroki
 

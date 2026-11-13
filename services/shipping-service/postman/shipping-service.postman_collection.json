@@ -1,0 +1,111 @@
+{
+  "info": {
+    "name": "Shipping Service",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8089"
+    },
+    {
+      "key": "userId",
+      "value": ""
+    },
+    {
+      "key": "orderId",
+      "value": ""
+    },
+    {
+      "key": "shipmentId",
+      "value": ""
+    },
+    {
+      "key": "adminId",
+      "value": ""
+    },
+    {
+      "key": "nextStatus",
+      "value": "SHIPPED"
+    }
+  ],
+  "item": [
+    {
+      "name": "Metody dostawy",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/shipping/methods",
+        "header": []
+      }
+    },
+    {
+      "name": "Przesyłki klienta",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/shipments?orderId={{orderId}}",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "{{userId}}"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "CUSTOMER"
+          }
+        ]
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "if (pm.response.code === 200 && pm.response.json().items.length) pm.collectionVariables.set('shipmentId', pm.response.json().items[0].id);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Szczegóły",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/shipments/{{shipmentId}}",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "{{userId}}"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "CUSTOMER"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Zmień status",
+      "request": {
+        "method": "PATCH",
+        "url": "{{baseUrl}}/shipments/{{shipmentId}}/status",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "{{adminId}}"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "ADMIN"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"status\":\"{{nextStatus}}\"}"
+        }
+      }
+    }
+  ]
+}
