@@ -220,17 +220,15 @@ Profil `full-shop` to wszystko z `platform` oraz usługi zespołu, które mają 
 | Usługa | Zależności w compose | Stan |
 |---|---|---|
 | `user-service` (+ `user-migrate`) | `postgres` (`user_db`), Consul | także w `platform` |
-| `cart-service` | `redis-cart`, Consul | działa; dodanie produktu do koszyka wymaga Product Service (do tego czasu `503`) |
-| `inventory-service` | `postgres` (`inventory_db`), RabbitMQ (`inventory.q`), Consul | wpis gotowy, kod w PR #2 |
-| `review-service` | `mongo` (`review_db`), Consul | wpis gotowy, kod w PR #2 |
+| `cart-service` | `redis-cart`, Consul | działa |
+| `inventory-service` | `postgres` (`inventory_db`), RabbitMQ (`inventory.q`), Consul | działa |
+| `review-service` | `mongo` (`review_db`), Consul | działa |
+| `product-service` (+ `product-migrate`) | `postgres` (`product_db`, katalog demo z migracji), Consul | działa |
+| `notification-service` | `mongo` (`notification_db`), RabbitMQ (`notification.q`), `mailpit`, Consul | działa; e-maile w Mailpit |
 
-Product, Order, Notification i Shipping nie mają jeszcze wpisów (dojdą przy scaleniu ich PR).
+Order i Shipping nie mają jeszcze wpisów (dojdą przy scaleniu ich PR).
 
-Dopóki PR #2 (Inventory, Review) nie jest w `develop`, foldery tych usług nie mają `Dockerfile`, więc samo `--profile full-shop up` kończy się błędem budowania. Do tego czasu podaj usługi z nazwy:
-```bash
-docker compose -f deploy/compose.yaml --profile full-shop up -d --wait --build user-service cart-service api-gateway frontend
-```
-Po scaleniu PR #2:
+Start całego sklepu:
 ```bash
 docker compose -f deploy/compose.yaml --profile full-shop up -d --wait --build
 ```
@@ -291,7 +289,7 @@ docker compose -f deploy/compose.yaml down
 ```
 W obu przypadkach dane zostają: bazy w PostgreSQL i MongoDB, koszyki w Redisie koszyka, zawartość Consula oraz kolejki i wiadomości w RabbitMQ przeżywają. Redis Gateway zaczyna zawsze pusty (celowo, bez zapisu na dysk) – liczniki limitów żądań startują od zera. Mailpit też zaczyna pusty (e-maile trzyma w pamięci).
 
-Do czasu, aż usługi odbierające zdarzenia będą w Docker Compose, wiadomości zbierają się w kolejkach `*.q` (np. każda rejestracja dodaje jedną do `notification.q`). Kolejkę czyści się w panelu: **Queues and Streams** → kolejka → **Purge Messages**.
+Kolejki usług, które nie działają, zbierają wiadomości: `order.q` i `shipping.q` do czasu wpisów Order i Shipping, a `notification.q` przy samym profilu `platform` (każda rejestracja dodaje jedną wiadomość; pierwszy start z `full-shop` wyśle zaległe e-maile powitalne). Kolejkę czyści się w panelu: **Queues and Streams** → kolejka → **Purge Messages**.
 
 Ponowny start – to samo polecenie co za pierwszym razem:
 ```bash

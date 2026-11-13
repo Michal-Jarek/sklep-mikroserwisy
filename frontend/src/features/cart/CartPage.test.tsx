@@ -28,7 +28,7 @@ function fillCart() {
   updateState((state) => {
     state.carts[SEED_IDS.customer] = [
       { productId: products.regular, name: 'Kubek ceramiczny', unitPriceCents: 1999, quantity: 2 },
-      { productId: products.noStock, name: 'Młynek do kawy', unitPriceCents: 8999, quantity: 1 },
+      { productId: products.inventoryUnavailable, name: 'Wzorce projektowe', unitPriceCents: 9900, quantity: 1 },
       { productId: products.lowStock, name: 'Mikroserwisy w praktyce', unitPriceCents: 7900, quantity: 1 },
     ];
   });
@@ -61,7 +61,7 @@ describe('cart page', () => {
 
     const list = await screen.findByRole('list', { name: 'Pozycje koszyka' });
     expect(within(list).getAllByRole('listitem')).toHaveLength(3);
-    expect(screen.getByText('Suma:').parentElement).toHaveTextContent(money('208.97'));
+    expect(screen.getByText('Suma:').parentElement).toHaveTextContent(money('217.98'));
     expect(screen.getByRole('link', { name: 'Przejdź do zamówienia' })).toHaveAttribute('href', '/checkout');
   });
 
@@ -71,10 +71,10 @@ describe('cart page', () => {
     await screen.findByRole('list', { name: 'Pozycje koszyka' });
 
     await changeQuantity(user, 'Kubek ceramiczny', '3');
-    await vi.waitFor(() => expect(screen.getByText('Suma:').parentElement).toHaveTextContent(money('228.96')));
+    await vi.waitFor(() => expect(screen.getByText('Suma:').parentElement).toHaveTextContent(money('237.97')));
     expect(screen.queryByText('Dostępność sprawdzimy przy zamówieniu')).not.toBeInTheDocument();
 
-    await changeQuantity(user, 'Młynek do kawy', '2');
+    await changeQuantity(user, 'Wzorce projektowe', '2');
     expect(await screen.findByText('Dostępność sprawdzimy przy zamówieniu')).toBeInTheDocument();
   });
 
@@ -105,9 +105,9 @@ describe('cart page', () => {
     await screen.findByRole('list', { name: 'Pozycje koszyka' });
     await vi.waitFor(() => expect(screen.getByRole('link', { name: /^Koszyk/ })).toHaveTextContent('Koszyk3'));
 
-    await user.click(screen.getByRole('button', { name: 'Usuń: Młynek do kawy' }));
+    await user.click(screen.getByRole('button', { name: 'Usuń: Wzorce projektowe' }));
 
-    await vi.waitFor(() => expect(screen.queryByText('Młynek do kawy')).not.toBeInTheDocument());
+    await vi.waitFor(() => expect(screen.queryByText('Wzorce projektowe')).not.toBeInTheDocument());
     expect(screen.getByRole('link', { name: /^Koszyk/ })).toHaveTextContent('Koszyk2');
   });
 });

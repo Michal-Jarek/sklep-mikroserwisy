@@ -182,7 +182,8 @@ function CheckoutForm({ cart, addresses, defaults, addressesError, onRetryAddres
 
   const failedOrder = outcome && 'failedOrder' in outcome ? outcome.failedOrder : null;
   const orderError = outcome && 'error' in outcome ? outcome.error : null;
-  const stockError = orderError instanceof ApiError && orderError.code === 'INSUFFICIENT_STOCK';
+  // Both are fixed in the cart: fewer pieces or removing a product withdrawn from the shop.
+  const cartError = orderError instanceof ApiError && (orderError.code === 'INSUFFICIENT_STOCK' || orderError.code === 'PRODUCT_UNAVAILABLE');
   const addressError = errors.addressChoice?.message;
 
   return (
@@ -288,7 +289,7 @@ function CheckoutForm({ cart, addresses, defaults, addressesError, onRetryAddres
       {orderError !== null && (
         <div className="grid gap-2">
           <ErrorAlert error={orderError} />
-          {stockError && (
+          {cartError && (
             <Link to="/cart" className="underline">
               Przejdź do koszyka
             </Link>

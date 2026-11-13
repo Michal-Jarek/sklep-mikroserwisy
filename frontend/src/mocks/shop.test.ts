@@ -47,10 +47,16 @@ describe('cart', () => {
     expect((await call<Cart>('GET', '/cart', { token: customerToken() })).body.items).toEqual([]);
   });
 
-  it('answers inventoryChecked:false for a product without stock record', async () => {
-    const result = await addToCart(P.noStock, 3);
+  it('answers inventoryChecked:false when Inventory does not answer', async () => {
+    const result = await addToCart(P.inventoryUnavailable, 3);
     expect(result.status).toBe(200);
     expect(result.body.inventoryChecked).toBe(false);
+  });
+
+  it('answers 409 CONFLICT for a product without stock record (0 pieces)', async () => {
+    const result = await addToCart(P.noStock, 1);
+    expect(result.status).toBe(409);
+    expect(result.body.error).toBe('CONFLICT');
   });
 
   it('answers 409 CONFLICT when there are not enough pieces or more than 999', async () => {
@@ -58,8 +64,8 @@ describe('cart', () => {
     expect(tooMany.status).toBe(409);
     expect(tooMany.body.error).toBe('CONFLICT');
     expect((await addToCart(P.outOfStock, 1)).status).toBe(409);
-    await addToCart(P.noStock, 999);
-    expect((await addToCart(P.noStock, 1)).status).toBe(409);
+    await addToCart(P.inventoryUnavailable, 999);
+    expect((await addToCart(P.inventoryUnavailable, 1)).status).toBe(409);
   });
 
   it('answers 400 and 404 for bad input', async () => {
@@ -111,10 +117,20 @@ describe('orders', () => {
     expect(empty.status).toBe(409);
     expect(empty.body.error).toBe('CART_EMPTY');
 
-    await addToCart(P.noStock, 1);
+    // Stock lowered by the admin after the product was put in the cart.
+    await addToCart(P.lowStock, 2);
+    await call('PUT', `/inventory/${P.lowStock}`, { token: adminToken(), body: { quantity: 1 } });
     const noStock = await placeOrder('4111111111111111');
     expect(noStock.status).toBe(409);
     expect(noStock.body.error).toBe('INSUFFICIENT_STOCK');
+  });
+
+  it('answers 409 PRODUCT_UNAVAILABLE for a product withdrawn after it was put in the cart', async () => {
+    await addToCart(P.regular, 1);
+    expect((await call('DELETE', `/products/${P.regular}`, { token: adminToken() })).status).toBe(204);
+    const order = await placeOrder('4111111111111111');
+    expect(order.status).toBe(409);
+    expect(order.body.error).toBe('PRODUCT_UNAVAILABLE');
   });
 
   it('validates the order body', async () => {

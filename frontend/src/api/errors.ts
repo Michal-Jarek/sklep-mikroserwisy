@@ -54,6 +54,7 @@ export const ERROR_MESSAGES: Readonly<Record<string, string>> = {
   NOT_FOUND: 'Nie znaleziono.',
   CONFLICT: 'Operacja koliduje z aktualnym stanem danych.',
   INSUFFICIENT_STOCK: 'Za mało sztuk w magazynie.',
+  PRODUCT_UNAVAILABLE: 'Produkt z koszyka nie jest już dostępny. Usuń go z koszyka.',
   CART_EMPTY: 'Koszyk jest pusty.',
   ORDER_NOT_CANCELLABLE: 'Tego zamówienia nie można już anulować.',
   INVALID_STATUS_TRANSITION: 'Nie można zmienić statusu przesyłki w ten sposób.',

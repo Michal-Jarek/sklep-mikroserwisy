@@ -58,8 +58,12 @@ export const orderHandlers = [
     }
     const lines = cart.map((item) => {
       const product = state.products.find((p) => p.id === item.productId);
+      if (!product) {
+        // Withdrawn by the admin after it was put in the cart (Product answers 404).
+        throw new MockApiError(409, 'PRODUCT_UNAVAILABLE', `Product ${item.productId} is no longer available`);
+      }
       const stock = state.stock[item.productId];
-      if (!product || !stock || stock.quantity - stock.reserved < item.quantity) {
+      if (!stock || stock.quantity - stock.reserved < item.quantity) {
         throw new MockApiError(409, 'INSUFFICIENT_STOCK', `Not enough stock of product ${item.productId}`);
       }
       return { product, quantity: item.quantity };

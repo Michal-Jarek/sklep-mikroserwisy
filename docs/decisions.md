@@ -11,7 +11,7 @@ Ten dokument zbiera zasady wiążące każdą usługę sklepu (D1–D20): co obo
 | [D1](#d1--identyfikatory) | Identyfikator encji to UUID zapisany tekstem, małymi literami; niepoprawny UUID → 400 `VALIDATION_ERROR`. | wszystkie usługi |
 | [D2](#d2--wyłącznik-i-ponowienia) | Wywołanie innej usługi: timeout 2 s, wyłącznik (≥ 10 wywołań, ≥ 50 % awarii → 30 s), awaria to tylko brak połączenia, timeout, 5xx, 408, 429; ponowienia tylko `GET`/`HEAD`, najwyżej 2. | usługi, które wołają inne (np. Auth, Cart, Order, Review) |
 | [D3](#d3--kwoty) | Kwota to tekst z dwoma miejscami po kropce (`"19.99"`) razem z `currency`, nigdy liczba JSON. | Product, Cart, Order, Shipping, zdarzenia |
-| [D4](#d4--lekki-odczyt-produktu) | `GET /products/{id}` z rolą `SERVICE` nie woła Review ani Inventory i zwraca co najmniej `id`, `name`, `price`, `currency`. | Product (wołają go Cart i Order) |
+| [D4](#d4--lekki-odczyt-produktu) | `GET /products/{id}` z rolą `SERVICE` nie woła Review ani Inventory, czyta bazę z pominięciem cache i zwraca co najmniej `id`, `name`, `price`, `currency`. | Product (wołają go Cart i Order) |
 | [D5](#d5--budżet-czasu) | Gateway czeka 10 s; usługa odpowiada w < 9 s, a przy kilku wywołaniach po kolei ma wspólny termin 8 s. | wszystkie usługi, zwłaszcza Cart i Order |
 | [D6](#d6--konwencje-deploy-i-zmienne-środowiskowe) | Jedna nazwa usługi wszędzie, hosty i bazy jak w `deploy/`, hasła tylko ze zmiennych środowiskowych, `deploy/` zmienia Michał. | wszystkie usługi |
 | [D7](#d7--format-i-kody-błędów) | Błąd ma format `{"status", "error", "message", "requestId"}` i kod z listy wspólnej albo z rejestru kodów domenowych. | wszystkie usługi, frontend |
@@ -67,11 +67,11 @@ Ten dokument zbiera zasady wiążące każdą usługę sklepu (D1–D20): co obo
 
 ## D4 — Lekki odczyt produktu
 
-**Zasada.** `GET /products/{id}` z rolą `SERVICE` w `X-User-Roles` **nie woła Review ani Inventory** i zwraca co najmniej `id`, `name` (≤ 200 znaków), `price`, `currency`. Pola oceny i dostępności są pominięte albo `null`. Brak produktu (także wycofanego) → 404. Z tego odczytu korzystają Cart i Order.
+**Zasada.** `GET /products/{id}` z rolą `SERVICE` w `X-User-Roles` **nie woła Review ani Inventory** i zwraca co najmniej `id`, `name` (≤ 200 znaków), `price`, `currency`. Pola oceny i dostępności są pominięte albo `null`. Brak produktu (także wycofanego) → 404. Ten odczyt **pomija cache** usługi i zawsze czyta bazę. Z tego odczytu korzystają Cart i Order.
 
-**Dlaczego.** Pełny odczyt produktu dla klienta pokazuje ocenę (Review) i dostępność (Inventory). Gdyby Cart i Order dostawały ten sam odczyt, awaria Review blokowałaby dodawanie do koszyka i składanie zamówień, a każde wywołanie trwałoby dłużej (D5).
+**Dlaczego.** Pełny odczyt produktu dla klienta pokazuje ocenę (Review) i dostępność (Inventory). Gdyby Cart i Order dostawały ten sam odczyt, awaria Review blokowałaby dodawanie do koszyka i składanie zamówień, a każde wywołanie trwałoby dłużej (D5). Cache katalogu (TTL 60 s) każda instancja Product czyści tylko po własnym zapisie, więc przy kilku instancjach inna instancja przez czas TTL podaje starą cenę i wycofany produkt. Dla klienta przeglądającego katalog to dopuszczalne, ale Cart zapisuje cenę w koszyku, a Order w zamówieniu — muszą dostać stan z bazy (przegląd PR #11: druga instancja podawała starą cenę Cart przez 61 s). Takich odczytów jest mało (jeden na zmianę pozycji koszyka albo pozycję zamówienia), więc cache nic tu nie zyskuje.
 
-**Jak sprawdzić / szczegóły.** `curl -s -H 'X-User-Roles: SERVICE' http://<product-service>/products/<id>` przy zatrzymanym Review i Inventory → 200 z `id`, `name`, `price`, `currency`. Nagłówki usług: [D11](#d11--tożsamość-i-nagłówki).
+**Jak sprawdzić / szczegóły.** `curl -s -H 'X-User-Roles: SERVICE' http://<product-service>/products/<id>` przy zatrzymanym Review i Inventory → 200 z `id`, `name`, `price`, `currency`. Przy dwóch instancjach: zmiana ceny przez ADMIN na jednej, od razu ten sam odczyt na drugiej → nowa cena. Nagłówki usług: [D11](#d11--tożsamość-i-nagłówki).
 
 ## D5 — Budżet czasu
 
@@ -150,6 +150,7 @@ Kody, które istnieją dziś. Nowy kod domenowy → zgłoszenie Michałowi (dopi
 | Auth | 429 | `TOO_MANY_ATTEMPTS` | e-mail zablokowany na 15 min po 10 nieudanych logowaniach; z `Retry-After` |
 | Inventory | 409 | `INSUFFICIENT_STOCK` | za mało towaru do rezerwacji |
 | Order | 409 | `CART_EMPTY` | zamówienie z pustego koszyka — **propozycja v1** |
+| Order | 409 | `PRODUCT_UNAVAILABLE` | produkt z koszyka wycofany ze sklepu (Product odpowiada 404) — **propozycja v1** |
 | Order | 409 | `ORDER_NOT_CANCELLABLE` | anulowanie zamówienia po wysyłce albo w statusie innym niż `NEW`/`PAID` — **propozycja v1** |
 | Shipping | 409 | `INVALID_STATUS_TRANSITION` | zmiana statusu przesyłki inna niż o jeden krok naprzód — **propozycja v1** |
 

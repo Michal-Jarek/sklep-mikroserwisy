@@ -22,7 +22,7 @@ test('cart: login required, add, change, remove, unchecked availability note', a
   await page.getByRole('button', { name: 'Dodaj do koszyka' }).click();
   await expect(page.getByText('Produkt jest w koszyku.')).toBeVisible();
   await expect(cartLink).toHaveText(/Koszyk\s*1/);
-  await page.goto(`/products/${products.noStock}`);
+  await page.goto(`/products/${products.inventoryUnavailable}`);
   await page.getByRole('button', { name: 'Dodaj do koszyka' }).click();
   await expect(page.getByText('Magazyn nie odpowiedział — dostępność sprawdzimy przy zamówieniu.')).toBeVisible();
   await expect(cartLink).toHaveText(/Koszyk\s*2/);
@@ -36,13 +36,13 @@ test('cart: login required, add, change, remove, unchecked availability note', a
   await page.getByRole('button', { name: 'Zmień ilość: Kubek ceramiczny' }).click();
   await expect(items.filter({ hasText: 'Kubek ceramiczny' })).toContainText(/59,97\s*zł/);
   await expect(page.getByText('Dostępność sprawdzimy przy zamówieniu', { exact: true })).toBeHidden();
-  await page.getByRole('textbox', { name: 'Ilość: Młynek do kawy' }).fill('2');
-  await page.getByRole('button', { name: 'Zmień ilość: Młynek do kawy' }).click();
+  await page.getByRole('textbox', { name: 'Ilość: Wzorce projektowe' }).fill('2');
+  await page.getByRole('button', { name: 'Zmień ilość: Wzorce projektowe' }).click();
   await expect(page.getByText('Dostępność sprawdzimy przy zamówieniu', { exact: true })).toBeVisible();
-  await expect(page.getByText(/^Suma:/)).toContainText(/239,95\s*zł/);
+  await expect(page.getByText(/^Suma:/)).toContainText(/257,97\s*zł/);
 
   // Remove both; an empty cart cannot be ordered
-  await page.getByRole('button', { name: 'Usuń: Młynek do kawy' }).click();
+  await page.getByRole('button', { name: 'Usuń: Wzorce projektowe' }).click();
   await expect(items).toHaveCount(1);
   await expect(page.getByText(/^Suma:/)).toContainText(/59,97\s*zł/);
   await page.getByRole('button', { name: 'Usuń: Kubek ceramiczny' }).click();

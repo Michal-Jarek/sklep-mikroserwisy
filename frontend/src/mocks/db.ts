@@ -35,6 +35,8 @@ export interface MockProduct {
   updatedAt: string;
   /** Mock only: the product page behaves as if Review were unavailable (rating: null). */
   ratingUnavailable?: boolean;
+  /** Mock only: Product and Cart behave as if Inventory were unavailable (availability: null, inventoryChecked: false). */
+  inventoryUnavailable?: boolean;
 }
 
 export interface MockStock {

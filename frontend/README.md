@@ -192,10 +192,11 @@ Rejestracja w trybie `all` zakłada nowe konto w atrapach (z profilem). Token at
 | Kubek ceramiczny | `a0000000-0000-4000-8000-000000000001` | zwykły: 50 sztuk, 12 opinii (ocena 4,1), klient już go ocenił (druga opinia → 409) |
 | Czajnik elektryczny | `a0000000-0000-4000-8000-000000000002` | `rating: null` — „Ocena chwilowo niedostępna” |
 | Deska do krojenia | `a0000000-0000-4000-8000-000000000003` | bez opinii (`count: 0`) — „Brak opinii” |
-| Młynek do kawy | `a0000000-0000-4000-8000-000000000004` | `availability: null` — „Dostępność sprawdzimy przy zamówieniu”; koszyk odpowiada `inventoryChecked: false`, zamówienie → 409 `INSUFFICIENT_STOCK` |
+| Młynek do kawy | `a0000000-0000-4000-8000-000000000004` | bez stanu w Inventory = 0 sztuk: „Brak w magazynie”, dodanie do koszyka → 409 |
 | Patelnia żeliwna | `a0000000-0000-4000-8000-000000000005` | brak w magazynie (`inStock: false`) |
 | Termos stalowy | `a0000000-0000-4000-8000-000000000006` | kupiony przez klienta, bez jego opinii — opinia zostanie przyjęta |
 | Mikroserwisy w praktyce | `a0000000-0000-4000-8000-000000000007` | tylko 2 sztuki — dodanie 3 do koszyka → 409 |
+| Wzorce projektowe | `a0000000-0000-4000-8000-000000000008` | Inventory „nie odpowiada”: `availability: null` — „Dostępność sprawdzimy przy zamówieniu”; koszyk odpowiada `inventoryChecked: false` |
 
 Zamówienia klienta: dostarczone (Kubek ×2, Termos), wysłane (przesyłka `SHIPPED` — nie do anulowania), opłacone (przesyłka `PREPARING` — do anulowania), z płatnością nieudaną. Koszyk klienta na starcie jest pusty.
 

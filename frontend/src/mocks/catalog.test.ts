@@ -63,7 +63,8 @@ describe('products: detail and categories', () => {
   it('has the fallback cases of the seed data', async () => {
     expect((await detail(SEED_IDS.products.ratingUnavailable)).rating).toBeNull();
     expect((await detail(SEED_IDS.products.noReviews)).rating).toEqual({ average: null, count: 0 });
-    expect((await detail(SEED_IDS.products.noStock)).availability).toBeNull();
+    expect((await detail(SEED_IDS.products.noStock)).availability).toEqual({ available: 0, inStock: false });
+    expect((await detail(SEED_IDS.products.inventoryUnavailable)).availability).toBeNull();
     expect((await detail(SEED_IDS.products.outOfStock)).availability).toEqual({ available: 0, inStock: false });
   });
 
@@ -92,7 +93,7 @@ describe('products: admin', () => {
   it('creates, updates and deletes a product', async () => {
     const created = await call<ProductDetail>('POST', '/products', { token: adminToken(), body: input });
     expect(created.status).toBe(201);
-    expect(created.body).toMatchObject({ name: 'Nowy produkt', price: '12.50', rating: { average: null, count: 0 }, availability: null });
+    expect(created.body).toMatchObject({ name: 'Nowy produkt', price: '12.50', rating: { average: null, count: 0 }, availability: { available: 0, inStock: false } });
 
     const updated = await call<ProductDetail>('PUT', `/products/${created.body.id}`, {
       token: adminToken(),

@@ -195,6 +195,21 @@ Po wydaniu (`SHIPPED`) zamówienia nie można już anulować (sekcja [`order.can
 
 Kontrakty `order.created`, `order.cancelled` i `shipment.status_changed` to propozycja v1 platformy. Właściciele Order i Shipping mogą je zmienić **przed pierwszą implementacją**, w porozumieniu z odbiorcami (zmiana w tym dokumencie). Później tylko przez nową `version`. Sprawy jeszcze nieustalone: sekcja [Otwarte kwestie kontraktu v1](#otwarte-kwestie-kontraktu-v1).
 
+### Pola, których używają odbiorcy
+
+Odbiorca odrzuca zdarzenie bez wymaganego pola od razu do DLQ (punkt 5 w [Jak odbierać](#jak-odbierać)), więc nadawca nie może ich usunąć ani zmienić ich typu bez nowej `version` i zgody właściciela odbiorcy. Odbiorca wymaga tylko pól, których używa (pozostałe może ignorować).
+
+| Zdarzenie | Odbiorca | Wymagane pola `payload` |
+|---|---|---|
+| `user.registered` | Notification | `userId`, `email`, `firstName` |
+| `order.created` | Notification | `orderId`, `userId`, `items[].name`, `items[].quantity`, `items[].unitPrice`, `total`, `currency`, `shippingMethod`, `shippingCost` |
+| `order.created` | Shipping | ustala właściciel Shipping (co najmniej `orderId`, `userId`, `shippingMethod`, `shippingAddress`) |
+| `order.cancelled` | Notification | `orderId`, `userId`, `items[].quantity` |
+| `order.cancelled` | Inventory | `orderId` |
+| `shipment.status_changed` | Notification | `orderId`, `userId`, `newStatus`; `trackingNumber` może być `null` |
+| `shipment.status_changed` | Inventory | `orderId`, `newStatus` |
+| `shipment.status_changed` | Order | ustala właściciel Order (co najmniej `orderId`, `newStatus`) |
+
 ## Kolejki, wiązania i DLQ
 
 | Kolejka | Klucze (wiązania z `shop.events`) | Kolejka błędów |
@@ -348,7 +363,7 @@ Zasady odbiorcy:
 1. Łączy się kontem swojej usługi. Kolejkę `<usługa>.q` otwiera **pasywnie**: aio-pika `channel.get_queue(name, ensure=True)`, Spring `@RabbitListener(queues = "<usługa>.q")` bez beanów `Queue`/`Binding`. Nie deklaruje exchange, kolejek ani wiązań.
 2. `prefetch = 10`. Potwierdzanie ręczne: `ack` dopiero po przetworzeniu i zapisaniu skutku.
 3. Idempotencja: przetworzone `eventId` zapisuje w swojej bazie, **w tej samej transakcji co skutek** zdarzenia, w kolumnie (polu) z **unikalnym indeksem**. Duplikat → `ack` bez działania. Ten sam `eventId` może przyjść dwa razy równocześnie (np. nadawca wysłał kopię, a dwie instancje odbiorcy dostały po jednej): obie przejdą sprawdzenie „czy już był”, a druga przy zapisie dostanie **naruszenie unikalności**. To duplikat, nie błąd: wycofać transakcję i `ack` — bez ponowień i bez DLQ. Usługa bez wspólnej transakcji dla skutku i `eventId` (Notification: e-mail przez SMTP, baza MongoDB) — niżej, [Idempotencja w Notification](#idempotencja-w-notification). W kodzie usługi sprawdzenie duplikatu i zapis `eventId` są w `handle_event`, w transakcji ze skutkiem; naruszenie unikalności (np. `IntegrityError`) łapie się tam — wycofanie transakcji i `return` bez wyjątku (wyjątek oznaczałby ponowienia i DLQ). Zbiór `processed_event_ids` z przykładu zastępuje w usłudze ta tabela.
-4. Błąd przetwarzania (np. baza albo inna usługa chwilowo niedostępna): do 3 prób w procesie (odstęp 5 s, potem 30 s — razem dłużej niż otwarty [wyłącznik awaryjny](decisions.md#d2--wyłącznik-i-ponowienia) (30 s) i typowy restart zależności; decyzja Michała 2026-11-09), potem `nack(requeue=False)` → wiadomość trafia do `<usługa>.dlq`. **Nigdy `requeue=True`** (sekcja [Czego nie robić](#czego-nie-robić)).
+4. Błąd przetwarzania (np. baza albo inna usługa chwilowo niedostępna): do 3 prób w procesie (odstęp 5 s, potem 30 s — razem dłużej niż otwarty [wyłącznik awaryjny](decisions.md#d2--wyłącznik-i-ponowienia) (30 s) i typowy restart zależności; decyzja Michała 2026-11-09), potem `nack(requeue=False)` → wiadomość trafia do `<usługa>.dlq`. **Nigdy `requeue=True`** (sekcja [Czego nie robić](#czego-nie-robić)). Odstęp ma **losowy dodatek do +50 %** (5–7,5 s, potem 30–45 s): gdy kilka zdarzeń nie uda się w tej samej chwili (np. seria zamówień przy awarii User), bez rozrzutu wszystkie wracają jednocześnie, a wyłącznik w stanie półotwartym przepuszcza tylko jedno wywołanie próbne — reszta trafiłaby do DLQ, choć usługa już działa (przegląd PR #12: 9 z 10 e-maili w DLQ). **Trwała odmowa innej usługi** — odpowiedź 4xx poza 404, 408 i 429 albo 2xx niezgodna z kontraktem — to nie błąd chwilowy: od razu `nack(requeue=False)` z logiem `error`, bez ponowień (ponowienie dostanie tę samą odpowiedź). 404 (obiekt nieznany) obsługuje się według sekcji [Kolejność zdarzeń](#kolejność-zdarzeń-nie-jest-gwarantowana); 408 i 429 są chwilowe (ponowienia jak wyżej).
 5. Niepoprawny JSON, brak wymaganych pól, pola koperty złego typu (`eventId`, `type`, `occurredAt`, `requestId` muszą być tekstem, `version` liczbą całkowitą, `payload` obiektem), `type` inny niż klucz routingu dostawy albo nieznana `version` → od razu `nack(requeue=False)`, bo ponowienie nic nie zmieni. Uprawnienia brokera dotyczą klucza routingu, nie treści — tylko klucz mówi, kto mógł wysłać zdarzenie. Przykład: konto Shipping może publikować tylko z kluczem `shipment.status_changed`; gdyby odbiorca wierzył polu `type` z treści, Shipping mógłby podsunąć Inventory „anulowanie zamówienia”.
 6. Nieznany `type` albo przypadek, którego usługa nie obsługuje (np. Inventory i status inny niż `SHIPPED`) → `ack` bez działania.
 7. Gdy proces padnie w trakcie (brak `ack`), broker odda wiadomość innej instancji. Po 3 takich dostawach wiadomość trafia do DLQ (`x-first-death-reason: delivery_limit`).
@@ -375,7 +390,7 @@ Zalecana pierwsza kolejność (e-mail, potem zapis z unikalnym indeksem na `even
 
 ### Przykład w Pythonie (aio-pika)
 
-Pełny, samodzielny plik (Python 3.12, `aio-pika==9.5.4`). Realizuje punkty 1–8 i ponawia pierwsze połączenie, gdy RabbitMQ jeszcze nie działa (log `RabbitMQ unavailable, retrying`, odstęp rośnie od 1 s do 30 s; po zerwaniu działającego połączenia wznawia je `connect_robust`). Do własnej usługi kopiuje się go i zmienia `SERVICE`, `QUEUE`, `HANDLED` (obsługiwane typy, wersje i wymagane pola) oraz treść `handle_event`. Zbiór `processed_event_ids` w pamięci jest tylko na potrzeby przykładu — usługa trzyma `eventId` w bazie.
+Pełny, samodzielny plik (Python 3.12, `aio-pika==9.5.4`). Realizuje punkty 1–8, co 15 s sprawdza, czy kolejka jeszcze istnieje, i ponawia pierwsze połączenie, gdy RabbitMQ jeszcze nie działa (log `RabbitMQ unavailable, retrying`, odstęp rośnie od 1 s do 30 s; po zerwaniu działającego połączenia wznawia je `connect_robust`). Do własnej usługi kopiuje się go i zmienia `SERVICE`, `QUEUE`, `HANDLED` (obsługiwane typy, wersje i wymagane pola) oraz treść `handle_event`. Zbiór `processed_event_ids` w pamięci jest tylko na potrzeby przykładu — usługa trzyma `eventId` w bazie.
 
 ```python
 # example_consumer.py: consumer of shop.events with retries and DLQ (docs/events.md)
@@ -388,6 +403,7 @@ Settings from the environment: RABBITMQ_HOST, RABBITMQ_PORT, RABBITMQ_USER, RABB
 import asyncio
 import json
 import os
+import random
 import socket
 from datetime import datetime, timezone
 
@@ -400,6 +416,12 @@ PREFETCH = 10
 # Seconds before attempt 2 and before attempt 3: together longer than an open circuit breaker (30 s)
 # or a typical restart of a dependency, so a short outage does not move events to the DLQ.
 RETRY_DELAYS = (5, 30)
+# Each delay gets a random extra of up to 50 %, so events that failed together do not come back
+# together (a half-open circuit breaker lets only one call through).
+RETRY_SPREAD = 0.5
+# Seconds between checks that the queue still exists. A deleted queue cancels the consumer on the
+# broker side without any error in the client; the check ends the task instead (log + 503).
+QUEUE_CHECK_SECONDS = 15
 MAX_CONNECT_DELAY = 30  # seconds, the longest pause between attempts of the first connection
 ENVELOPE_FIELDS = ("eventId", "type", "version", "occurredAt", "requestId", "payload")
 TEXT_FIELDS = ("eventId", "type", "occurredAt", "requestId")
@@ -415,6 +437,11 @@ processed_event_ids: set[str] = set()
 
 class InvalidEvent(Exception):
     """The message can never be processed: bad JSON, missing or wrong fields, unknown version."""
+
+
+class PermanentError(Exception):
+    """Another service refused for good (4xx other than 404, 408, 429, or a 2xx outside the contract):
+    trying again gets the same answer, so the event goes to the DLQ at once."""
 
 
 def log(level: str, msg: str, event: dict | None = None, **fields) -> None:
@@ -464,8 +491,9 @@ def parse_event(body: bytes, routing_key: str | None) -> dict:
 
 async def handle_event(event: dict) -> None:
     """Business logic. Raise an exception on a temporary error (e.g. database or another
-    service unavailable): the event is tried again. A case the service does not need
-    (e.g. a status it does not react to) simply returns."""
+    service unavailable): the event is tried again. Raise PermanentError when another service
+    refused for good. A case the service does not need (e.g. a status it does not react to)
+    simply returns."""
     # Here: send the welcome e-mail to event["payload"]["email"] and save the eventId
     # together with the effect, in one database transaction.
     log("info", "Event handled", event)
@@ -494,6 +522,10 @@ async def on_message(message: AbstractIncomingMessage) -> None:
         try:
             await handle_event(event)
             break
+        except PermanentError as exc:
+            log("error", "Event refused for good, moved to the DLQ", event, reason=str(exc))
+            await message.nack(requeue=False)
+            return
         except Exception as exc:
             # Only the exception class: its message may contain personal data.
             reason = type(exc).__name__
@@ -502,7 +534,7 @@ async def on_message(message: AbstractIncomingMessage) -> None:
                 await message.nack(requeue=False)  # never requeue=True
                 return
             log("warning", "Event failed, will retry", event, attempt=attempt, reason=reason)
-            await asyncio.sleep(RETRY_DELAYS[attempt - 1])
+            await asyncio.sleep(RETRY_DELAYS[attempt - 1] * random.uniform(1, 1 + RETRY_SPREAD))
 
     processed_event_ids.add(event["eventId"])
     await message.ack()
@@ -539,7 +571,18 @@ async def main() -> None:
         # Manual acknowledgement: every message ends with ack() or nack(requeue=False).
         await queue.consume(on_message)
         log("info", "Consumer started", queue=QUEUE)
-        await asyncio.Future()  # runs until the process is stopped
+        # Runs until the process is stopped. When the queue is deleted, the broker cancels the
+        # consumer and the client reports nothing, so the queue is checked from time to time:
+        # a missing queue ends the task (the FastAPI fragment below logs it and answers 503).
+        while True:
+            await asyncio.sleep(QUEUE_CHECK_SECONDS)
+            try:
+                await channel.get_queue(QUEUE, ensure=True)
+            except aio_pika.exceptions.ChannelNotFoundEntity:
+                raise  # the queue is gone
+            except (aio_pika.exceptions.AMQPError, ConnectionError, asyncio.TimeoutError) as exc:
+                # A broker outage: connect_robust reconnects by itself, the next check tries again.
+                log("warning", "Queue check skipped", reason=type(exc).__name__)
 
 
 if __name__ == "__main__":
@@ -576,7 +619,7 @@ Wynik: `201`, a przykład wypisuje linię `"msg": "Event handled"` z `eventId`, 
 
 #### Odbiorca w usłudze FastAPI
 
-Odbiorca działa jako zadanie w tle uruchamiane w `lifespan` (`asyncio.create_task(main())`) i anulowane przy zamykaniu (`task.cancel()`). `/health/ready` zwraca `503` **tylko wtedy, gdy to zadanie się zakończyło** (`task.done()`) — to znaczy błąd w kodzie albo brak dostępu do kolejki; bez tego martwy odbiorca byłby niewidoczny, a zdarzenia leżałyby w kolejce. Przerwa w połączeniu z RabbitMQ **nie** zmienia gotowości: odbiorca sam wznawia połączenie, a REST usługi działa dalej (awaria brokera nie może blokować głównej operacji usługi). Pozostałe sprawdzenia `/health/ready` (np. baza) zostają bez zmian (zob. [D15](decisions.md#d15--zdrowie-usługi)). Złe hasło albo konto (`ProbableAuthenticationError`, podklasa `AMQPConnectionError`) odbiorca ponawia bez końca — `/health/ready` zostaje `200`, a przyczyna jest tylko w logu `RabbitMQ unavailable, retrying` (pole `reason`). Brak zmiennej `RABBITMQ_*` (`KeyError`) kończy zadanie → `503`.
+Odbiorca działa jako zadanie w tle uruchamiane w `lifespan` (`asyncio.create_task(main())`) i anulowane przy zamykaniu (`task.cancel()`). `/health/ready` zwraca `503` **tylko wtedy, gdy to zadanie się zakończyło** (`task.done()`) — to znaczy błąd w kodzie, brak dostępu do kolejki albo kolejka usunięta w trakcie pracy (wykrywa ją sprawdzenie co 15 s w `main()`); bez tego martwy odbiorca byłby niewidoczny, a zdarzenia leżałyby w kolejce. Przyczynę końca zadania zapisuje w logu `add_done_callback` — wyjątku zadania w tle nikt inny nie odbiera, więc bez niego usługa przestaje odbierać zdarzenia bez śladu (przegląd PR #12). Po zakończeniu zadania odbiorca nie wraca sam: trzeba usunąć przyczynę i zrestartować usługę. Przerwa w połączeniu z RabbitMQ **nie** zmienia gotowości: odbiorca sam wznawia połączenie, a REST usługi działa dalej (awaria brokera nie może blokować głównej operacji usługi). Pozostałe sprawdzenia `/health/ready` (np. baza) zostają bez zmian (zob. [D15](decisions.md#d15--zdrowie-usługi)). Złe hasło albo konto (`ProbableAuthenticationError`, podklasa `AMQPConnectionError`) odbiorca ponawia bez końca — `/health/ready` zostaje `200`, a przyczyna jest tylko w logu `RabbitMQ unavailable, retrying` (pole `reason`). Brak zmiennej `RABBITMQ_*` (`KeyError`) kończy zadanie → `503`.
 
 ```python
 # Fragment: the consumer of example_consumer.py as a background task of a FastAPI service.
@@ -586,12 +629,21 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app import consumer  # the module with main() from the example above
+from app import consumer  # the module with main() and log() from the example above
+
+
+def log_consumer_end(task: asyncio.Task) -> None:
+    """Nobody awaits the background task: without this callback its exception is never logged."""
+    if not task.cancelled() and task.exception() is not None:
+        exc = task.exception()
+        consumer.log("error", "Event consumer stopped, /health/ready answers 503",
+                     reason=type(exc).__name__, detail=str(exc)[:300])
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.consumer_task = asyncio.create_task(consumer.main())
+    app.state.consumer_task.add_done_callback(log_consumer_end)
     yield
     app.state.consumer_task.cancel()
 

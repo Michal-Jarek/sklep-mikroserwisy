@@ -10,11 +10,11 @@
 /services/cart-service/          @karola2001km-blip @Michal-Jarek
 /services/inventory-service/     @akrzeszewska @Michal-Jarek
 /services/review-service/        @akrzeszewska @Michal-Jarek
+/services/product-service/       @micbanavio @Michal-Jarek
+/services/notification-service/  @micbanavio @Michal-Jarek
 
 # owner to be added
-/services/product-service/       @Michal-Jarek
 /services/order-service/         @Michal-Jarek
-/services/notification-service/  @Michal-Jarek
 /services/shipping-service/      @Michal-Jarek
 
 /frontend/                       @Michal-Jarek
