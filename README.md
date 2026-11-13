@@ -10,11 +10,11 @@ Projekt zespołowy: sklep zbudowany z 10 mikroserwisów, frontendu w React i wsp
 | [API Gateway](services/api-gateway/) | `api-gateway` | 8080 | Michał ([@Michal-Jarek](https://github.com/Michal-Jarek)) | Node.js · NestJS + Fastify |
 | [Auth Service](services/auth-service/) | `auth-service` | 8081 | Michał ([@Michal-Jarek](https://github.com/Michal-Jarek)) | Node.js · NestJS + Fastify |
 | [User Service](services/user-service/) | `user-service` | 8082 | Karola ([@karola2001km-blip](https://github.com/karola2001km-blip)) | Python |
-| [Product Service](services/product-service/) | `product-service` | 8083 | ([@micbanavio] (https://github.com/micbanavio)) | Java · Spring Boot (sugestia), Python |
+| [Product Service](services/product-service/) | `product-service` | 8083 | Michał ([@micbanavio](https://github.com/micbanavio)) | Python · FastAPI, PostgreSQL |
 | [Inventory Service](services/inventory-service/) | `inventory-service` | 8084 | Aleksandra ([@akrzeszewska](https://github.com/akrzeszewska)) | Python · FastAPI |
 | [Cart Service](services/cart-service/) | `cart-service` | 8085 | Karola ([@karola2001km-blip](https://github.com/karola2001km-blip)) | Python, Redis |
 | [Order Service](services/order-service/) | `order-service` | 8086 | _do ustalenia_ | Java · Spring Boot (sugestia) |
-| [Notification Service](services/notification-service/) | `notification-service` | 8087 | ([@micbanavio] (https://github.com/micbanavio)) | Python · FastAPI (sugestia), MongoDB, RabbitMQ |
+| [Notification Service](services/notification-service/) | `notification-service` | 8087 | Michał ([@micbanavio](https://github.com/micbanavio)) | Python · FastAPI, MongoDB, RabbitMQ |
 | [Review Service](services/review-service/) | `review-service` | 8088 | Aleksandra ([@akrzeszewska](https://github.com/akrzeszewska)) | Python · FastAPI, MongoDB |
 | [Shipping Service](services/shipping-service/) | `shipping-service` | 8089 | _do ustalenia_ | Python · FastAPI (sugestia) |
 | [Frontend](frontend/) | `frontend` | – | Michał ([@Michal-Jarek](https://github.com/Michal-Jarek)) | React (Vite) |
