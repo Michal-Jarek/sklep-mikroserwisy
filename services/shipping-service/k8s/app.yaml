@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shipping-service
+  namespace: shop
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: shipping-service}
+  template:
+    metadata:
+      labels: {app: shipping-service}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: shipping-service
+          image: shipping-service:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 8089}]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          env:
+            - name: SERVICE_ADDRESS
+              valueFrom:
+                fieldRef: {fieldPath: status.podIP}
+            - name: INSTANCE_ID
+              valueFrom:
+                fieldRef: {fieldPath: metadata.name}
+            - name: DB_HOST
+              value: postgres
+            - name: SHIPPING_DB_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: shipping-db-secret, key: password}
+            - name: RABBITMQ_HOST
+              value: rabbitmq
+            - name: SHIPPING_RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: shipping-rabbitmq-secret, key: password}
+            - name: CONSUL_URL
+              value: http://consul:8500
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: '1', memory: 768Mi}
+          startupProbe:
+            httpGet: {path: /health/live, port: 8089}
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: {path: /health/live, port: 8089}
+          readinessProbe:
+            httpGet: {path: /health/ready, port: 8089}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shipping-service
+  namespace: shop
+spec:
+  type: ClusterIP
+  selector: {app: shipping-service}
+  ports: [{port: 8089, targetPort: 8089}]

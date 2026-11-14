@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-service
+  namespace: shop
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: order-service}
+  template:
+    metadata:
+      labels: {app: order-service}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: order-service
+          image: order-service:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 8086}]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          env:
+            - name: SERVICE_ADDRESS
+              valueFrom:
+                fieldRef: {fieldPath: status.podIP}
+            - name: INSTANCE_ID
+              valueFrom:
+                fieldRef: {fieldPath: metadata.name}
+            - name: DB_HOST
+              value: postgres
+            - name: ORDER_DB_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: order-db-secret, key: password}
+            - name: RABBITMQ_HOST
+              value: rabbitmq
+            - name: ORDER_RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: order-rabbitmq-secret, key: password}
+            - name: CONSUL_URL
+              value: http://consul:8500
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: '1', memory: 768Mi}
+          startupProbe:
+            httpGet: {path: /health/live, port: 8086}
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: {path: /health/live, port: 8086}
+          readinessProbe:
+            httpGet: {path: /health/ready, port: 8086}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-service
+  namespace: shop
+spec:
+  type: ClusterIP
+  selector: {app: order-service}
+  ports: [{port: 8086, targetPort: 8086}]
+
+
