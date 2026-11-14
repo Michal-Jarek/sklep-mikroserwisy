@@ -3,6 +3,7 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import InterfaceError, OperationalError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 logger = logging.getLogger(__name__)
@@ -29,14 +30,11 @@ class ApiError(Exception):
 
 
 def _response(request: Request, status: int, error: str, message: str) -> JSONResponse:
+    request_id = getattr(request.state, "request_id", None)
     return JSONResponse(
         status_code=status,
-        content={
-            "status": status,
-            "error": error,
-            "message": message,
-            "requestId": getattr(request.state, "request_id", None),
-        },
+        content={"status": status, "error": error, "message": message, "requestId": request_id},
+        headers={"X-Request-Id": request_id} if request_id else None,  # także dla błędów 500 spoza middleware
     )
 
 
@@ -57,6 +55,13 @@ def register_error_handlers(app: FastAPI) -> None:
             loc = ".".join(str(p) for p in err["loc"] if p not in ("body", "query", "path"))
             parts.append(f"{loc}: {err['msg']}" if loc else err["msg"])
         return _response(request, 400, "VALIDATION_ERROR", "; ".join(parts) or "Niepoprawne dane wejściowe")
+
+    async def database_unavailable_handler(request: Request, exc: Exception):
+        logger.warning("Baza danych niedostępna: %s", type(exc).__name__)
+        return _response(request, 503, "SERVICE_UNAVAILABLE", "Baza danych niedostępna")
+
+    app.add_exception_handler(OperationalError, database_unavailable_handler)
+    app.add_exception_handler(InterfaceError, database_unavailable_handler)
 
     @app.exception_handler(Exception)
     async def unhandled_error_handler(request: Request, exc: Exception):

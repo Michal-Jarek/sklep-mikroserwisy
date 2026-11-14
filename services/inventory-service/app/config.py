@@ -11,34 +11,26 @@ class Settings(BaseSettings):
 
     service_name: str = "inventory-service"
     service_port: int = 8084
-    service_address: str = ""  # adres poda (w K8s z fieldRef status.podIP)
+    service_address: str = ""  
     instance_id: str = ""
     log_level: str = "INFO"
 
-    database_url: str = ""  # np. postgresql+psycopg2://user:haslo@host:5432/inventory_db
+    database_url: str = ""  
 
-    rabbitmq_url: str = ""  # puste = konsument zdarzeń wyłączony
-    rabbitmq_exchange: str = "shop.events"
-    rabbitmq_queue: str = "inventory.q"
-    rabbitmq_prefetch: int = 10
-    rabbitmq_max_attempts: int = 3
+    rabbitmq_host: str = ""
+    rabbitmq_port: int = 5672
+    rabbitmq_user: str = ""
+    rabbitmq_password: str = ""
 
     consul_enabled: bool = True
     consul_host: str = "consul"
     consul_port: int = 8500
 
-    # Puste jwt_jwks_url = tryb "nagłówki z Gateway" (X-User-Id / X-User-Roles).
-    jwt_jwks_url: str = ""
-    jwt_issuer: str = ""
-    jwt_audience: str = ""
 
     @property
     def effective_instance_id(self) -> str:
-        return self.instance_id or socket.gethostname()
-
-    @property
-    def effective_address(self) -> str:
-        return self.service_address or socket.gethostbyname(socket.gethostname())
+        """ID instancji w Consulu i w nagłówku X-Instance-Id: <usługa>-<hostname>."""
+        return self.instance_id or f"{self.service_name}-{socket.gethostname()}"
 
 
 @lru_cache

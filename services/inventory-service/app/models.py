@@ -1,10 +1,11 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, Integer, String, UniqueConstraint
+from sqlalchemy import CheckConstraint, DateTime, Integer, String, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 ACTIVE = "ACTIVE"
 RELEASED = "RELEASED"
+ISSUED = "ISSUED"  # towar wydany przy wysyłce
 
 
 def _now() -> datetime:
@@ -25,7 +26,7 @@ class InventoryItem(Base):
         CheckConstraint("reserved <= quantity", name="ck_inventory_reserved_le_quantity"),
     )
 
-    product_id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=False)
+    product_id: Mapped[str] = mapped_column(String(36), primary_key=True)  # UUID zapisany tekstem
     quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     reserved: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
@@ -43,7 +44,7 @@ class Reservation(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     order_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    product_id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), nullable=False)
+    product_id: Mapped[str] = mapped_column(String(36), nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default=ACTIVE)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

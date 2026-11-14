@@ -12,7 +12,7 @@
     },
     {
       "key": "productId",
-      "value": "90001"
+      "value": "3f0c9b1e-6a52-4a8e-9c1f-0b2f7e1d5a77"
     },
     {
       "key": "orderId",
@@ -89,7 +89,7 @@
       }
     },
     {
-      "name": "GET stan nieznanego produktu -> 404",
+      "name": "GET stan nieznanego produktu (poprawny UUID) -> 404",
       "event": [
         {
           "listen": "test",
@@ -111,13 +111,47 @@
           }
         ],
         "url": {
-          "raw": "{{baseUrl}}/inventory/99999999",
+          "raw": "{{baseUrl}}/inventory/99999999-9999-4999-8999-999999999999",
           "host": [
             "{{baseUrl}}"
           ],
           "path": [
             "inventory",
-            "99999999"
+            "99999999-9999-4999-8999-999999999999"
+          ]
+        }
+      }
+    },
+    {
+      "name": "GET stan z niepoprawnym id -> 400",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 400', function () { pm.response.to.have.status(400); });",
+              "pm.test('VALIDATION_ERROR', function () { const j = pm.response.json(); pm.expect(j.error === 'VALIDATION_ERROR').to.be.true; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/inventory/123",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "inventory",
+            "123"
           ]
         }
       }
@@ -186,7 +220,7 @@
           },
           {
             "key": "X-User-Id",
-            "value": "2"
+            "value": "5c9d1a7e-3b2f-4e8a-b6d4-1f0e9a8c7b65"
           },
           {
             "key": "X-User-Roles",
@@ -246,7 +280,7 @@
           },
           {
             "key": "X-User-Id",
-            "value": "1"
+            "value": "0b5f5c1e-7f43-4b3c-9d2e-8a4b6a1c2d3e"
           },
           {
             "key": "X-User-Roles",
@@ -297,7 +331,7 @@
           },
           {
             "key": "X-User-Id",
-            "value": "1"
+            "value": "0b5f5c1e-7f43-4b3c-9d2e-8a4b6a1c2d3e"
           },
           {
             "key": "X-User-Roles",
@@ -381,7 +415,7 @@
           },
           {
             "key": "X-User-Id",
-            "value": "2"
+            "value": "5c9d1a7e-3b2f-4e8a-b6d4-1f0e9a8c7b65"
           },
           {
             "key": "X-User-Roles",

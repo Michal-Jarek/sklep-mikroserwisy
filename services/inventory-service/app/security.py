@@ -1,77 +1,56 @@
-"""Uwierzytelnianie i autoryzacja po stronie usługi.
+"""Tożsamość i role pochodzą wyłącznie z nagłówków ustawianych przez Gateway (D11).
 
-Dwa tryby (wybierane zmienną JWT_JWKS_URL):
-* ustawiona  -> nagłówek Authorization: Bearer <JWT> jest weryfikowany (RS256, klucz publiczny z JWKS Auth Service),
-                role i identyfikator użytkownika pochodzą z tokenu (claims: sub, roles),
-* pusta      -> zaufanie nagłówkom X-User-Id / X-User-Roles (ustawia je wyłącznie Gateway;
-                ruch do usługi ogranicza NetworkPolicy).
+* X-User-Id: UUID użytkownika; wartość niebędąca UUID to 400 VALIDATION_ERROR.
+* X-User-Roles: lista oddzielona przecinkami (np. "CUSTOMER,SERVICE"). Role to zbiór; wielkość liter ma znaczenie,
+  a rolę sprawdza się przez przynależność do zbioru, nigdy przez szukanie tekstu w nagłówku ("XSERVICE" to nie SERVICE).
+Usługa wołająca inną usługę dopisuje do ról SERVICE.
+Nagłówki są parametrami zależności, więc Swagger UI pokazuje na nie pola.
 """
 from dataclasses import dataclass
-from functools import lru_cache
+from typing import Annotated
 
-import jwt
-from fastapi import Depends, Request
-from jwt import PyJWKClient
+from fastapi import Depends, Header
 
-from app.config import get_settings
 from app.errors import ApiError
+from app.ids import valid_uuid
 
 
 @dataclass(frozen=True)
 class Principal:
-    user_id: str | None
+    user_id: str | None  # None: klient anonimowy albo praca w tle (np. wywołanie z samą rolą SERVICE)
     roles: frozenset[str]
 
 
-def _roles(value) -> frozenset[str]:
-    if value is None:
-        return frozenset()
-    if isinstance(value, str):
-        value = value.split(",")
-    return frozenset(str(v).strip().upper() for v in value if str(v).strip())
-
-
-@lru_cache
-def _jwks_client(url: str) -> PyJWKClient:
-    return PyJWKClient(url, cache_keys=True, lifetime=300)
-
-
-def get_principal(request: Request) -> Principal | None:
-    settings = get_settings()
-    auth = request.headers.get("authorization", "")
-
-    if settings.jwt_jwks_url and auth.lower().startswith("bearer "):
-        token = auth[7:].strip()
-        try:
-            key = _jwks_client(settings.jwt_jwks_url).get_signing_key_from_jwt(token).key
-            claims = jwt.decode(
-                token,
-                key,
-                algorithms=["RS256"],
-                issuer=settings.jwt_issuer or None,
-                audience=settings.jwt_audience or None,
-                options={"verify_aud": bool(settings.jwt_audience)},
-            )
-        except jwt.PyJWTError:
-            raise ApiError(401, "UNAUTHORIZED", "Nieprawidłowy lub wygasły token")
-        sub = claims.get("sub")
-        return Principal(str(sub) if sub is not None else None, _roles(claims.get("roles", claims.get("role"))))
-
-    user_id = request.headers.get("x-user-id")
-    roles = _roles(request.headers.get("x-user-roles"))
-    if user_id is None and not roles:
-        return None
+def identity(
+    x_user_id: Annotated[str | None, Header()] = None,
+    x_user_roles: Annotated[str, Header()] = "",
+) -> Principal:
+    """Działa bez nagłówków (brak user_id, pusty zbiór ról)."""
+    user_id = None
+    if x_user_id is not None:
+        user_id = valid_uuid(x_user_id)
+        if user_id is None:
+            raise ApiError(400, "VALIDATION_ERROR", "X-User-Id: musi być poprawnym UUID")
+    roles = frozenset(role.strip() for role in x_user_roles.split(",") if role.strip())
     return Principal(user_id, roles)
 
 
-def require_roles(*allowed: str):
-    allowed_set = {r.upper() for r in allowed}
+def logged_in(who: Principal = Depends(identity)) -> Principal:
+    """Endpoint wymagający logowania: bez X-User-Id 401."""
+    if who.user_id is None:
+        raise ApiError(401, "UNAUTHORIZED", "Wymagane uwierzytelnienie")
+    return who
 
-    def dependency(principal: Principal | None = Depends(get_principal)) -> Principal:
-        if principal is None:
-            raise ApiError(401, "UNAUTHORIZED", "Wymagane uwierzytelnienie")
-        if not principal.roles & allowed_set:
-            raise ApiError(403, "FORBIDDEN", "Brak uprawnień do tej operacji")
-        return principal
 
-    return dependency
+def admin_only(who: Principal = Depends(logged_in)) -> Principal:
+    """Zalogowany użytkownik z rolą ADMIN; zalogowany bez tej roli dostaje 403."""
+    if "ADMIN" not in who.roles:
+        raise ApiError(403, "FORBIDDEN", "Brak uprawnień do tej operacji")
+    return who
+
+
+def service_only(who: Principal = Depends(identity)) -> Principal:
+    """Endpoint wewnętrzny (D10): bez roli SERVICE 403. X-User-Id nie jest wymagany."""
+    if "SERVICE" not in who.roles:
+        raise ApiError(403, "FORBIDDEN", "Tylko dla innych usług")
+    return who

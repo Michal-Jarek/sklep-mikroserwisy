@@ -4,11 +4,11 @@ Manifesty tej usługi. Wszystkie zasoby są w namespace `shop` i mają etykietę
 
 | Plik | Zawartość |
 |---|---|
-| `configmap.yaml` | `inventory-service-config`: port, RabbitMQ (exchange i kolejka), Consul, adres JWKS, `LOG_LEVEL`. |
+| `configmap.yaml` | `inventory-service-config`: port, RabbitMQ (host, port, użytkownik), Consul, `LOG_LEVEL`. |
 | `deployment.yaml` | 2 repliki, obraz `inventory-service:latest`, probes `/health/live` i `/health/ready`, requests i limity, UID 10001, `readOnlyRootFilesystem`. |
 | `service.yaml` | Service `inventory-service` typu ClusterIP na porcie 8084. |
 
-Sekret `inventory-service-secret` nie jest w repozytorium. Deployment wymaga go w kluczach `DATABASE_URL` i `RABBITMQ_URL`.
+Sekret `inventory-service-secret` nie jest w repozytorium. Deployment wymaga go w kluczach `DATABASE_URL` i `RABBITMQ_PASSWORD`.
 
 ## Wymagania
 
@@ -21,10 +21,12 @@ Sekret `inventory-service-secret` nie jest w repozytorium. Deployment wymaga go 
 ```bash
 kubectl -n shop create secret generic inventory-service-secret \
   --from-literal=DATABASE_URL='postgresql+psycopg2://inventory:<haslo>@postgres:5432/inventory_db' \
-  --from-literal=RABBITMQ_URL='amqp://inventory-service:<haslo>@rabbitmq:5672/'
+  --from-literal=RABBITMQ_PASSWORD='<haslo>'
 
 kubectl apply -f k8s/
 ```
+
+Polecenia wykonuj z katalogu `services/inventory-service`. Hasła i adresy hostów podaj zgodnie z infrastrukturą zespołu; nie zapisuj ich w plikach.
 
 ## Sprawdzenie
 
@@ -39,8 +41,8 @@ Pody powinny mieć status `Running` i `READY 1/1`. Po zmianie ConfigMap lub sekr
 
 ## Do uzgodnienia z architektem
 
-* Adres JWKS Auth Service, `JWT_ISSUER` i `JWT_AUDIENCE` w `configmap.yaml`. Pusty `JWT_JWKS_URL` wyłącza weryfikację tokenu w usłudze, a role pochodzą wtedy z nagłówków `X-User-*`.
-* Nazwy hostów PostgreSQL i RabbitMQ w sekrecie.
+* Host i port RabbitMQ oraz nazwa konta w `configmap.yaml` (domyślnie `rabbitmq`, `5672`, `inventory-service`); konto powinno mieć prawo tylko do odczytu z `inventory.q`.
+* Adres PostgreSQL w sekrecie oraz hasło konta RabbitMQ.
 * NetworkPolicy ograniczająca ruch do usługi. Nie ma jej w tym folderze.
 * Usługa nie ma publicznego Ingress, NodePort ani LoadBalancera.
 

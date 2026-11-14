@@ -1,13 +1,15 @@
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
+from app.ids import ProductId
+
 
 class CamelModel(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
 
 class StockOut(CamelModel):
-    product_id: int
+    product_id: str
     quantity: int
     reserved: int
     available: int
@@ -15,11 +17,13 @@ class StockOut(CamelModel):
 
 
 class StockIn(CamelModel):
+    model_config = ConfigDict(extra="forbid")  # nieznane pola w treści to 400
+
     quantity: int = Field(ge=0, le=1_000_000)
 
 
 class ReservationItem(CamelModel):
-    product_id: int = Field(gt=0)
+    product_id: ProductId
     quantity: int = Field(gt=0, le=10_000)
 
 
