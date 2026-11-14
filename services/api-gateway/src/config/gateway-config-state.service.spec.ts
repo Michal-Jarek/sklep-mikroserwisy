@@ -89,7 +89,28 @@ describe('GatewayConfigState', () => {
     await jest.advanceTimersByTimeAsync(CONFIG_RETRY_MS * 2);
     expect(state.current()).toBeNull();
     expect(logger.warn).toHaveBeenCalledTimes(1);
-    expect(logger.warn.mock.calls[0][0]).toMatchObject({ status: 404, key: KV_KEY });
+    expect(logger.warn.mock.calls[0][0]).toMatchObject({
+      status: 404,
+      key: KV_KEY,
+      reason: 'Consul KV responded with 404',
+    });
+  });
+
+  it('reads KV with CONSUL_HTTP_TOKEN in X-Consul-Token; a 403 (ACL) is one warning without the token', async () => {
+    const token = '6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b';
+    const { spy } = mockConsul(() => new Response('Permission denied', { status: 403 }));
+    const { state, logger } = createState({ ...ENV, CONSUL_HTTP_TOKEN: token });
+    await state.start();
+    await jest.advanceTimersByTimeAsync(CONFIG_RETRY_MS);
+    expect(spy.mock.calls[0][1]?.headers).toEqual({ 'X-Consul-Token': token });
+    expect(state.current()).toBeNull();
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn.mock.calls[0][0]).toMatchObject({
+      status: 403,
+      key: KV_KEY,
+      reason: 'Consul KV responded with 403 (ACL: CONSUL_HTTP_TOKEN missing or without permission)',
+    });
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain(token);
   });
 
   it('logs one error for invalid YAML, without the document', async () => {

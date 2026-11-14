@@ -35,7 +35,7 @@ Gateway nie ma Swaggera (`/docs`, `/openapi.json`); dokumentację API mają usł
 Każda odpowiedź Gateway ma nagłówki:
 
 - `X-Request-Id` – wartość od klienta, jeśli pasuje do `^[A-Za-z0-9._-]{1,64}$`, w przeciwnym razie nowy UUID. Ta sama wartość jest w logach i w treści błędu.
-- `X-Gateway-Instance-Id` – ID instancji Gateway w Consulu (`api-gateway-<hostname>`). Gateway nie ustawia `X-Instance-Id` – ten nagłówek pochodzi od usługi i pokazuje jej instancję.
+- `X-Gateway-Instance-Id` – ID instancji Gateway w Consulu (`api-gateway-<hostname>`, w Kubernetesie nazwa poda z `INSTANCE_ID`). Gateway nie ustawia `X-Instance-Id` – ten nagłówek pochodzi od usługi i pokazuje jej instancję.
 - nagłówki bezpieczeństwa (`@fastify/helmet`): `Content-Security-Policy: default-src 'none';frame-ancestors 'none'` (API nie zwraca HTML), `X-Content-Type-Options: nosniff`, `X-Frame-Options`, `Referrer-Policy` i pozostałe domyślne nagłówki helmet. Bez `X-Powered-By` i `Server`.
 
 Format błędu:
@@ -67,10 +67,12 @@ Gdy usługa nie odpowiada:
 
 | Sytuacja | Odpowiedź Gateway | Ponowienie |
 |---|---|---|
-| brak połączenia z instancją (`ECONNREFUSED`, `EHOSTUNREACH`, `ECONNRESET` przed odpowiedzią, brak połączenia w 2 s) | **502** `BAD_GATEWAY`; instancja wypada z listy do następnego odświeżenia z Consula (do 10 s; gdy była ostatnia na liście – odświeżenie po 2 s) | `GET` i `HEAD`: jedno, od razu, do innej instancji (jeśli jest); inne metody nigdy |
+| brak połączenia z instancją (`ECONNREFUSED`, `EHOSTUNREACH`, `ECONNRESET` przed odpowiedzią, brak połączenia w 2 s) | **502** `BAD_GATEWAY`; instancja wypada z listy do następnego odświeżenia z Consula (do 10 s; gdy była ostatnia na liście – odświeżenie po 2 s) | jedno, od razu, do innej instancji (jeśli jest): `GET` i `HEAD` przy każdym z tych błędów; `POST`, `PUT`, `PATCH`, `DELETE` tylko, gdy połączenie nie powstało (`ECONNREFUSED`, `EHOSTUNREACH`, brak połączenia w 2 s), bez `ECONNRESET` |
 | brak odpowiedzi w `proxy.timeoutSeconds` | **504** `GATEWAY_TIMEOUT` | nie |
 | inny błąd sieci przed odpowiedzią | **502** `BAD_GATEWAY` | nie |
 | odpowiedź 5xx usługi | odpowiedź usługi bez zmian | nie |
+
+Ponowienie `POST`, `PUT`, `PATCH` i `DELETE` jest bezpieczne, bo usługa nie dostała żądania i nie wykona go dwa razy; ponowienie wysyła tę samą treść. Takie żądania trafiają na zamykany pod, który jest jeszcze na liście instancji (np. podczas `rollout restart`). Po zerwaniu połączenia w trakcie (`ECONNRESET`), po przekroczeniu czasu odpowiedzi i po odpowiedzi 5xx Gateway ich nie ponawia, bo usługa mogła już wykonać żądanie.
 
 Do circuit breakera usługi liczą się jako awarie tylko awarie sieci: brak połączenia, brak odpowiedzi w czasie, inny błąd sieci oraz odpowiedzi usługi 502 i 504 (sekcja „Limity żądań i circuit breaker”). Odpowiedzi 500 i 503 usługi nie są awarią. Żądanie odrzucone przed wysłaniem (400 z kroku 10) nie liczy się.
 
@@ -165,12 +167,12 @@ Kolejność sprawdzania:
 - ma `exp`, `iat` i `sub` (UUID); `exp` jest sprawdzany bez tolerancji zegara;
 - ma `roles` jako listę tekstów z co najmniej jedną z ról `CUSTOMER`, `ADMIN`. Inne role, także `SERVICE`, Gateway pomija i nie przekazuje usłudze.
 
-**Klucze.** Gateway pobiera JWKS (`/.well-known/jwks.json`) z instancji `auth-service` znalezionej w Consulu, z timeoutem 2 s:
+**Klucze.** Gateway pobiera JWKS (`/.well-known/jwks.json`) z instancji `auth-service` znalezionej w Consulu, a gdy ustawiona jest zmienna `AUTH_JWKS_ORIGIN` (Kubernetes) – z tego adresu, bez pytania Consula; timeout 2 s:
 - przy starcie, w tle;
 - gdy token ma nieznany `kid` – żądanie czeka na pobranie;
 - gdy klucze mają ponad 10 minut – w tle.
 
-Gateway pobiera klucze najwyżej raz na 10 s. Gdy Auth Service nie odpowiada, zostaje przy dotychczasowych kluczach, więc zalogowani użytkownicy dalej mają dostęp. W logu jest jedno ostrzeżenie na zmianę stanu (brak kluczy albo nieudane odświeżenie) i jedna linia `info`, gdy klucze znów się wczytają. Odrzucone tokeny są logowane tylko na poziomie `debug`, z samym powodem (bez tokenu).
+Gateway pobiera klucze najwyżej raz na 10 s. Gdy Auth Service nie odpowiada, zostaje przy dotychczasowych kluczach, więc zalogowani użytkownicy dalej mają dostęp. W logu jest jedno ostrzeżenie na zmianę stanu (brak kluczy albo nieudane odświeżenie) i jedna linia `info`, gdy klucze znów się wczytają; obie mają pole `source`: `consul` albo `origin` (z `AUTH_JWKS_ORIGIN`). Odrzucone tokeny są logowane tylko na poziomie `debug`, z samym powodem (bez tokenu).
 
 Obecne reguły:
 
@@ -264,7 +266,7 @@ Gateway ma osobny obwód (`opossum`) dla każdej usługi docelowej, np. `product
 | czas otwarcia | 30 s, potem jedno żądanie próbne (stan półotwarty) |
 | własny timeout | brak; czas pilnuje proxy (2 s na połączenie, `proxy.timeoutSeconds` na odpowiedź) |
 
-- **Awaria (tylko sieć):** brak połączenia (po ewentualnym ponowieniu `GET`/`HEAD`), brak odpowiedzi w czasie, inny błąd sieci, odpowiedź usługi 502 albo 504. Odpowiedź usługi i tak trafia do klienta bez zmian.
+- **Awaria (tylko sieć):** brak połączenia (po ewentualnym ponowieniu), brak odpowiedzi w czasie, inny błąd sieci, odpowiedź usługi 502 albo 504. Odpowiedź usługi i tak trafia do klienta bez zmian.
 - **Sukces:** każda inna odpowiedź usługi, także 4xx (np. 404, 409), 500 i 503. Usługa, która odpowiada 500 albo 503, odpowiada szybko i nie zajmuje zasobów Gateway, a błąd 500 wywołany żądaniem jednego klienta nie może wyłączać usługi pozostałym (np. 503 Auth Service przy awarii User Service nie blokuje logowania).
 - **Nie liczy się:** brak zdrowej instancji w Consulu (503 z kroku 9), żądanie odrzucone przed wysłaniem do usługi (400 `Bad request` z kroku 10) i żądanie, którego klient rozłączył się przed odpowiedzią usługi (liczone jak sukces).
 - **Obwód otwarty:** od razu **503** `SERVICE_UNAVAILABLE`, bez pytania Consula i usługi. Inne usługi działają normalnie.
@@ -351,9 +353,9 @@ docker compose -f deploy/compose.yaml --profile platform restart api-gateway
 
 ### Rejestracja w Consulu
 
-Gateway rejestruje się po starcie serwera HTTP: nazwa `api-gateway`, ID `api-gateway-<hostname>`, port `PORT`, check HTTP `/health/ready` co 10 s (timeout 2 s, wpis znika po minucie w stanie `critical`). Stan początkowy checku to bieżąca gotowość. Adres to `SERVICE_ADDRESS`, a gdy jest pusty – lokalny adres, przez który kontener łączy się z Consulem. Gateway jest w dwóch sieciach (`backend` i `edge`), a Consul widzi tylko adres z `backend`, dlatego nie jest brany pierwszy adres kontenera. Gdy nazwy `CONSUL_HOST` nie da się rozwiązać (np. kontener `consul` jest zatrzymany), Gateway startuje i ustala adres przy następnej próbie. Co 15 s sprawdza, czy wpis w Consulu istnieje i ma aktualny adres i port; jeśli nie, rejestruje się ponownie. Przy zatrzymaniu (SIGTERM, Ctrl+C) wyrejestrowuje się.
+Gateway rejestruje się po starcie serwera HTTP: nazwa `api-gateway`, ID `INSTANCE_ID` albo, gdy pusta, `api-gateway-<hostname>`, port `PORT`, check HTTP `/health/ready` co 10 s (timeout 2 s, wpis znika po minucie w stanie `critical`). Stan początkowy checku to bieżąca gotowość. Adres to `SERVICE_ADDRESS`, a gdy jest pusty – lokalny adres, przez który kontener łączy się z Consulem. Gateway jest w dwóch sieciach (`backend` i `edge`), a Consul widzi tylko adres z `backend`, dlatego nie jest brany pierwszy adres kontenera. Gdy nazwy `CONSUL_HOST` nie da się rozwiązać (np. kontener `consul` jest zatrzymany), Gateway startuje i ustala adres przy następnej próbie. Co 15 s sprawdza, czy wpis w Consulu istnieje i ma aktualny adres i port; jeśli nie, rejestruje się ponownie. Przy zatrzymaniu (SIGTERM, Ctrl+C) wyrejestrowuje się.
 
-Zdrowe instancje usług Gateway bierze z Consula (`/v1/health/service/<usługa>?passing`). Lista jest trzymana 10 s, instancje są używane po kolei (round robin). Pusta lista (usługa nie ma jeszcze zdrowej instancji) jest trzymana tylko 2 s, więc usługa uruchomiona po Gateway jest dostępna po kilku sekundach. Instancja bez połączenia (502) wypada z listy; gdy zostają inne, lista czeka do zwykłego odświeżenia (10 s), a gdy wypadła ostatnia, Gateway pyta Consula ponownie po 2 s. Gdy Consul nie odpowiada, Gateway używa ostatniej znanej listy i pyta ponownie po 10 s.
+Zdrowe instancje usług Gateway bierze z Consula (`/v1/health/service/<usługa>?passing`) i bierze tylko wpisy z dokładnie tą nazwą (Consul porównuje nazwę w ścieżce bez wielkości liter, ACL — dokładnie; wpis `AUTH-SERVICE` nie dostanie ruchu `auth-service`). Lista jest trzymana 10 s, instancje są używane po kolei (round robin). Pusta lista (usługa nie ma jeszcze zdrowej instancji) jest trzymana tylko 2 s, więc usługa uruchomiona po Gateway jest dostępna po kilku sekundach. Instancja bez połączenia (502) wypada z listy; gdy zostają inne, lista czeka do zwykłego odświeżenia (10 s), a gdy wypadła ostatnia, Gateway pyta Consula ponownie po 2 s. Gdy Consul nie odpowiada, Gateway używa ostatniej znanej listy i pyta ponownie po 10 s.
 
 ## Zmienne środowiskowe
 
@@ -364,13 +366,20 @@ Nazwy są w [.env.example](.env.example) (bez wartości).
 | `PORT` | `8080` | `8080` (albo `18080`, gdy działa Gateway z Docker Compose) | |
 | `LOG_LEVEL` | — | — | opcjonalnie; nadpisuje `logLevel` z KV |
 | `CONSUL_HOST` / `CONSUL_PORT` | `consul` / `8500` | `127.0.0.1` / `8500` | Gateway zawsze używa Consula |
+| `CONSUL_HTTP_TOKEN` | — (pusty → bez tokenu) | — | opcjonalnie; token ACL Consula (Kubernetes); poniżej |
 | `SERVICE_ADDRESS` | — (pusty → adres trasy do Consula) | `host.docker.internal` | adres zapisany w Consulu; lokalnie wymagany |
+| `INSTANCE_ID` | — (pusty → `api-gateway-<hostname>`) | — | opcjonalnie; unikalne dla każdej instancji; ID w Consulu, w `X-Gateway-Instance-Id` i w logach; w Kubernetesie nazwa poda (`metadata.name`); 1–128 znaków `A-Z a-z 0-9 . _ -` (po obcięciu spacji), inna wartość zatrzymuje start |
 | `REDIS_HOST` / `REDIS_PORT` | `redis-gateway` / `6379` | `127.0.0.1` / `6379` | Redis na liczniki limitów żądań; niedostępny → ruch bez limitu (sekcja „Limity żądań i circuit breaker”) |
 | `REDIS_PASSWORD` | `REDIS_GATEWAY_PASSWORD` z `deploy/.env` | wartość `REDIS_GATEWAY_PASSWORD` z `deploy/.env` | wymagana; brak → Gateway nie startuje |
 | `JWT_ISSUER` / `JWT_AUDIENCE` | — | — | opcjonalnie; nadpisują KV |
 | `TRUSTED_PROXIES` | `frontend` | — (pusty) | opcjonalnie; poniżej |
+| `AUTH_JWKS_ORIGIN` | — (pusty → JWKS z instancji w Consulu) | — | opcjonalnie; poniżej |
 
-Brak wymaganej zmiennej, zły numer portu albo nieznany `LOG_LEVEL` kończą start jedną linią logu z nazwą zmiennej (bez jej wartości).
+Brak wymaganej zmiennej, zły numer portu, nieznany `LOG_LEVEL`, zły format `AUTH_JWKS_ORIGIN` albo `CONSUL_HTTP_TOKEN` z białym znakiem kończą start jedną linią logu z nazwą zmiennej (bez jej wartości).
+
+**`CONSUL_HTTP_TOKEN`** – token ACL Consula. Ustawiony – Gateway wysyła go w nagłówku `X-Consul-Token` we wszystkich wywołaniach Consula (rejestracja, sprawdzanie i usuwanie wpisu, odczyt KV, wyszukiwanie instancji). Pusty albo brak – bez nagłówka, jak w Docker Compose (Consul bez ACL). W Kubernetesie to własny token Gateway z Secretu `api-gateway-secret` (`CONSUL_GATEWAY_TOKEN` z `deploy/.env`): tylko on może zarejestrować nazwę `api-gateway`, bez tokenu tę nazwę można tylko czytać ([deploy/k8s/README.md](../../deploy/k8s/README.md), „Consul z ACL”). Dozwolone znaki: widoczne ASCII, bez spacji. Wartość nie trafia do logów; odmowa Consula to np. `Consul registration responded with 403 (ACL: CONSUL_HTTP_TOKEN missing or without permission)`.
+
+**`AUTH_JWKS_ORIGIN`** – adres Auth Service, z którego Gateway pobiera klucze do weryfikacji tokenów: `http://` albo `https://`, host i opcjonalnie port, np. `http://auth-service.shop.svc.cluster.local:8081` (Service Kubernetes, `deploy/k8s/platform/api-gateway.yaml`). Ścieżkę `/.well-known/jwks.json` Gateway dopisuje sam. Dopuszczalny jest jeden `/` na końcu (Gateway go pomija); ścieżka, `?`, `#` i dane logowania (`user:hasło@`) kończą start komunikatem `Invalid AUTH_JWKS_ORIGIN, …`. Ustawiona – Gateway nie pyta Consula o klucze i nie wyłącza instancji po błędzie (rozkład ruchu na pody Auth robi Service). Pusta albo brak – klucze z instancji `auth-service` z Consula, jak dotąd. Po co: w Consulu bez tokenu każdy może zarejestrować usługę `auth-service` pod swoim adresem i podsunąć własny JWKS (test H5 z etapu 3); Service w Kubernetesie może utworzyć tylko ktoś z dostępem do API klastra (decyzja 8 etapu 7). Docker Compose jej nie ustawia. Trasy `/api/v1/auth/**` dalej idą do instancji z Consula.
 
 **`TRUSTED_PROXIES`** – lista po przecinkach: adres IPv4/IPv6 (`172.18.0.5`), zakres CIDR (`10.42.0.0/16`, `fd00::/64`) albo nazwa hosta (`frontend`). Od takiego rozmówcy Gateway przyjmuje adres klienta z ostatniego wpisu `X-Forwarded-For` (limity, `X-Forwarded-For` do usług); od pozostałych liczy się adres połączenia. Ten adres jest w polu `clientIp` logów żądań. Pusta albo brak = nikt nie jest zaufany. Tylko zmienna środowiskowa, nie Consul KV (KV może zmienić każdy z dostępem do Consula). Nazwy hostów Gateway rozwiązuje w DNS przy starcie (czeka najwyżej 2 s) i co 10 s, więc nowy adres kontenera po restarcie jest zaufany najpóźniej po ok. 10 s; zmiana zbioru adresów to linia `info` „Trusted proxies updated” z nazwami i adresami. Nazwa, której nie ma w DNS (np. kontener `frontend` zatrzymany albo usunięty), przestaje być zaufana przy następnym sprawdzeniu DNS, najpóźniej po ok. 10 s – jego dawny adres może dostać inny kontener; przy przejściowym błędzie DNS ostatnio znane adresy zostają najwyżej 60 s od ostatniego udanego rozwiązania, a przed pierwszym sukcesem nazwa nie wskazuje nikogo. Każda taka zmiana stanu to jedno ostrzeżenie „Trusted proxy <nazwa> cannot be resolved…” – w Docker Compose pojawia się ono przy starcie Gateway tylko wtedy, gdy kontener `frontend` jeszcze nie działa (np. pierwsze `up`, bo `frontend` startuje po Gateway); po ok. 10 s od startu frontendu przychodzi „Trusted proxies updated”. Element w złym formacie (np. `front_end`, `10.0.0.0/33`) kończy start komunikatem `Invalid entry in TRUSTED_PROXIES: <element>`. Wpis musi wskazywać tylko proxy, które zawsze nadpisuje `X-Forwarded-For` adresem swojego klienta (nginx frontendu: `X-Forwarded-For $remote_addr`) – zaufany rozmówca może podać dowolny adres klienta.
 
@@ -542,4 +551,4 @@ docker compose -f deploy/compose.yaml --profile platform up -d --wait --scale au
 sleep 12   # Gateway odświeża listę instancji z Consula co 10 s
 ```
 
-Usunięta instancja wyrejestrowuje się z Consula, ale Gateway może ją mieć na liście jeszcze do 10 s. Żądanie, które w tym czasie do niej trafi, czeka na połączenie najwyżej 2 s: `GET` i `HEAD` są wtedy ponawiane do drugiej instancji, inne metody dostają **502**.
+Usunięta instancja wyrejestrowuje się z Consula, ale Gateway może ją mieć na liście jeszcze do 10 s. Żądanie, które w tym czasie do niej trafi, czeka na połączenie najwyżej 2 s i jest ponawiane do drugiej instancji — `GET` i `HEAD` zawsze, inne metody tylko wtedy, gdy połączenie nie powstało (`ECONNREFUSED`, `EHOSTUNREACH`, brak połączenia w 2 s); po zerwaniu w trakcie (`ECONNRESET`) inne metody dostają **502**, bo usługa mogła już wykonać żądanie.

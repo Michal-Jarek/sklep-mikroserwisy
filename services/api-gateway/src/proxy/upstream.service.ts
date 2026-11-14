@@ -31,8 +31,14 @@ export type ForwardResult =
   | { kind: 'response'; statusCode: number; upstream: string }
   | { kind: UpstreamErrorKind | 'aborted'; upstream: string };
 
-// Only these methods are retried, and only when there was no connection (decision 11).
+// One attempt; code = the error code of a failed attempt (decides the retry of POST, PUT, PATCH, DELETE).
+type AttemptResult = ForwardResult & { code?: string };
+
+// These methods are retried after any lost connection (decision 11), including a reset after sending.
 const RETRIED_METHODS = new Set(['GET', 'HEAD']);
+// The connection was never established: the request never reached the service (Z11). A reset
+// (ECONNRESET) may come after the request was sent, so it is not in this set.
+const NOT_CONNECTED_CODES = new Set(['ECONNREFUSED', 'EHOSTUNREACH', 'UND_ERR_CONNECT_TIMEOUT']);
 
 const DEFAULT_CONTENT_TYPE = 'application/octet-stream';
 
@@ -45,8 +51,9 @@ export class UpstreamService {
 
   /**
    * Step 10 of guidelines 3.4: the request to the instance chosen in step 9, through reply-from.
-   * No connection -> the instance is evicted from the cached list; GET/HEAD get one immediate retry
-   * on another instance from Consul (if there is one). No retry after a timeout or a 5xx response.
+   * No connection -> the instance is evicted from the cached list; one immediate retry on another instance
+   * from Consul (if there is one): GET/HEAD after any lost connection, other methods only when the connection
+   * was never established (Z11). No retry after a timeout or a 5xx response.
    */
   async forward(
     service: string,
@@ -60,7 +67,9 @@ export class UpstreamService {
       return first;
     }
     this.discovery.evict(service, instance);
-    if (!RETRIED_METHODS.has(request.method)) {
+    // Other methods only when the connection was never established: the request never reached the service,
+    // so a retry cannot run it twice.
+    if (!RETRIED_METHODS.has(request.method) && !NOT_CONNECTED_CODES.has(first.code ?? '')) {
       return first;
     }
     const next = await this.discovery.getInstance(service);
@@ -80,7 +89,7 @@ export class UpstreamService {
     request: FastifyRequest,
     reply: FastifyReply,
     target: UpstreamRequest,
-  ): Promise<ForwardResult> {
+  ): Promise<AttemptResult> {
     const upstream = `${instance.address}:${instance.port}`;
     // reply-from would re-serialize a Buffer with a JSON type and drop "; charset=...": the body and its
     // type are passed explicitly (decision 10). Without a body (GET, HEAD, empty POST) nothing is passed.
@@ -130,7 +139,7 @@ export class UpstreamService {
           } else {
             this.logger.warn({ targetService: service, upstream, reason: code }, 'Request to the service failed');
           }
-          resolve({ kind, upstream });
+          resolve({ kind, upstream, code });
         },
       });
     });

@@ -1,0 +1,115 @@
+# RabbitMQ broker (one node). Topology and service accounts come from the rabbitmq-setup Job
+# (rabbitmq-setup.yaml), not from load_definitions, which creates no accounts.
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: rabbitmq
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: infra
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: rabbitmq
+  # 5672 AMQP for the services, 15672 management UI and HTTP API (rabbitmq-setup, port-forward 18672).
+  ports:
+    - {name: amqp, port: 5672, targetPort: amqp}
+    - {name: http, port: 15672, targetPort: http}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rabbitmq
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: rabbitmq
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: infra
+spec:
+  # The node name rabbit@<hostname> selects the data directory on the volume:
+  # the StatefulSet keeps the hostname rabbitmq-0 (and the PVC) when the pod is recreated.
+  serviceName: rabbitmq
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rabbitmq
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rabbitmq
+        app.kubernetes.io/part-of: shop
+        app.kubernetes.io/component: infra
+    spec:
+      automountServiceAccountToken: false
+      # No RABBITMQ_*/<SERVICE>_PORT variables from other Services: the broker reads RABBITMQ_* settings.
+      enableServiceLinks: false
+      # Time to stop quorum queues cleanly (Raft state written to the volume).
+      terminationGracePeriodSeconds: 60
+      # Whole pod as the image user rabbitmq (100:101), also for probes and "kubectl exec":
+      # a CLI tool run as root creates root's .erlang.cookie and the broker fails with eacces.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 100
+        runAsGroup: 101
+        fsGroup: 101
+        # Without it the kubelet makes every file group-readable on each mount and Erlang refuses
+        # the cookie ("must be accessible by owner only"): only the first, empty mount is changed.
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: rabbitmq
+          image: rabbitmq:4.3-management-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - {name: amqp, containerPort: 5672}
+            - {name: http, containerPort: 15672}
+          # The admin account is created only on an empty volume; no guest account is created.
+          env:
+            - name: RABBITMQ_DEFAULT_USER
+              value: admin
+            - name: RABBITMQ_DEFAULT_PASS
+              valueFrom:
+                secretKeyRef: {name: rabbitmq-secret, key: RABBITMQ_DEFAULT_PASS}
+          securityContext:
+            # The broker writes only to /var/lib/rabbitmq (HOME, cookie, data).
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 100m, memory: 192Mi}
+            limits: {cpu: 1000m, memory: 512Mi}
+          # The CLI starts an Erlang VM (~0.3 s idle, more under CPU load), hence longer timeouts
+          # than the HTTP probes of decision 12; a failed liveness restarts the whole broker.
+          startupProbe:
+            exec:
+              command: [rabbitmq-diagnostics, -q, check_port_connectivity]
+            periodSeconds: 5
+            timeoutSeconds: 10
+            failureThreshold: 36
+          livenessProbe:
+            exec:
+              command: [rabbitmq-diagnostics, -q, check_port_connectivity]
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command: [rabbitmq-diagnostics, -q, check_port_connectivity]
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/rabbitmq}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: rabbitmq
+          app.kubernetes.io/part-of: shop
+          app.kubernetes.io/component: infra
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests: {storage: 1Gi}

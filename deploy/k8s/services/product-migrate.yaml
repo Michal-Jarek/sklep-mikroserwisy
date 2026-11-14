@@ -1,0 +1,90 @@
+# One-off on every deploy/k8s/up.sh services (the script deletes and recreates it, then waits for Complete
+# before product-service starts): alembic upgrade head on product_db, the same command and variables as the
+# product-migrate container in deploy/compose.yaml. Password from Secret product-service-secret (deploy/k8s/secrets.sh).
+# restartPolicy Never: every attempt is a new pod, so the log of a failed attempt stays readable.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: product-migrate
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: product-migrate
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: job
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: product-migrate
+        app.kubernetes.io/part-of: shop
+        app.kubernetes.io/component: job
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      # No <SERVICE>_PORT=tcp://... variables from the other Services of the namespace (convention, see README).
+      enableServiceLinks: false
+      securityContext:
+        # USER 10001 of the image (no group in the Dockerfile; the application files are world-readable).
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      # Z12/Z13: with NetworkPolicy active, a new pod cannot connect for ~1-2 s (kube-router adds its IP to the
+      # rule sets with a delay). Wait here until postgres:5432 answers (every 0.5 s, at most 30 s, then exit 1 and a
+      # new attempt of the Job), so the migration connects on its first try.
+      initContainers:
+        - name: wait-for-network
+          image: product-service:dev
+          imagePullPolicy: Never
+          command:
+            - python
+            - -c
+            - |
+              import socket, sys, time
+              start = time.monotonic()
+              while True:
+                  try:
+                      socket.create_connection(("postgres", 5432), 1).close()
+                      print(f"postgres:5432 reachable after {time.monotonic() - start:.1f} s")
+                      break
+                  except OSError as exc:
+                      if time.monotonic() - start > 30:
+                          print(f"postgres:5432 not reachable after 30 s: {exc}", file=sys.stderr)
+                          sys.exit(1)
+                      time.sleep(0.5)
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {cpu: 100m, memory: 64Mi}
+      containers:
+        - name: product-migrate
+          image: product-service:dev
+          imagePullPolicy: Never
+          command: ["alembic", "upgrade", "head"]
+          env:
+            - {name: DB_HOST, value: postgres}
+            - {name: DB_PORT, value: "5432"}
+            - {name: DB_NAME, value: product_db}
+            - {name: DB_USER, value: product_service}
+            - name: DB_PASSWORD
+              valueFrom: {secretKeyRef: {name: product-service-secret, key: DB_PASSWORD}}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            # The image sets PYTHONDONTWRITEBYTECODE, so Alembic writes nothing outside /tmp.
+            readOnlyRootFilesystem: true
+          resources:
+            requests: {cpu: 25m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 16Mi}

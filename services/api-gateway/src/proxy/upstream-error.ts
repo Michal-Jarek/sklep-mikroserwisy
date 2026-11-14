@@ -1,6 +1,7 @@
 /**
  * Kind of a failed proxy attempt (decision 11, Z14):
- * - unreachable: no connection to the instance (502, the instance is evicted, GET/HEAD retried once);
+ * - unreachable: no connection to the instance (502, the instance is evicted, retried once: GET/HEAD always,
+ *   other methods only when the connection was never established, Z11);
  * - timeout: no response within proxy.timeoutSeconds (504, no retry);
  * - failed: another I/O error without a response (502, no retry);
  * - rejected: the HTTP client of the Gateway refused to build the request from what the client sent

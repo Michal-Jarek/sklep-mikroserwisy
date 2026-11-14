@@ -1,0 +1,12 @@
+# Namespace of the whole shop. Pod Security: baseline enforced, restricted only warns
+# (exceptions in deploy/k8s/README.md). Applied by deploy/k8s/up.sh; deploy/k8s/down.sh never deletes it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shop
+  labels:
+    app.kubernetes.io/part-of: shop
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest

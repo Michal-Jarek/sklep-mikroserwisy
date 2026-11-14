@@ -1,0 +1,134 @@
+# One-off on every deploy/k8s/up.sh (the script deletes and recreates it after consul is ready):
+#   1. deploy/consul/seed-kv.sh (ConfigMap consul-kv) overwrites config/<service>/data with deploy/consul/config/;
+#   2. consul-acl-setup.sh (ConfigMap consul-acl-setup) sets the policy of requests without a token and creates or
+#      updates the tokens of auth-service and api-gateway (the only ones that may register these two names).
+# Both with the management token from Secret consul-secret, which also holds the SecretIDs of the two service tokens;
+# no token is ever printed. Directly to the server (Service consul-server): the guard behind the Service consul
+# answers 403 to KV writes and to the ACL API.
+# restartPolicy Never: every attempt is a new pod, so the log of a failed attempt stays readable;
+# backoffLimit 2 covers the moment right after the leader election, before the ACL bootstrap is finished.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: consul-kv-seed
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: consul-kv-seed
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: job
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: consul-kv-seed
+        app.kubernetes.io/part-of: shop
+        app.kubernetes.io/component: job
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      # Without it Kubernetes adds <SERVICE>_PORT=tcp://... for every Service (e.g. CONSUL_PORT).
+      enableServiceLinks: false
+      securityContext:
+        # User consul of the image (uid 100, gid 1000): the image does not drop root for "sh".
+        runAsNonRoot: true
+        runAsUser: 100
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # NetworkPolicy (stage 7 Z12/Z13): kube-router covers the IP of a new pod with a delay of ~1-2 s, and every
+        # attempt of a Job is a new pod. TCP to consul-server:8500 every 0.5 s, at most 30 s (then exit 1 = failed
+        # attempt).
+        - name: wait-for-network
+          image: hashicorp/consul:1.21
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              start=$(date +%s)
+              until nc -z -w 1 "$0" "$1"; do
+                if [ $(($(date +%s) - start)) -ge 30 ]; then
+                  echo "$0:$1 not reachable within 30 s" >&2
+                  exit 1
+                fi
+                sleep 0.5
+              done
+              echo "$0:$1 reachable after $(($(date +%s) - start)) s"
+            - consul-server
+            - "8500"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+      containers:
+        - name: consul-kv-seed
+          image: hashicorp/consul:1.21
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", "sh /kv/config/seed-kv.sh && sh /acl/consul-acl-setup.sh"]
+          env:
+            - name: CONSUL_HTTP_ADDR
+              value: http://consul-server:8500
+            - name: CONSUL_HTTP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: consul-secret
+                  key: CONSUL_HTTP_TOKEN
+            - name: CONSUL_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: consul-secret
+                  key: CONSUL_AUTH_TOKEN
+            - name: CONSUL_GATEWAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: consul-secret
+                  key: CONSUL_GATEWAY_TOKEN
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          volumeMounts:
+            # seed-kv.sh reads /kv/config/*.yaml: the ConfigMap keys are the file names.
+            - name: kv
+              mountPath: /kv/config
+              readOnly: true
+            - name: acl-setup
+              mountPath: /acl
+              readOnly: true
+            # Like tmpfs in compose: the image declares VOLUME /consul/data.
+            - name: data
+              mountPath: /consul/data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: kv
+          configMap:
+            name: consul-kv
+        - name: acl-setup
+          configMap:
+            name: consul-acl-setup
+        - name: data
+          emptyDir:
+            sizeLimit: 16Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi

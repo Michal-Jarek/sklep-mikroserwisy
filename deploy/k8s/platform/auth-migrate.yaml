@@ -1,0 +1,102 @@
+# One-off on every deploy/k8s/up.sh platform (the script deletes and recreates it, then waits for Complete
+# before auth-service starts): prisma migrate deploy on auth_db, the same command and variables as the
+# auth-migrate container in deploy/compose.yaml. Password from Secret auth-service-secret (deploy/k8s/secrets.sh).
+# restartPolicy Never: every attempt is a new pod, so the log of a failed attempt stays readable.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: auth-migrate
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: auth-migrate
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: job
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: auth-migrate
+        app.kubernetes.io/part-of: shop
+        app.kubernetes.io/component: job
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      # No <SERVICE>_PORT=tcp://... variables from the other Services of the namespace (convention, see README).
+      enableServiceLinks: false
+      securityContext:
+        # USER 1000:1000 of the image (node).
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        # NetworkPolicy (stage 7 Z13): kube-router covers the IP of a new pod with a delay of ~1-2 s, and every
+        # attempt of a Job is a new pod. TCP to postgres:5432 every 0.5 s, at most 30 s (then exit 1 = failed
+        # attempt). Same image as the Job, no secrets.
+        - name: wait-for-network
+          image: auth-service:dev
+          imagePullPolicy: Never
+          command:
+            - node
+            - -e
+            - |
+              const net = require('node:net');
+              const [host, port] = process.argv.slice(1);
+              const start = Date.now();
+              const attempt = () => {
+                const socket = net.connect({ host, port: Number(port), timeout: 1000 });
+                socket.once('connect', () => {
+                  console.log(`${host}:${port} reachable after ${Date.now() - start} ms`);
+                  socket.destroy();
+                });
+                const retry = () => {
+                  socket.destroy();
+                  if (Date.now() - start >= 30000) {
+                    console.error(`${host}:${port} not reachable within 30 s`);
+                    process.exit(1);
+                  }
+                  setTimeout(attempt, 500);
+                };
+                socket.once('error', retry);
+                socket.once('timeout', retry);
+              };
+              attempt();
+            - postgres
+            - "5432"
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {cpu: 100m, memory: 64Mi}
+      containers:
+        - name: auth-migrate
+          image: auth-service:dev
+          imagePullPolicy: Never
+          # The Prisma CLI is called directly: npx would try to write its cache.
+          command: ["node", "node_modules/prisma/build/index.js", "migrate", "deploy"]
+          env:
+            - {name: DB_HOST, value: postgres}
+            - {name: DB_PORT, value: "5432"}
+            - {name: DB_NAME, value: auth_db}
+            - {name: DB_USER, value: auth_service}
+            - name: DB_PASSWORD
+              valueFrom: {secretKeyRef: {name: auth-service-secret, key: DB_PASSWORD}}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            # Checked with docker run --read-only: migrate deploy writes nothing outside /tmp.
+            readOnlyRootFilesystem: true
+          resources:
+            requests: {cpu: 25m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 16Mi}

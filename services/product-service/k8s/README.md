@@ -36,6 +36,8 @@ curl -s -D - -o /dev/null http://127.0.0.1:8083/products | grep -i x-instance-id
 
 Bezpieczeństwo kontenera: użytkownik 10001 (jak w `Dockerfile`), `runAsNonRoot`, `allowPrivilegeEscalation: false`, system plików tylko do odczytu (zapisywalny tylko `/tmp`), bez capabilities, seccomp `RuntimeDefault`, bez tokenu ServiceAccount. Probe: startup i liveness `/health/live`, readiness `/health/ready` (503, gdy baza nie odpowiada). Product rejestruje się w Consulu adresem poda (`SERVICE_ADDRESS`) i nazwą poda (`INSTANCE_ID`).
 
-Ruch sieciowy potrzebny w NetworkPolicy: wejście z `api-gateway` na 8083 i od Cart, Order, Review (lekki odczyt, D4); wyjście do `postgres:5432`, `consul:8500`, `review-service:8085`, `inventory-service:8084` i DNS. Job migracji: wyjście do `postgres:5432` i DNS.
+Ruch sieciowy potrzebny w NetworkPolicy: wejście na 8083 z `api-gateway`, od Cart i Order (lekki odczyt, D4) oraz z `consul` (health check `/health/ready` na adres poda); wyjście do `postgres:5432`, `consul:8500`, `review-service:8088`, `inventory-service:8084` i DNS. Review i Inventory są wołane po IP poda z Consula, więc reguła wyjścia musi wybierać pody (etykieta `app`), nie tylko adres Service. Job migracji: wyjście do `postgres:5432` i DNS.
+
+Poprawka opisu ruchu i punkt 2a (`availability: {"available": 0, "inStock": false}` przy 404 z Inventory) — platforma (etap 7), na podstawie CR #15.
 
 Nie wykonano wdrożenia w klastrze. Manifesty sprawdzono schematem Kubernetes 1.30 w trybie ścisłym (`kubeconform -strict`).

@@ -1,6 +1,7 @@
-import { Injectable, OnApplicationBootstrap } from '@nestjs/common';
+import { Inject, Injectable, OnApplicationBootstrap } from '@nestjs/common';
 import { createLocalJWKSet, type JWK } from 'jose';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
+import { APP_CONFIG, type AppConfig } from '../config/app-config';
 import { describeError } from '../consul/consul-http';
 import { ServiceDiscovery } from '../consul/service-discovery.service';
 import { AUTH_JWKS_PATH } from '../routes';
@@ -21,6 +22,8 @@ export interface VerificationKeys {
 }
 
 type KeysState = 'initial' | 'loaded' | 'stale' | 'missing';
+// Where the keys come from (field "source" of the log lines): AUTH_JWKS_ORIGIN or an instance from Consul.
+type KeysSource = 'origin' | 'consul';
 
 function isMapping(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -53,11 +56,13 @@ export function signingKeys(body: unknown): JWK[] {
 }
 
 /**
- * Keys of Auth Service for access tokens (decision 14). Fetched from an auth-service instance found
- * in Consul: first in the background at startup, then when a token has an unknown kid (the request
- * waits) or the keys are older than 10 min (in the background). At most one request per 10 s;
- * concurrent callers share it. When a request fails, the current keys stay (one warning per change
- * of state). null = no keys yet: routes that need a login answer 503.
+ * Keys of Auth Service for access tokens (decision 14). Fetched from AUTH_JWKS_ORIGIN when it is set
+ * (Kubernetes Service, stage 7 decision 8: an instance registered in Consul cannot supply the keys),
+ * otherwise from an auth-service instance found in Consul: first in the background at startup, then
+ * when a token has an unknown kid (the request waits) or the keys are older than 10 min (in the
+ * background). At most one request per 10 s; concurrent callers share it. When a request fails, the
+ * current keys stay (one warning per change of state). null = no keys yet: routes that need a login
+ * answer 503.
  */
 @Injectable()
 export class JwksProvider implements OnApplicationBootstrap {
@@ -66,11 +71,15 @@ export class JwksProvider implements OnApplicationBootstrap {
   private lastAttemptAt = Number.NEGATIVE_INFINITY;
   private pending?: Promise<void>;
   private state: KeysState = 'initial';
+  private readonly source: KeysSource;
 
   constructor(
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
     private readonly discovery: ServiceDiscovery,
     @InjectPinoLogger(JwksProvider.name) private readonly logger: PinoLogger,
-  ) {}
+  ) {
+    this.source = config.authJwksOrigin ? 'origin' : 'consul';
+  }
 
   onApplicationBootstrap(): void {
     void this.refresh();
@@ -111,14 +120,14 @@ export class JwksProvider implements OnApplicationBootstrap {
       this.fetchedAt = Date.now();
       if (this.state !== 'loaded') {
         this.state = 'loaded';
-        this.logger.info({ keys: keys.length }, 'JWKS keys loaded from Auth Service');
+        this.logger.info({ keys: keys.length, source: this.source }, 'JWKS keys loaded from Auth Service');
       }
     } catch (error) {
       const next: KeysState = this.keys ? 'stale' : 'missing';
       if (next !== this.state) {
         this.state = next;
         this.logger.warn(
-          { reason: describeError(error) },
+          { reason: describeError(error), source: this.source },
           next === 'stale'
             ? 'JWKS refresh from Auth Service failed, keeping the current keys'
             : 'No JWKS keys from Auth Service, routes that need a login answer 503',
@@ -128,19 +137,26 @@ export class JwksProvider implements OnApplicationBootstrap {
   }
 
   private async download(): Promise<JWK[]> {
-    const instance = await this.discovery.getInstance(AUTH_SERVICE);
-    if (!instance) {
-      throw new Error(`No healthy instance of ${AUTH_SERVICE}`);
-    }
     let response: Response;
-    try {
-      response = await fetch(`http://${instance.address}:${instance.port}${AUTH_JWKS_PATH}`, {
+    if (this.config.authJwksOrigin) {
+      // The Service balances over the Auth pods itself: no Consul, nothing to evict.
+      response = await fetch(`${this.config.authJwksOrigin}${AUTH_JWKS_PATH}`, {
         signal: AbortSignal.timeout(JWKS_TIMEOUT_MS),
       });
-    } catch (error) {
-      // No answer from this instance: the next attempt (and the proxy) takes another one.
-      this.discovery.evict(AUTH_SERVICE, instance);
-      throw error;
+    } else {
+      const instance = await this.discovery.getInstance(AUTH_SERVICE);
+      if (!instance) {
+        throw new Error(`No healthy instance of ${AUTH_SERVICE}`);
+      }
+      try {
+        response = await fetch(`http://${instance.address}:${instance.port}${AUTH_JWKS_PATH}`, {
+          signal: AbortSignal.timeout(JWKS_TIMEOUT_MS),
+        });
+      } catch (error) {
+        // No answer from this instance: the next attempt (and the proxy) takes another one.
+        this.discovery.evict(AUTH_SERVICE, instance);
+        throw error;
+      }
     }
     if (!response.ok) {
       throw new Error(`Auth Service responded with ${response.status}`);

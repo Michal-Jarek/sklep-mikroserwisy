@@ -1,0 +1,207 @@
+# API Gateway: the only way into the backend (from outside only through the Ingress, ingress.yaml).
+# Variables as in deploy/compose.yaml except TRUSTED_PROXIES (pod CIDR, decision 10), AUTH_JWKS_ORIGIN
+# (JWKS from the Service of Auth, not from Consul, decision 8) and CONSUL_HTTP_TOKEN (own Consul token, Z9).
+# Redis password and Consul token from Secret api-gateway-secret.
+# Two replicas (load balancing level 1: Traefik -> Gateway pods), PodDisruptionBudget and HPA 2-3 (decision 15).
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-gateway
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: api-gateway
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: platform
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: api-gateway
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: platform
+  ports:
+    - {name: http, port: 8080, targetPort: http}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: api-gateway
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: platform
+spec:
+  # Kept although the HPA below manages the count: deploy/k8s/up.sh then always ends with 2 ready pods.
+  # Side effect: a new up.sh while the HPA holds 3 sets 2 again until the next HPA check (about 15 s).
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: api-gateway
+      app.kubernetes.io/part-of: shop
+      app.kubernetes.io/component: platform
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: api-gateway
+        app.kubernetes.io/part-of: shop
+        app.kubernetes.io/component: platform
+    spec:
+      automountServiceAccountToken: false
+      # No <SERVICE>_PORT=tcp://... variables from the other Services of the namespace (convention, see README).
+      enableServiceLinks: false
+      # preStop (10 s) + deregistration from Consul and closing the server on SIGTERM (decision 11).
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        # USER 1000:1000 of the image (node).
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        # NetworkPolicy (stage 7 Z12): kube-router covers the IP of a new pod with a delay of ~1-2 s, so without this
+        # wait the service could skip the Consul KV read at startup. TCP to consul:8500 every 0.5 s, at most 30 s
+        # (then exit 1 and the pod restarts). Same image as the service, no secrets.
+        - name: wait-for-network
+          image: api-gateway:dev
+          imagePullPolicy: Never
+          command:
+            - node
+            - -e
+            - |
+              const net = require('node:net');
+              const [host, port] = process.argv.slice(1);
+              const start = Date.now();
+              const attempt = () => {
+                const socket = net.connect({ host, port: Number(port), timeout: 1000 });
+                socket.once('connect', () => {
+                  console.log(`${host}:${port} reachable after ${Date.now() - start} ms`);
+                  socket.destroy();
+                });
+                const retry = () => {
+                  socket.destroy();
+                  if (Date.now() - start >= 30000) {
+                    console.error(`${host}:${port} not reachable within 30 s`);
+                    process.exit(1);
+                  }
+                  setTimeout(attempt, 500);
+                };
+                socket.once('error', retry);
+                socket.once('timeout', retry);
+              };
+              attempt();
+            - consul
+            - "8500"
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {cpu: 100m, memory: 64Mi}
+      containers:
+        - name: api-gateway
+          image: api-gateway:dev
+          imagePullPolicy: Never
+          ports:
+            - {name: http, containerPort: 8080}
+          env:
+            - {name: PORT, value: "8080"}
+            - {name: CONSUL_HOST, value: consul}
+            - {name: CONSUL_PORT, value: "8500"}
+            # Own Consul ACL token: the only one that may register the name api-gateway (anonymous requests may
+            # only read it; deploy/k8s/infra/consul-acl-setup.sh).
+            - name: CONSUL_HTTP_TOKEN
+              valueFrom: {secretKeyRef: {name: api-gateway-secret, key: CONSUL_HTTP_TOKEN}}
+            # Address registered in Consul (decision 5).
+            - name: SERVICE_ADDRESS
+              valueFrom: {fieldRef: {fieldPath: status.podIP}}
+            # Instance id = pod name (already starts with api-gateway): Consul ID, X-Gateway-Instance-Id, logs.
+            - name: INSTANCE_ID
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            - {name: REDIS_HOST, value: redis-gateway}
+            - {name: REDIS_PORT, value: "6379"}
+            - name: REDIS_PASSWORD
+              valueFrom: {secretKeyRef: {name: api-gateway-secret, key: REDIS_PASSWORD}}
+            # X-Forwarded-For is trusted from the pod network: Traefik connects from the IP of its pod, not
+            # from a Service address (decision 10). Safe only together with the NetworkPolicy "only Traefik
+            # reaches the Gateway" (deploy/k8s/network/, part 7c); until then any pod can set the client IP.
+            - {name: TRUSTED_PROXIES, value: "10.42.0.0/16"}
+            # JWKS from the Kubernetes Service of Auth: an auth-service registered in Consul without a token
+            # cannot supply its own keys (decision 8). Routes /api/v1/auth/** still use Consul.
+            - {name: AUTH_JWKS_ORIGIN, value: "http://auth-service.shop.svc.cluster.local:8081"}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true
+          resources:
+            requests: {cpu: 50m, memory: 96Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          startupProbe:
+            httpGet: {path: /health/live, port: http}
+            periodSeconds: 2
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: {path: /health/live, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          # Configuration from Consul KV loaded; Redis and Auth are not required.
+          readinessProbe:
+            httpGet: {path: /health/ready, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 3
+          lifecycle:
+            # The pod leaves the Service endpoints (Traefik) before the server closes.
+            preStop:
+              sleep: {seconds: 10}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 16Mi}
+---
+# A voluntary disruption (node drain) never takes both Gateway pods at once (decision 11).
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api-gateway
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: api-gateway
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: platform
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: api-gateway
+      app.kubernetes.io/part-of: shop
+      app.kubernetes.io/component: platform
+---
+# 2-3 pods by CPU (70 % of requests.cpu = 35m per pod); scale down after 60 s without load (decision 15).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api-gateway
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: api-gateway
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: platform
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api-gateway
+  minReplicas: 2
+  maxReplicas: 3
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: {type: Utilization, averageUtilization: 70}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 60

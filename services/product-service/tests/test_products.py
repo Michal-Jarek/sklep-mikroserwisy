@@ -168,7 +168,7 @@ def test_light_read_does_not_see_withdrawn_product(client, database_url):
     assert response.status_code == 404 and response.json()["error"] == "NOT_FOUND"
 
 
-def test_detail_when_review_and_inventory_are_down(client, services):
+def test_detail_when_review_is_down_and_inventory_has_no_stock_entry(client, services):
     def down(request):
         raise httpx.ConnectError("refused", request=request)
 
@@ -176,10 +176,25 @@ def test_detail_when_review_and_inventory_are_down(client, services):
     services.inventory = lambda request: httpx.Response(404, json={"status": 404, "error": "NOT_FOUND"})
     body = client.get(f"/products/{KUBEK}").json()
     assert body["rating"] is None
-    assert body["availability"] is None
+    assert body["availability"] == {"available": 0, "inStock": False}  # 404: no stock entry = 0 pieces
     # Connection errors are retried (3 attempts); 404 is an answer, not retried.
     assert sum(r.url.host == "review" for r in services.requests) == 3
     assert sum(r.url.host == "inventory" for r in services.requests) == 1
+
+
+def test_detail_inventory_other_4xx_is_null(client, services):
+    # Only 404 means "no stock entry"; another 4xx is a contract mismatch, not 0 pieces.
+    services.inventory = lambda request: httpx.Response(400, json={"status": 400})
+    assert client.get(f"/products/{KUBEK}").json()["availability"] is None
+    assert sum(r.url.host == "inventory" for r in services.requests) == 1
+
+
+def test_detail_inventory_down_is_null(client, services):
+    def down(request):
+        raise httpx.ConnectError("refused", request=request)
+
+    services.inventory = down
+    assert client.get(f"/products/{KUBEK}").json()["availability"] is None
 
 
 def test_detail_rating_without_reviews(client, services):
@@ -222,7 +237,8 @@ def test_create_product(client, new_product, services):
     assert body["name"] == "Kubek termiczny"
     assert body["price"] == "39.99" and body["currency"] == "PLN"
     assert body["category"] == {"id": KITCHEN, "name": "Kuchnia"}
-    assert body["rating"] == {"average": None, "count": 0} and body["availability"] is None
+    assert body["rating"] == {"average": None, "count": 0}
+    assert body["availability"] == {"available": 0, "inStock": False}
     assert services.requests == []
     # visible in the list right away (the cache was cleared)
     assert client.get("/products", params={"q": "termiczny"}).json()["total"] == 1

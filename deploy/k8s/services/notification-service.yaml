@@ -1,0 +1,149 @@
+# Notification Service (owner: micbanavio): consumer of notification.q (RabbitMQ), notification log in
+# notification_db (MongoDB), e-mails through Mailpit, recipient data from User (found through Consul).
+# Variables 1:1 with deploy/compose.yaml; passwords from Secret notification-service-secret
+# (deploy/k8s/secrets.sh). Registers itself in Consul with the pod IP (SERVICE_ADDRESS) and the pod name
+# (INSTANCE_ID). More copies share one queue (competing consumers): kubectl scale is enough.
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-service
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: notification-service
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: service
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: notification-service
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: service
+  ports:
+    - {name: http, port: 8087, targetPort: http}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-service
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: notification-service
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: notification-service
+      app.kubernetes.io/part-of: shop
+      app.kubernetes.io/component: service
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: notification-service
+        app.kubernetes.io/part-of: shop
+        app.kubernetes.io/component: service
+    spec:
+      automountServiceAccountToken: false
+      # No <SERVICE>_PORT=tcp://... variables from the other Services of the namespace (convention, see README).
+      enableServiceLinks: false
+      # preStop (10 s) + deregistration from Consul, closing the server and the consumer on SIGTERM (decision 11).
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        # USER 10001 of the image (no group in the Dockerfile; the application files are world-readable).
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      # Z12/Z13: with NetworkPolicy active, a new pod cannot connect for ~1-2 s (kube-router adds its IP to the
+      # rule sets with a delay). Wait here until consul:8500 answers (every 0.5 s, at most 30 s, then exit 1 and
+      # the pod restarts), so the service reads Consul KV and registers on its first try.
+      initContainers:
+        - name: wait-for-network
+          image: notification-service:dev
+          imagePullPolicy: Never
+          command:
+            - python
+            - -c
+            - |
+              import socket, sys, time
+              start = time.monotonic()
+              while True:
+                  try:
+                      socket.create_connection(("consul", 8500), 1).close()
+                      print(f"consul:8500 reachable after {time.monotonic() - start:.1f} s")
+                      break
+                  except OSError as exc:
+                      if time.monotonic() - start > 30:
+                          print(f"consul:8500 not reachable after 30 s: {exc}", file=sys.stderr)
+                          sys.exit(1)
+                      time.sleep(0.5)
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {cpu: 100m, memory: 64Mi}
+      containers:
+        - name: notification-service
+          image: notification-service:dev
+          imagePullPolicy: Never
+          ports:
+            - {name: http, containerPort: 8087}
+          env:
+            - {name: PORT, value: "8087"}
+            - {name: CONSUL_HOST, value: consul}
+            - {name: CONSUL_PORT, value: "8500"}
+            # Address and ID registered in Consul (decision 5). Without INSTANCE_ID the code would use
+            # "notification-service-" + hostname, i.e. a doubled prefix (the pod name already starts with it).
+            - name: SERVICE_ADDRESS
+              valueFrom: {fieldRef: {fieldPath: status.podIP}}
+            - name: INSTANCE_ID
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            - {name: DB_HOST, value: mongo}
+            - {name: DB_PORT, value: "27017"}
+            - {name: DB_NAME, value: notification_db}
+            - {name: DB_USER, value: notification_service}
+            - name: DB_PASSWORD
+              valueFrom: {secretKeyRef: {name: notification-service-secret, key: DB_PASSWORD}}
+            - {name: RABBITMQ_HOST, value: rabbitmq}
+            - {name: RABBITMQ_PORT, value: "5672"}
+            - {name: RABBITMQ_USER, value: notification-service}
+            - name: RABBITMQ_PASSWORD
+              valueFrom: {secretKeyRef: {name: notification-service-secret, key: RABBITMQ_PASSWORD}}
+            - {name: SMTP_HOST, value: mailpit}
+            - {name: SMTP_PORT, value: "1025"}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            # The image sets PYTHONDONTWRITEBYTECODE; uvicorn writes nothing outside /tmp.
+            readOnlyRootFilesystem: true
+          resources:
+            requests: {cpu: 25m, memory: 96Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          startupProbe:
+            httpGet: {path: /health/live, port: http}
+            periodSeconds: 2
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: {path: /health/live, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          # MongoDB ping (2 s server selection timeout, hence 3 s) and the consumer task still running.
+          readinessProbe:
+            httpGet: {path: /health/ready, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 3
+          lifecycle:
+            # Others keep the instance list from Consul for up to 10 s: serve while they switch over.
+            preStop:
+              sleep: {seconds: 10}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 16Mi}

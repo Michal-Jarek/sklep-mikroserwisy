@@ -27,14 +27,36 @@ function timeoutError(): Error {
   return new DOMException('The operation was aborted due to timeout', 'TimeoutError');
 }
 
+function connectionRefused(): Error {
+  return new TypeError('fetch failed', { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) });
+}
+
+const FIRST = 'http://10.0.0.5:8082';
+const SECOND = 'http://10.0.0.6:8082';
+
+/** Answers by instance: the first one refuses connections, the second one answers 201. */
+function mockTwoInstances() {
+  return jest.spyOn(global, 'fetch').mockImplementation((url) =>
+    (url as string).startsWith(FIRST) ? Promise.reject(connectionRefused()) : Promise.resolve(new Response(null, { status: 201 })),
+  );
+}
+
+function callsTo(fetchSpy: ReturnType<typeof mockTwoInstances>, baseUrl: string): UserProfile[] {
+  return fetchSpy.mock.calls
+    .filter(([url]) => (url as string) === `${baseUrl}${USER_SERVICE_USERS_PATH}`)
+    .map(([, init]) => JSON.parse((init as RequestInit).body as string) as UserProfile);
+}
+
 describe('UserClient', () => {
   let client: UserClient;
   let getInstance: jest.Mock<(name: string) => Promise<string | null>>;
+  let evict: jest.Mock<(name: string, baseUrl: string) => void>;
   const logger = { warn: jest.fn(), info: jest.fn() };
 
   function createClient() {
-    getInstance = jest.fn<(name: string) => Promise<string | null>>().mockResolvedValue('http://10.0.0.5:8082');
-    client = new UserClient({ getInstance } as unknown as ServiceDiscovery, logger as unknown as PinoLogger);
+    getInstance = jest.fn<(name: string) => Promise<string | null>>().mockResolvedValue(FIRST);
+    evict = jest.fn<(name: string, baseUrl: string) => void>();
+    client = new UserClient({ getInstance, evict } as unknown as ServiceDiscovery, logger as unknown as PinoLogger);
   }
 
   async function expect503(promise: Promise<void>) {
@@ -90,6 +112,67 @@ describe('UserClient', () => {
     const bodies = fetchSpy.mock.calls.map(([, init]) => JSON.parse((init as RequestInit).body as string) as UserProfile);
     expect(bodies[0].id).toBe(PROFILE.id);
     expect(bodies[1].id).toBe(PROFILE.id);
+  });
+
+  it('evicts an instance that refuses the connection and retries once on the next instance with the same id', async () => {
+    const fetchSpy = mockTwoInstances();
+    getInstance.mockResolvedValueOnce(FIRST).mockResolvedValueOnce(SECOND);
+
+    await client.createProfile(PROFILE, 'req-1');
+
+    expect(evict).toHaveBeenCalledTimes(1);
+    expect(evict).toHaveBeenCalledWith('user-service', FIRST);
+    expect(getInstance).toHaveBeenCalledTimes(2);
+    expect(callsTo(fetchSpy, FIRST)).toHaveLength(1);
+    const second = callsTo(fetchSpy, SECOND);
+    expect(second).toHaveLength(1);
+    expect(second[0].id).toBe(PROFILE.id);
+  });
+
+  it.each([
+    ['no instance is left', null],
+    ['Consul returns the same instance', FIRST],
+  ])('retries on the same address when %s', async (_name, next) => {
+    const fetchSpy = mockUserService(connectionRefused(), 201);
+    getInstance.mockResolvedValueOnce(FIRST).mockResolvedValueOnce(next);
+
+    await client.createProfile(PROFILE, 'req-1');
+
+    expect(evict).toHaveBeenCalledWith('user-service', FIRST);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(fetchSpy.mock.calls.map(([url]) => (url as string))).toEqual([
+      `${FIRST}${USER_SERVICE_USERS_PATH}`,
+      `${FIRST}${USER_SERVICE_USERS_PATH}`,
+    ]);
+  });
+
+  it('evicts both instances and returns 503 when the next instance refuses the connection too', async () => {
+    const fetchSpy = mockUserService(connectionRefused());
+    getInstance.mockResolvedValueOnce(FIRST).mockResolvedValueOnce(SECOND);
+
+    await expect503(client.createProfile(PROFILE, 'req-1'));
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(evict.mock.calls).toEqual([
+      ['user-service', FIRST],
+      ['user-service', SECOND],
+    ]);
+  });
+
+  it.each([
+    ['5xx', 500],
+    ['timeout', timeoutError()],
+  ])('retries on the same instance without eviction after %s', async (_name, firstAnswer) => {
+    const fetchSpy = mockUserService(firstAnswer, 201);
+
+    await client.createProfile(PROFILE, 'req-1');
+
+    expect(evict).not.toHaveBeenCalled();
+    expect(getInstance).toHaveBeenCalledTimes(1);
+    expect(fetchSpy.mock.calls.map(([url]) => (url as string))).toEqual([
+      `${FIRST}${USER_SERVICE_USERS_PATH}`,
+      `${FIRST}${USER_SERVICE_USERS_PATH}`,
+    ]);
   });
 
   it('returns 503 when the retry fails too', async () => {

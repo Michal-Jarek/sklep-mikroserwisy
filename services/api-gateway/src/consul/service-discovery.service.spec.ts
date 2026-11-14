@@ -6,8 +6,8 @@ import { DISCOVERY_CACHE_MS, DISCOVERY_EMPTY_CACHE_MS, parseHealthyInstances, Se
 
 const ENV = { CONSUL_HOST: 'consul', REDIS_PASSWORD: 'test-redis' };
 
-function entry(id: string, address: string, port = 9000) {
-  return { Node: { Address: '127.0.0.1' }, Service: { ID: id, Address: address, Port: port } };
+function entry(id: string, address: string, port = 9000, service = 'product-service') {
+  return { Node: { Address: '127.0.0.1' }, Service: { ID: id, Service: service, Address: address, Port: port } };
 }
 
 const THREE = [entry('stub-3', '10.0.0.3'), entry('stub-1', '10.0.0.1'), entry('stub-2', '10.0.0.2')];
@@ -27,9 +27,9 @@ function json(body: unknown): Response {
   return new Response(JSON.stringify(body));
 }
 
-function createDiscovery() {
+function createDiscovery(env: Record<string, string> = ENV) {
   const logger = { info: jest.fn(), warn: jest.fn() };
-  const discovery = new ServiceDiscovery(buildAppConfig(ENV), logger as unknown as PinoLogger);
+  const discovery = new ServiceDiscovery(buildAppConfig(env), logger as unknown as PinoLogger);
   return { discovery, logger };
 }
 
@@ -74,7 +74,12 @@ describe('ServiceDiscovery', () => {
   });
 
   it('keeps a round robin counter per service', async () => {
-    mockConsul(() => json(THREE));
+    const review = THREE.map((item) => ({ ...item, Service: { ...item.Service, Service: 'review-service' } }));
+    jest
+      .spyOn(global, 'fetch')
+      .mockImplementation((url) =>
+        Promise.resolve(json((url as string).endsWith(consulHealthyInstancesPath('review-service')) ? review : THREE)),
+      );
     const { discovery } = createDiscovery();
     await ids(discovery, 'product-service', 2);
     expect((await discovery.getInstance('review-service'))?.id).toBe('stub-1');
@@ -122,7 +127,7 @@ describe('ServiceDiscovery', () => {
     const { discovery } = createDiscovery();
     expect(await discovery.getInstance('auth-service')).toBeNull();
 
-    consul.set(() => json([entry('auth-1', '10.0.0.7', 8081)]));
+    consul.set(() => json([entry('auth-1', '10.0.0.7', 8081, 'auth-service')]));
     now += DISCOVERY_EMPTY_CACHE_MS - 1;
     expect(await discovery.getInstance('auth-service')).toBeNull();
     expect(consul.spy).toHaveBeenCalledTimes(1);
@@ -138,13 +143,13 @@ describe('ServiceDiscovery', () => {
   });
 
   it('asks Consul again after 2 s when evict emptied the list (S5: a new instance is used without waiting 10 s)', async () => {
-    const consul = mockConsul(() => json([entry('cart-1', '10.0.0.9')]));
+    const consul = mockConsul(() => json([entry('cart-1', '10.0.0.9', 9000, 'cart-service')]));
     const { discovery } = createDiscovery();
     const instance = await discovery.getInstance('cart-service');
     expect(instance).not.toBeNull();
     discovery.evict('cart-service', instance as NonNullable<typeof instance>);
 
-    consul.set(() => json([entry('cart-2', '10.0.0.10')]));
+    consul.set(() => json([entry('cart-2', '10.0.0.10', 9000, 'cart-service')]));
     now += DISCOVERY_EMPTY_CACHE_MS - 1;
     expect(await discovery.getInstance('cart-service')).toBeNull();
     expect(consul.spy).toHaveBeenCalledTimes(1);
@@ -155,7 +160,7 @@ describe('ServiceDiscovery', () => {
   });
 
   it('a dead instance still in Consul is asked for at most every 2 s after it emptied the list', async () => {
-    const consul = mockConsul(() => json([entry('cart-1', '10.0.0.9')]));
+    const consul = mockConsul(() => json([entry('cart-1', '10.0.0.9', 9000, 'cart-service')]));
     const { discovery } = createDiscovery();
     for (let i = 0; i < 3; i += 1) {
       const instance = await discovery.getInstance('cart-service');
@@ -178,14 +183,26 @@ describe('ServiceDiscovery', () => {
 
   it('uses the node address when the service has none and skips incomplete entries', () => {
     expect(
-      parseHealthyInstances([
-        entry('a', ''),
-        { Service: { ID: 'b', Address: '10.0.0.2' } },
-        { Service: { Address: '10.0.0.3', Port: 1 } },
-        null,
-      ]),
+      parseHealthyInstances(
+        [
+          entry('a', ''),
+          { Service: { ID: 'b', Service: 'product-service', Address: '10.0.0.2' } },
+          { Service: { Service: 'product-service', Address: '10.0.0.3', Port: 1 } },
+          null,
+        ],
+        'product-service',
+      ),
     ).toEqual([{ id: 'a', address: '127.0.0.1', port: 9000 }]);
-    expect(() => parseHealthyInstances({})).toThrow();
+    expect(() => parseHealthyInstances({}, 'product-service')).toThrow();
+  });
+
+  it('keeps only entries with exactly the requested name (Consul matches the name without case)', async () => {
+    const consul = mockConsul(() =>
+      json([entry('auth-1', '10.0.0.7', 8081, 'auth-service'), entry('fake-1', '10.0.0.66', 8081, 'AUTH-SERVICE')]),
+    );
+    const { discovery } = createDiscovery();
+    expect(await ids(discovery, 'auth-service', 3)).toEqual(['auth-1', 'auth-1', 'auth-1']);
+    expect(consul.spy).toHaveBeenCalledTimes(1);
   });
 
   it('keeps the last known list when Consul fails, warns once and informs when it is back', async () => {
@@ -223,6 +240,27 @@ describe('ServiceDiscovery', () => {
     now += 1;
     await discovery.getInstance('product-service');
     expect(consul.spy).toHaveBeenCalledTimes(3);
+  });
+
+  it('asks Consul with CONSUL_HTTP_TOKEN in X-Consul-Token; a 403 (ACL) is one warning without the token', async () => {
+    const token = '6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b';
+    const consul = mockConsul(() => new Response('Permission denied', { status: 403 }));
+    const { discovery, logger } = createDiscovery({ ...ENV, CONSUL_HTTP_TOKEN: token });
+
+    expect(await discovery.getInstance('product-service')).toBeNull();
+
+    expect(consul.spy.mock.calls[0][0]).toBe(`http://consul:8500${consulHealthyInstancesPath('product-service')}`);
+    expect(consul.spy.mock.calls[0][1]?.headers).toEqual({ 'X-Consul-Token': token });
+    expect(logger.warn.mock.calls).toEqual([
+      [
+        {
+          targetService: 'product-service',
+          reason: 'Consul responded with 403 (ACL: CONSUL_HTTP_TOKEN missing or without permission)',
+        },
+        'Consul service discovery failed, using the last known instances',
+      ],
+    ]);
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain(token);
   });
 
   it('returns null when Consul fails and there is no list yet', async () => {

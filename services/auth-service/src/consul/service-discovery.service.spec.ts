@@ -15,8 +15,8 @@ const ENV = {
   CONSUL_HOST: 'consul',
 };
 
-function instance(address: string, port: number) {
-  return { Node: { Address: '127.0.0.1' }, Service: { Address: address, Port: port } };
+function instance(address: string, port: number, service = 'user-service') {
+  return { Node: { Address: '127.0.0.1' }, Service: { Service: service, Address: address, Port: port } };
 }
 
 function mockConsulHealth(answer: () => Response | Error) {
@@ -74,6 +74,52 @@ describe('ServiceDiscovery', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
+  it('evict drops an instance from the cached list without asking Consul again', async () => {
+    const fetchSpy = mockConsulHealth(
+      () => new Response(JSON.stringify([instance('10.0.0.1', 8082), instance('10.0.0.2', 8082)])),
+    );
+    const { discovery } = createDiscovery();
+    await discovery.getInstance('user-service');
+
+    discovery.evict('user-service', 'http://10.0.0.1:8082');
+
+    expect(await discovery.getInstance('user-service')).toBe('http://10.0.0.2:8082');
+    expect(await discovery.getInstance('user-service')).toBe('http://10.0.0.2:8082');
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('evict of the last instance makes the next call ask Consul again', async () => {
+    const fetchSpy = mockConsulHealth(() => new Response(JSON.stringify([instance('10.0.0.1', 8082)])));
+    const { discovery } = createDiscovery();
+    await discovery.getInstance('user-service');
+
+    discovery.evict('user-service', 'http://10.0.0.1:8082');
+
+    expect(await discovery.getInstance('user-service')).toBe('http://10.0.0.1:8082');
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('evict of an unknown instance or service changes nothing', async () => {
+    const fetchSpy = mockConsulHealth(() => new Response(JSON.stringify([instance('10.0.0.1', 8082)])));
+    const { discovery } = createDiscovery();
+    discovery.evict('user-service', 'http://10.0.0.1:8082');
+    await discovery.getInstance('user-service');
+
+    discovery.evict('user-service', 'http://10.0.0.9:8082');
+
+    expect(await discovery.getInstance('user-service')).toBe('http://10.0.0.1:8082');
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps only entries with exactly the requested name (Consul matches the name without case)', async () => {
+    mockConsulHealth(
+      () => new Response(JSON.stringify([instance('10.0.0.1', 8082), instance('10.0.0.66', 8082, 'USER-SERVICE')])),
+    );
+    const { discovery } = createDiscovery();
+    expect(await discovery.getInstance('user-service')).toBe('http://10.0.0.1:8082');
+    expect(await discovery.getInstance('user-service')).toBe('http://10.0.0.1:8082');
+  });
+
   it('uses the node address when the service has none', async () => {
     mockConsulHealth(() => new Response(JSON.stringify([instance('', 8082)])));
     const { discovery } = createDiscovery();
@@ -98,6 +144,27 @@ describe('ServiceDiscovery', () => {
     const { discovery, logger } = createDiscovery();
     expect(await discovery.getInstance('user-service')).toBeNull();
     expect(logger.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks Consul with CONSUL_HTTP_TOKEN in X-Consul-Token; a 403 (ACL) is one warning without the token', async () => {
+    const token = '6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b';
+    const fetchSpy = mockConsulHealth(() => new Response('Permission denied', { status: 403 }));
+    const { discovery, logger } = createDiscovery({ ...ENV, CONSUL_HTTP_TOKEN: token });
+
+    expect(await discovery.getInstance('user-service')).toBeNull();
+
+    expect(fetchSpy.mock.calls[0][0]).toBe(`http://consul:8500${consulHealthyInstancesPath('user-service')}`);
+    expect(fetchSpy.mock.calls[0][1]?.headers).toEqual({ 'X-Consul-Token': token });
+    expect(logger.warn.mock.calls).toEqual([
+      [
+        {
+          targetService: 'user-service',
+          reason: 'Consul responded with 403 (ACL: CONSUL_HTTP_TOKEN missing or without permission)',
+        },
+        'Service discovery in Consul failed',
+      ],
+    ]);
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain(token);
   });
 
   it('returns null without calling Consul when CONSUL_ENABLED=false', async () => {

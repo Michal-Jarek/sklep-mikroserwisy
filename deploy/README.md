@@ -28,7 +28,7 @@ Pliki w folderze:
 - `mongo/init/01-service-users.js` – tworzy użytkowników baz MongoDB przy pierwszym starcie;
 - `rabbitmq/definitions.json` – exchange, kolejki, wiązania i polityki RabbitMQ (bez kont i haseł);
 - `rabbitmq/setup.sh` – skrypt, którym `rabbitmq-setup` wgrywa `definitions.json` i zakłada konta usług (nie uruchamia się go ręcznie);
-- `k8s/` – na później. Kubernetes to ostatni etap projektu; do tego czasu infrastruktura i usługi działają w Docker Compose.
+- `k8s/` – cały sklep w lokalnym Kubernetesie (Rancher Desktop, przestrzeń `shop`): manifesty i skrypty `up.sh`, `down.sh`, `secrets.sh`; opis w [k8s/README.md](k8s/README.md).
 
 Usługi sklepu są w tym samym `compose.yaml` w grupach (tzw. profilach): profil `platform` (API Gateway, Auth Service, User Service i frontend) i profil `full-shop` (cały sklep, w tym usługi z `platform`; usługa zespołu trafia do niego przy scaleniu jej PR – wzór wpisu w [docs/patterns.md](../docs/patterns.md), stan w sekcji „Profil full-shop (usługi zespołu)”). Polecenie bez `--profile` uruchamia tylko infrastrukturę z tabeli; profil `platform` – sekcja „Profil platform (API Gateway, Auth Service i frontend)”.
 
@@ -422,7 +422,7 @@ Konta w RabbitMQ (vhost `/`). Żadne konto usługi nie tworzy exchange, kolejek 
 
 ### Hasła w `deploy/.env`
 
-Wszystkie 19 zmiennych tworzy `bash deploy/create-secrets.sh` (losowe, 48 znaków `0-9a-f`). Każdy kontener dostaje tylko hasła, których potrzebuje.
+Wszystkie 22 zmienne tworzy `bash deploy/create-secrets.sh` (hasła losowe, 48 znaków `0-9a-f`; tokeny Consula `CONSUL_*_TOKEN` – UUID). Każdy kontener dostaje tylko hasła, których potrzebuje.
 
 | Zmienna | Do czego | Kontener |
 |---|---|---|
@@ -436,6 +436,8 @@ Wszystkie 19 zmiennych tworzy `bash deploy/create-secrets.sh` (losowe, 48 znakó
 | `MONGO_ROOT_PASSWORD` | konto `admin` MongoDB (tylko administracja; tylko przy pustym wolumenie) | `mongo` |
 | `REVIEW_DB_PASSWORD`, `NOTIFICATION_DB_PASSWORD` | użytkownicy `<s>_service` baz MongoDB | `mongo` (i usługa po scaleniu jej PR) |
 | `REDIS_CART_PASSWORD` | Redis koszyka | `redis-cart` (i Cart po scaleniu PR) |
+| `CONSUL_MANAGEMENT_TOKEN` | token zarządzający Consula z ACL – tylko Kubernetes ([k8s/README.md](k8s/README.md), „Consul z ACL”); compose go nie używa | – |
+| `CONSUL_AUTH_TOKEN`, `CONSUL_GATEWAY_TOKEN` | tokeny Consula Auth i Gateway – jedyne, które mogą zarejestrować nazwy `auth-service` i `api-gateway`; tylko Kubernetes ([k8s/README.md](k8s/README.md), „Consul z ACL”); compose ich nie używa | – |
 
 Hasło do własnej usługi uruchamianej z VS Code przenosi się z `deploy/.env` do lokalnego `.env` usługi bez wyświetlania – polecenie w [docs/patterns.md](../docs/patterns.md). Haseł nie wkleja się do czatu, issue ani do repo.
 

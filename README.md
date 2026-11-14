@@ -47,11 +47,11 @@ Technologia usługi z właścicielem jest ustalona. Przy usłudze bez właścici
 | Folder | Co tam trafia |
 |---|---|
 | `services/<usługa>/` | Kod usługi, Dockerfile, `.env.example`, testy. Wszystko, co należy do jednej usługi, jest w jej folderze. |
-| `services/<usługa>/k8s/` | Manifesty Kubernetes tej usługi (Deployment, Service). |
+| `services/<usługa>/k8s/` | Nieużywany przy wdrożeniu: manifesty Kubernetes wszystkich usług są w `deploy/k8s/`. Nowych manifestów się tu nie dodaje; zmianę wpisu usługi w Kubernetesie zgłasza się Michałowi, jak zmianę w compose. |
 | `services/<usługa>/postman/` | Kolekcja Postman tej usługi. |
 | `frontend/` | Aplikacja React. |
 | `deploy/compose.yaml` | Lokalne uruchomienie infrastruktury i usług w Docker Compose. |
-| `deploy/k8s/` | Wspólne manifesty: namespace `shop`, Ingress, NetworkPolicy, bazy danych, Redis. |
+| `deploy/k8s/` | Manifesty Kubernetes całego sklepu (namespace `shop`, infrastruktura, Gateway, Auth, User, frontend, usługi zespołu, Ingress, NetworkPolicy) i skrypty `up.sh`, `down.sh`, `secrets.sh`; pisze je Michał. Opis: [deploy/k8s/README.md](deploy/k8s/README.md). |
 | `deploy/consul/` | Konfiguracja usług w Consul KV (klucze `config/<usługa>/data`). |
 | `deploy/mongo/` | Skrypt zakładający bazy i użytkowników MongoDB (Review, Notification). |
 | `deploy/rabbitmq/` | Kolejki, exchange `shop.events`, użytkownicy RabbitMQ. |

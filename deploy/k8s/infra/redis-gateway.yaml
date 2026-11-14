@@ -1,0 +1,87 @@
+# Redis for the API Gateway (rate limit counters). Password from Secret redis-gateway-secret
+# (created by deploy/k8s/secrets.sh). Same behaviour as in deploy/compose.yaml.
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-gateway
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: redis-gateway
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: infra
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: redis-gateway
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: infra
+  ports:
+    - {name: redis, port: 6379, targetPort: redis}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-gateway
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: redis-gateway
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: infra
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis-gateway
+      app.kubernetes.io/part-of: shop
+      app.kubernetes.io/component: infra
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis-gateway
+        app.kubernetes.io/part-of: shop
+        app.kubernetes.io/component: infra
+    spec:
+      automountServiceAccountToken: false
+      # No <SERVICE>_PORT=tcp://... variables from the other Services of the namespace (convention, see README).
+      enableServiceLinks: false
+      securityContext:
+        # User redis of the image (uid 999, gid 1000): "sh -c" skips the privilege drop in the image.
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: redis
+          image: redis:7.4-alpine
+          imagePullPolicy: IfNotPresent
+          # No persistence: rate limit counters are ephemeral.
+          args: ["sh", "-c", "exec redis-server --requirepass \"$REDIS_PASSWORD\" --save \"\" --appendonly no"]
+          ports:
+            - {name: redis, containerPort: 6379}
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom: {secretKeyRef: {name: redis-gateway-secret, key: REDIS_PASSWORD}}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {cpu: 200m, memory: 64Mi}
+          readinessProbe:
+            exec: {command: ["sh", "-c", "REDISCLI_AUTH=\"$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]}
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            exec: {command: ["sh", "-c", "REDISCLI_AUTH=\"$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]}
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          volumeMounts:
+            # The image declares VOLUME /data (working directory); nothing is written there.
+            - {name: data, mountPath: /data}
+      volumes:
+        - name: data
+          emptyDir: {sizeLimit: 1Mi}

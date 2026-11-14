@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
-# Creates local secrets for Docker Compose:
-#   deploy/.env                  passwords (openssl rand -hex 24), also for the first Auth admin
+# Creates local secrets for Docker Compose and Kubernetes (deploy/k8s/secrets.sh):
+#   deploy/.env                  passwords (openssl rand -hex 24), also for the first Auth admin;
+#                                Consul ACL tokens (UUID v4, Kubernetes only): CONSUL_MANAGEMENT_TOKEN,
+#                                CONSUL_AUTH_TOKEN, CONSUL_GATEWAY_TOKEN
 #   deploy/secrets/jwt-*.pem     RS256 key pair for Auth (PKCS#8 and SPKI)
 # Never overwrites anything: only adds missing variables and missing keys.
 # A variable with an empty value (e.g. after cp .env.example .env) counts as missing.
 # Values are never printed.
 # Run from any directory: bash deploy/create-secrets.sh
 set -euo pipefail
+# Never traced (bash -x, SHELLOPTS=xtrace): the trace would print the generated values on stderr.
+{ set +x; } 2>/dev/null
 
 # Check openssl first. Up to this point only bash builtins are used,
 # so the message works even with no other programs in PATH.
@@ -41,9 +45,25 @@ ORDER_RABBITMQ_PASSWORD
 MONGO_ROOT_PASSWORD
 REVIEW_DB_PASSWORD
 NOTIFICATION_DB_PASSWORD
-REDIS_CART_PASSWORD"
+REDIS_CART_PASSWORD
+CONSUL_MANAGEMENT_TOKEN
+CONSUL_AUTH_TOKEN
+CONSUL_GATEWAY_TOKEN"
 
 umask 077
+
+# UUID v4 in lowercase (Consul ACL token). uuidgen when available, otherwise the same format
+# from 16 random bytes of openssl (Git Bash on Windows has no uuidgen): version 4, variant 10xx.
+new_uuid() {
+  if command -v uuidgen >/dev/null 2>&1; then
+    uuidgen | tr '[:upper:]' '[:lower:]'
+  else
+    local hex
+    hex=$(openssl rand -hex 16)
+    printf '%s-%s-4%s-%x%s-%s\n' "${hex:0:8}" "${hex:8:4}" "${hex:13:3}" \
+      $(((16#${hex:16:1} & 3) | 8)) "${hex:17:3}" "${hex:20:12}"
+  fi
+}
 
 # ---- deploy/.env ----
 ENV_FILE="$SCRIPT_DIR/.env"
@@ -73,7 +93,10 @@ for name in $VARIABLES; do
   if [ -f "$source_file" ] && grep -q "^${name}=" "$source_file"; then
     continue
   fi
-  value=$(openssl rand -hex 24)
+  case $name in
+    CONSUL_*_TOKEN) value=$(new_uuid) ;;
+    *) value=$(openssl rand -hex 24) ;;
+  esac
   new_lines="${new_lines}${name}=${value}
 "
   missing="${missing} ${name}"

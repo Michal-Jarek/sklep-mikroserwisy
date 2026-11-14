@@ -1,6 +1,6 @@
 import { Inject, Injectable, OnApplicationShutdown } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
-import { consulFetch, describeError } from '../consul/consul-http';
+import { consulFetch, consulStatusError, describeError } from '../consul/consul-http';
 import { consulKvRawPath } from '../routes';
 import { APP_CONFIG, type AppConfig, SERVICE_NAME } from './app-config';
 import { ConfigValidationError, type GatewayConfig, parseGatewayConfig } from './gateway-config';
@@ -78,7 +78,7 @@ export class GatewayConfigState implements OnApplicationShutdown {
       return {
         failure: {
           level: 'warn',
-          fields: { status: response.status, key: KV_KEY },
+          fields: { status: response.status, key: KV_KEY, reason: consulStatusError('Consul KV', response.status).message },
           message: 'Consul KV key not available, gateway configuration not loaded yet',
         },
       };

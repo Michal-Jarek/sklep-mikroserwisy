@@ -1,0 +1,105 @@
+# Imports deploy/rabbitmq/definitions.json and the service accounts (setup.sh from the ConfigMap
+# rabbitmq-setup). up.sh deletes and recreates this Job on every run. The import adds what is missing
+# and updates policies, accounts and permissions; existing queues and exchanges are skipped without
+# an error (changing the type or arguments of a queue needs a clean volume). Never deletes.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rabbitmq-setup
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: rabbitmq-setup
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: job
+spec:
+  # A few retries cover a broker that is Ready but not yet serving the HTTP API.
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rabbitmq-setup
+        app.kubernetes.io/part-of: shop
+        app.kubernetes.io/component: job
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # The image user rabbitmq, like the broker.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 100
+        runAsGroup: 101
+        fsGroup: 101
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        # NetworkPolicy (stage 7 Z13): kube-router covers the IP of a new pod with a delay of ~1-2 s, and every
+        # attempt of a Job is a new pod. TCP to rabbitmq:15672 every 0.5 s, at most 30 s (then exit 1 = failed
+        # attempt). Same image as the Job, no secrets.
+        - name: wait-for-network
+          image: rabbitmq:4.3-management-alpine
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              start=$(date +%s)
+              until nc -z -w 1 "$0" "$1"; do
+                if [ $(($(date +%s) - start)) -ge 30 ]; then
+                  echo "$0:$1 not reachable within 30 s" >&2
+                  exit 1
+                fi
+                sleep 0.5
+              done
+              echo "$0:$1 reachable after $(($(date +%s) - start)) s"
+            - rabbitmq
+            - "15672"
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {cpu: 100m, memory: 64Mi}
+      containers:
+        - name: setup
+          image: rabbitmq:4.3-management-alpine
+          imagePullPolicy: IfNotPresent
+          command: [sh, /setup/setup.sh]
+          # Passwords only from the Secret; setup.sh never passes them as process arguments.
+          env:
+            - name: RABBITMQ_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: rabbitmq-setup-secret, key: RABBITMQ_ADMIN_PASSWORD}
+            - name: AUTH_RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: rabbitmq-setup-secret, key: AUTH_RABBITMQ_PASSWORD}
+            - name: NOTIFICATION_RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: rabbitmq-setup-secret, key: NOTIFICATION_RABBITMQ_PASSWORD}
+            - name: INVENTORY_RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: rabbitmq-setup-secret, key: INVENTORY_RABBITMQ_PASSWORD}
+            - name: SHIPPING_RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: rabbitmq-setup-secret, key: SHIPPING_RABBITMQ_PASSWORD}
+            - name: ORDER_RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: rabbitmq-setup-secret, key: ORDER_RABBITMQ_PASSWORD}
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 25m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          volumeMounts:
+            - {name: setup, mountPath: /setup, readOnly: true}
+            # HOME of the image; emptyDir instead of the compose tmpfs (the image declares VOLUME here).
+            - {name: home, mountPath: /var/lib/rabbitmq}
+      volumes:
+        - name: setup
+          configMap: {name: rabbitmq-setup}
+        - name: home
+          emptyDir: {sizeLimit: 16Mi}

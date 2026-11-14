@@ -25,6 +25,8 @@ Kilka replik może czytać tę samą kolejkę: RabbitMQ rozdziela wiadomości, a
 
 Bezpieczeństwo kontenera: użytkownik 10001 (jak w `Dockerfile`), `runAsNonRoot`, `allowPrivilegeEscalation: false`, system plików tylko do odczytu (zapisywalny tylko `/tmp`), bez capabilities, seccomp `RuntimeDefault`, bez tokenu ServiceAccount.
 
-Ruch sieciowy potrzebny w NetworkPolicy: wejście z `api-gateway` na 8087; wyjście do `mongo:27017`, `rabbitmq:5672`, `consul:8500`, `user-service:8082`, `mailpit:1025` i DNS.
+Ruch sieciowy potrzebny w NetworkPolicy: wejście na 8087 z `api-gateway` oraz z `consul` (health check `/health/ready` na adres poda); wyjście do `mongo:27017`, `rabbitmq:5672`, `consul:8500`, `user-service:8082`, `mailpit:1025` i DNS.
+
+Poprawka opisu ruchu — platforma (etap 7), na podstawie CR #15.
 
 Nie wykonano wdrożenia w klastrze. Manifesty sprawdzono schematem Kubernetes 1.30 w trybie ścisłym (`kubeconform -strict`).

@@ -2,7 +2,7 @@ import { Inject, Injectable, OnApplicationShutdown } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { APP_CONFIG, type AppConfig, SERVICE_NAME } from '../config/app-config';
 import { CONSUL_REGISTER_PATH, consulDeregisterPath, consulServicePath, PATHS } from '../routes';
-import { consulFetch, describeError } from './consul-http';
+import { consulFetch, consulStatusError, describeError } from './consul-http';
 import { LoopbackAddressError, localAddressTowards, resolveServiceAddress, type RouteAddressFn } from './service-address';
 
 // How often the Gateway checks that it is still registered (e.g. after a Consul restart).
@@ -104,7 +104,7 @@ export class ConsulRegistration implements OnApplicationShutdown {
       return false;
     }
     if (!response.ok) {
-      throw new Error(`Consul responded with ${response.status}`);
+      throw consulStatusError('Consul', response.status);
     }
     // Consul keeps registrations in its data directory. After a container restart the same ID
     // (same hostname) can point to the old IP address, so the entry must match the current one.
@@ -120,7 +120,7 @@ export class ConsulRegistration implements OnApplicationShutdown {
       body: JSON.stringify(this.registrationBody(status)),
     });
     if (!response.ok) {
-      throw new Error(`Consul registration responded with ${response.status}`);
+      throw consulStatusError('Consul registration', response.status);
     }
     this.logger.info({ instanceId: this.config.instanceId, address: this.address, status }, 'Registered in Consul');
   }
@@ -132,7 +132,7 @@ export class ConsulRegistration implements OnApplicationShutdown {
         method: 'PUT',
       });
       if (!response.ok) {
-        throw new Error(`Consul deregistration responded with ${response.status}`);
+        throw consulStatusError('Consul deregistration', response.status);
       }
       this.logger.info({ instanceId: this.config.instanceId }, 'Deregistered from Consul');
     } catch (error) {

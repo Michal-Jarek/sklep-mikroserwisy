@@ -1,0 +1,224 @@
+# Platform: Gateway, frontend, Auth, User and their migration Jobs. One NetworkPolicy per pod, named like the pod
+# label app.kubernetes.io/name. The services call each other on the pod address from Consul, not through the
+# Service, so the rules select pods. Outgoing DNS: dns.yaml. Everything else is blocked by default-deny.yaml.
+#
+# Only Traefik (Ingress) reaches the Gateway and the frontend from outside the shop: namespace kube-system AND
+# pod app.kubernetes.io/name: traefik in one element. The Gateway trusts X-Forwarded-For from the whole pod
+# range (TRUSTED_PROXIES=10.42.0.0/16), so this rule keeps the shop pods from sending a fake client address
+# directly. Consul (health check) still reaches the Gateway; the services register through consul-guard (Service
+# consul), which allows only a plain GET of the caller's own /health/* as the check (deploy/k8s/README.md, sections
+# "Pośrednik przed Consulem" and "Wyjątki").
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-gateway
+  namespace: shop
+  labels:
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: network
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: api-gateway}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        # Traefik -> api-gateway 8080: /api of https://shop.localhost.
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: traefik}
+        # consul -> api-gateway 8080: health check.
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: consul}
+      ports: [{protocol: TCP, port: 8080}]
+  egress:
+    # api-gateway -> consul-guard 8500 (Service consul): registration, routes from KV, service discovery.
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: consul-guard}
+      ports: [{protocol: TCP, port: 8500}]
+    # api-gateway -> redis-gateway 6379: login rate limit.
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: redis-gateway}
+      ports: [{protocol: TCP, port: 6379}]
+    # api-gateway -> auth-service 8081: JWKS (through the Service, AUTH_JWKS_ORIGIN) and the /auth routes.
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: auth-service}
+      ports: [{protocol: TCP, port: 8081}]
+    # api-gateway -> every service on its port: proxied /api/v1/<resource> requests.
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: user-service}
+      ports: [{protocol: TCP, port: 8082}]
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: product-service}
+      ports: [{protocol: TCP, port: 8083}]
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: inventory-service}
+      ports: [{protocol: TCP, port: 8084}]
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: cart-service}
+      ports: [{protocol: TCP, port: 8085}]
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: order-service}
+      ports: [{protocol: TCP, port: 8086}]
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: notification-service}
+      ports: [{protocol: TCP, port: 8087}]
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: review-service}
+      ports: [{protocol: TCP, port: 8088}]
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: shipping-service}
+      ports: [{protocol: TCP, port: 8089}]
+---
+# frontend: only Traefik -> 8080 (everything except /api of https://shop.localhost). No egress: in the cluster
+# /api goes from Traefik straight to the Gateway, the /api/ proxy of nginx is not used.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: frontend
+  namespace: shop
+  labels:
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: network
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: frontend}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: traefik}
+      ports: [{protocol: TCP, port: 8080}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: auth-service
+  namespace: shop
+  labels:
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: network
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: auth-service}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        # api-gateway -> auth-service 8081: JWKS and /api/v1/auth/**.
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: api-gateway}
+        # consul -> auth-service 8081: health check.
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: consul}
+      ports: [{protocol: TCP, port: 8081}]
+  egress:
+    # auth-service -> postgres 5432: auth_db.
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: postgres}
+      ports: [{protocol: TCP, port: 5432}]
+    # auth-service -> rabbitmq 5672: publishes user.registered.
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: rabbitmq}
+      ports: [{protocol: TCP, port: 5672}]
+    # auth-service -> consul-guard 8500 (Service consul): registration, KV config, address of user-service.
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: consul-guard}
+      ports: [{protocol: TCP, port: 8500}]
+    # auth-service -> user-service 8082: creates the user profile on registration.
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: user-service}
+      ports: [{protocol: TCP, port: 8082}]
+---
+# Job auth-migrate -> postgres 5432: prisma migrate deploy on auth_db.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: auth-migrate
+  namespace: shop
+  labels:
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: network
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: auth-migrate}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: postgres}
+      ports: [{protocol: TCP, port: 5432}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: user-service
+  namespace: shop
+  labels:
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: network
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: user-service}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        # api-gateway -> user-service 8082: /api/v1/users/**.
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: api-gateway}
+        # auth-service -> user-service 8082: profile on registration.
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: auth-service}
+        # notification-service -> user-service 8082: e-mail address of the recipient.
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: notification-service}
+        # consul -> user-service 8082: health check.
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: consul}
+      ports: [{protocol: TCP, port: 8082}]
+  egress:
+    # user-service -> postgres 5432: user_db.
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: postgres}
+      ports: [{protocol: TCP, port: 5432}]
+    # user-service -> consul-guard 8500 (Service consul): registration, KV config.
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: consul-guard}
+      ports: [{protocol: TCP, port: 8500}]
+---
+# Job user-migrate -> postgres 5432: migration of user_db.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: user-migrate
+  namespace: shop
+  labels:
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: network
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: user-migrate}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: postgres}
+      ports: [{protocol: TCP, port: 5432}]

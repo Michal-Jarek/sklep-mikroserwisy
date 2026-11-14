@@ -1,13 +1,16 @@
 import { defineConfig, devices } from '@playwright/test';
 
-// Two projects (wytyczne 3.9):
+// Three projects (wytyczne 3.9 of stages 6 and 7):
 // - mocked: Vite dev server with all mocks (VITE_API_MOCKS=all), started by Playwright;
 // - compose: the `frontend` image with the real Gateway and Auth (E2E_BASE_URL, default below),
-//   no Vite server.
+//   no Vite server;
+// - k8s: the shop in the `shop` namespace through Ingress and TLS (E2E_K8S_URL, default below); the mkcert CA is
+//   trusted by the system (`mkcert -install`), so no ignoreHTTPSErrors.
 
 const MOCKED_PORT = 5174;
 const MOCKED_URL = `http://127.0.0.1:${MOCKED_PORT}`;
 const COMPOSE_URL = process.env.E2E_BASE_URL ?? 'http://127.0.0.1:8090';
+const K8S_URL = process.env.E2E_K8S_URL ?? 'https://shop.localhost';
 
 /** Values of a command line option (`--project x` or `--project=x`). */
 function cliValues(option: string): string[] {
@@ -53,6 +56,13 @@ export default defineConfig({
         baseURL: COMPOSE_URL,
         ...(composeIsLocalhost ? {} : { channel: 'chromium', launchOptions: { args: [`--unsafely-treat-insecure-origin-as-secure=${composeUrl.origin}`] } }),
       },
+    },
+    {
+      name: 'k8s',
+      testDir: 'e2e/k8s',
+      // One address for all clients of the laptop (Rancher Desktop port forwarding): login limit 5/min for the project.
+      workers: 1,
+      use: { ...devices['Desktop Chrome'], baseURL: K8S_URL, channel: 'chromium' },
     },
   ],
   webServer: runsMocked

@@ -1,0 +1,93 @@
+# Local SMTP server with a web UI for the emails of Notification Service. Sends nothing out.
+# Messages are kept in a temporary database in /tmp and are lost on restart. Same behaviour as in
+# deploy/compose.yaml. Web UI from the laptop: kubectl --context rancher-desktop -n shop port-forward svc/mailpit 18025:8025
+apiVersion: v1
+kind: Service
+metadata:
+  name: mailpit
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: mailpit
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: infra
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: mailpit
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: infra
+  # 1025 SMTP (no TLS, no login), 8025 web UI and API.
+  ports:
+    - {name: smtp, port: 1025, targetPort: smtp}
+    - {name: http, port: 8025, targetPort: http}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mailpit
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: mailpit
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: infra
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mailpit
+      app.kubernetes.io/part-of: shop
+      app.kubernetes.io/component: infra
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mailpit
+        app.kubernetes.io/part-of: shop
+        app.kubernetes.io/component: infra
+    spec:
+      automountServiceAccountToken: false
+      # No <SERVICE>_PORT=tcp://... variables from the other Services of the namespace (convention, see README).
+      enableServiceLinks: false
+      securityContext:
+        # The image runs as root by default; no data on disk, so any non-root user works.
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: mailpit
+          image: axllent/mailpit:v1.32
+          imagePullPolicy: IfNotPresent
+          ports:
+            - {name: smtp, containerPort: 1025}
+            - {name: http, containerPort: 8025}
+          env:
+            # Web UI and API answer only these Host headers (403 otherwise), so a web page cannot read
+            # the emails through DNS rebinding to 127.0.0.1. Ports of the port-forward (18025), also
+            # from a container in the VM network (host.docker.internal). SMTP is not affected.
+            - name: MP_ALLOWED_HOSTS
+              value: "localhost:18025,127.0.0.1:18025,host.docker.internal:18025"
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            # Writes only its temporary database to /tmp (emptyDir below).
+            readOnlyRootFilesystem: true
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {cpu: 200m, memory: 128Mi}
+          # The same check as the compose healthcheck (and the image HEALTHCHECK).
+          readinessProbe:
+            exec: {command: ["/mailpit", "readyz"]}
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            exec: {command: ["/mailpit", "readyz"]}
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 64Mi}

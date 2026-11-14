@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { base64url, exportJWK, exportSPKI, generateKeyPair, type GenerateKeyPairResult, SignJWT } from 'jose';
 import type { PinoLogger } from 'nestjs-pino';
 import { AppException } from '../common/app-exception';
+import { buildAppConfig } from '../config/app-config';
 import type { GatewayConfigState } from '../config/gateway-config-state.service';
 import { parseGatewayConfig } from '../config/gateway-config';
 import type { Instance, ServiceDiscovery } from '../consul/service-discovery.service';
@@ -60,7 +61,11 @@ function setup(initial: Answer = () => jwks(authJwk), instance: Instance | null 
   const discovery = { getInstance: jest.fn(() => Promise.resolve(instance)), evict: jest.fn() };
   const logger = { debug: jest.fn(), info: jest.fn(), warn: jest.fn() };
   const configState = { current: jest.fn(() => CONFIG) };
-  const provider = new JwksProvider(discovery as unknown as ServiceDiscovery, logger as unknown as PinoLogger);
+  const provider = new JwksProvider(
+    buildAppConfig({ REDIS_PASSWORD: 'test-redis' }),
+    discovery as unknown as ServiceDiscovery,
+    logger as unknown as PinoLogger,
+  );
   const access = new AccessControl(
     configState as unknown as GatewayConfigState,
     provider,

@@ -22,7 +22,7 @@ Kontrakt (ścieżki, pola, kody błędów): [docs/frontend-api.md, sekcja Produc
 |---|---|---|---|
 | GET | `/products?q=&categoryId=&minPrice=&maxPrice=&sort=&page=&size=` | publiczny | 200 strona `ProductSummary` |
 | GET | `/products/{productId}` | publiczny | 200 `ProductDetail` z `rating` i `availability` |
-| GET | `/products/{productId}` z rolą `SERVICE` | inne usługi (Cart, Order, Review) | 200, **bez** wywołań Review i Inventory (`rating`, `availability` = `null`) i **z pominięciem cache**, prosto z bazy (D4) |
+| GET | `/products/{productId}` z rolą `SERVICE` | inne usługi (Cart, Order) | 200, **bez** wywołań Review i Inventory (`rating`, `availability` = `null`) i **z pominięciem cache**, prosto z bazy (D4) |
 | GET | `/categories` | publiczny | 200 lista alfabetycznie |
 | POST | `/products` | ADMIN | 201 `ProductDetail` |
 | PUT | `/products/{productId}` | ADMIN | 200 `ProductDetail` (pełna zamiana) |
@@ -43,17 +43,17 @@ Najważniejsze reguły:
 
 ### Szczegóły produktu: Review i Inventory
 
-`GET /products/{id}` dla klienta woła równolegle `GET /reviews/summary/{id}` (Review) i `GET /inventory/{id}` (Inventory). Adresy instancji bierze z Consula (lista trzymana 10 s, instancje po kolei). Obie informacje są opcjonalne: gdy usługa nie odpowiada, pole jest `null`, a strona produktu działa dalej.
+`GET /products/{id}` dla klienta woła równolegle `GET /reviews/summary/{id}` (Review) i `GET /inventory/{id}` (Inventory). Adresy instancji bierze z Consula (lista trzymana 10 s, instancje po kolei). Obie informacje są opcjonalne: gdy usługa nie odpowiada albo nie zwraca `200` z poprawnymi danymi, pole jest `null`, a strona produktu działa dalej. Wyjątek: 404 z Inventory daje `availability` = `{"available": 0, "inStock": false}`.
 
 Wywołania spełniają D2 i D5:
 
 - każda próba ma timeout 2 s, a całe żądanie wspólny termin 8 s;
 - ponowienia (najwyżej 2, po 200 i 400 ms) są tylko po braku połączenia, timeoucie, 502, 503 i 504;
-- 404 to odpowiedź działającej usługi, nie awaria. Dla Inventory oznacza „produkt nie ma jeszcze stanu”;
+- 404 to odpowiedź działającej usługi, nie awaria. Dla Inventory oznacza „produkt nie ma jeszcze stanu”, czyli 0 sztuk: `{"available": 0, "inStock": false}` (tak samo jak nowy produkt po `POST /products`);
 - każda z usług ma własny wyłącznik (circuit breaker): przy co najmniej 50 % awarii w ostatnich 10 wywołaniach otwiera się na 30 s, a potem przepuszcza jedno wywołanie próbne;
 - przekazywane są nagłówki `X-User-Id`, `X-User-Roles` z dopisanym `SERVICE` i `X-Request-Id` (D11).
 
-Z rolą `SERVICE` (wołają Cart, Order i Review) Product w ogóle nie woła Review ani Inventory (D4), więc awaria tamtych usług nie blokuje koszyka ani zamówień.
+Z rolą `SERVICE` (wołają Cart i Order) Product w ogóle nie woła Review ani Inventory (D4), więc awaria tamtych usług nie blokuje koszyka ani zamówień.
 
 ### Cache
 

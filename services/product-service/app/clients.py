@@ -133,8 +133,10 @@ class Enrichment:
         except Unavailable as exc:
             logger.warning("Availability not available", extra=reason(exc))
             return None
+        if response.status_code == 404:
+            return {"available": 0, "inStock": False}  # no stock entry yet = 0 pieces (frontend-api.md)
         if response.status_code != 200:
-            return None  # 404: the product has no stock entry yet
+            return None
         try:
             data = response.json()
             available = data["available"]

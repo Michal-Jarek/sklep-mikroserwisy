@@ -308,7 +308,7 @@
                 "exec": [
                   "pm.test('201', () => pm.response.to.have.status(201));",
                   "const p = pm.response.json();",
-                  "pm.test('new product, no reviews, no stock yet', () => { pm.expect(p.name).to.eql('Kubek termiczny'); pm.expect(p.price).to.eql('39.99'); pm.expect(p.rating).to.eql({average: null, count: 0}); pm.expect(p.availability).to.be.null; });",
+                  "pm.test('new product, no reviews, no stock yet', () => { pm.expect(p.name).to.eql('Kubek termiczny'); pm.expect(p.price).to.eql('39.99'); pm.expect(p.rating).to.eql({average: null, count: 0}); pm.expect(p.availability).to.eql({available: 0, inStock: false}); });",
                   "pm.collectionVariables.set('createdProductId', p.id);"
                 ]
               }

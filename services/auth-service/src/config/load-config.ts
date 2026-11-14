@@ -1,5 +1,5 @@
 import type { Logger } from 'pino';
-import { consulFetch, describeError } from '../consul/consul-http';
+import { consulFetch, consulStatusError, describeError } from '../consul/consul-http';
 import { consulKvRawPath } from '../routes';
 import { AppConfig, buildConfig, KV_DEFAULTS, KvConfig, parseKvConfig, SERVICE_NAME } from './app-config';
 
@@ -18,7 +18,10 @@ export async function readKvConfig(consul: AppConfig['consul'], logger: Pick<Log
     return KV_DEFAULTS;
   }
   if (!response.ok) {
-    logger.warn({ status: response.status, key: KV_KEY }, 'Consul KV key not available, using default configuration');
+    logger.warn(
+      { status: response.status, key: KV_KEY, reason: consulStatusError('Consul KV', response.status).message },
+      'Consul KV key not available, using default configuration',
+    );
     return KV_DEFAULTS;
   }
   try {

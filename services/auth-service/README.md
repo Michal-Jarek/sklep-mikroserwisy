@@ -39,7 +39,7 @@ Odpowiedzi nigdy nie zawierają hasła, jego hasha ani refresh tokenu w treści 
 Każda odpowiedź ma nagłówki:
 
 - `X-Request-Id` – wartość od klienta, jeśli pasuje do `^[A-Za-z0-9._-]{1,64}$`, w przeciwnym razie nowy UUID. Ta sama wartość jest w logach i w treści błędu.
-- `X-Instance-Id` – ID instancji w Consulu (`auth-service-<hostname>`); przy kilku instancjach widać, która odpowiedziała.
+- `X-Instance-Id` – ID instancji w Consulu (`auth-service-<hostname>`, w Kubernetesie nazwa poda z `INSTANCE_ID`); przy kilku instancjach widać, która odpowiedziała.
 
 Format błędu (także 404, zły JSON i błędy Fastify):
 
@@ -76,7 +76,9 @@ Nazwy są w [.env.example](.env.example) (bez wartości).
 | `LOG_LEVEL` | — | — | opcjonalnie; nadpisuje `logLevel` z KV |
 | `CONSUL_ENABLED` | — (domyślnie `true`) | `true` | `false` wyłącza rejestrację i odczyt KV |
 | `CONSUL_HOST` / `CONSUL_PORT` | `consul` / `8500` | `127.0.0.1` / `8500` | |
+| `CONSUL_HTTP_TOKEN` | — (pusty → bez tokenu) | — | opcjonalnie; token ACL Consula (Kubernetes); poniżej |
 | `SERVICE_ADDRESS` | — (pusty → IP kontenera) | `host.docker.internal` | adres zapisany w Consulu |
+| `INSTANCE_ID` | — (pusty → `auth-service-<hostname>`) | — | opcjonalnie; unikalne dla każdej instancji; ID w Consulu, w `X-Instance-Id`, w logach i w nazwie połączenia RabbitMQ; w Kubernetesie nazwa poda (`metadata.name`); 1–128 znaków `A-Z a-z 0-9 . _ -` (po obcięciu spacji), inna wartość zatrzymuje start |
 | `DB_HOST` / `DB_PORT` / `DB_NAME` / `DB_USER` | `postgres` / `5432` / `auth_db` / `auth_service` | `127.0.0.1` / `5432` / `auth_db` / `auth_service` | |
 | `DB_PASSWORD` | `AUTH_DB_PASSWORD` z `deploy/.env` | wartość `AUTH_DB_PASSWORD` z `deploy/.env` | |
 | `DB_SHADOW_NAME` | — | `auth_shadow_db` | tylko dla `npx prisma migrate dev` (sekcja „Migracje bazy”) |
@@ -91,13 +93,15 @@ Nazwy są w [.env.example](.env.example) (bez wartości).
 
 Połączenie z bazą powstaje tylko ze zmiennych `DB_*` (bez `DATABASE_URL`), połączenie z RabbitMQ tylko z `RABBITMQ_*` (bez `RABBITMQ_URL`). Brak `RABBITMQ_HOST`, `RABBITMQ_USER` albo `RABBITMQ_PASSWORD` zatrzymuje start (jak brak `DB_*`); niedziałający RabbitMQ – nie (sekcja „Zdarzenia”).
 
+**`CONSUL_HTTP_TOKEN`** – token ACL Consula. Ustawiony – usługa wysyła go w nagłówku `X-Consul-Token` we wszystkich wywołaniach Consula (odczyt KV przy starcie, rejestracja, sprawdzanie i usuwanie wpisu, wyszukiwanie User Service). Pusty albo brak – bez nagłówka, jak w Docker Compose (Consul bez ACL). W Kubernetesie to własny token Auth z Secretu `auth-service-secret` (`CONSUL_AUTH_TOKEN` z `deploy/.env`): tylko on może zarejestrować nazwę `auth-service`, więc nikt bez niego nie podstawi Gateway innego adresu dla `/api/v1/auth/**` ([deploy/k8s/README.md](../../deploy/k8s/README.md), „Consul z ACL”). Dozwolone znaki: widoczne ASCII, bez spacji; inna wartość zatrzymuje start komunikatem z nazwą zmiennej (bez wartości). Wartość nie trafia do logów; odmowa Consula to np. `Consul registration responded with 403 (ACL: CONSUL_HTTP_TOKEN missing or without permission)`.
+
 ### Konfiguracja z Consul KV
 
 Klucz `config/auth-service/data` (YAML, plik źródłowy [deploy/consul/config/auth-service.yaml](../../deploy/consul/config/auth-service.yaml)): `logLevel`, `jwt.issuer`, `jwt.audience`. Kolejność: zmienna środowiskowa > Consul KV > wartość domyślna w kodzie (`info`, `sklep-auth`, `sklep-api`). KV jest czytane raz przy starcie (timeout 2 s). Gdy Consul jest niedostępny, usługa startuje na wartościach domyślnych i zapisuje ostrzeżenie w logu. Zmiana w KV działa po restarcie usługi.
 
 ### Rejestracja w Consulu
 
-Usługa rejestruje się po starcie serwera HTTP: nazwa `auth-service`, ID `auth-service-<hostname>`, adres z `SERVICE_ADDRESS` albo IP kontenera, check HTTP `/health/ready` co 10 s. Co 15 s sprawdza, czy wpis w Consulu nadal istnieje i ma aktualny adres; jeśli nie (np. Consul był wyłączony), rejestruje się ponownie. Przy zatrzymaniu (SIGTERM, Ctrl+C) wyrejestrowuje się.
+Usługa rejestruje się po starcie serwera HTTP: nazwa `auth-service`, ID `INSTANCE_ID` albo, gdy pusta, `auth-service-<hostname>`, adres z `SERVICE_ADDRESS` albo IP kontenera, check HTTP `/health/ready` co 10 s. Co 15 s sprawdza, czy wpis w Consulu nadal istnieje i ma aktualny adres; jeśli nie (np. Consul był wyłączony), rejestruje się ponownie. Przy zatrzymaniu (SIGTERM, Ctrl+C) wyrejestrowuje się.
 
 ## Rejestracja i User Service
 
@@ -105,8 +109,9 @@ Rejestracja zapisuje konto (rola `CUSTOMER`, hasło jako hash bcrypt o koszcie 1
 
 Wywołanie: `POST http://<instancja user-service z Consula>/users`, nagłówki `X-User-Id: <id nowego konta>`, `X-User-Roles: SERVICE`, `X-Request-Id: <bieżący>`, treść `{"id","email","firstName","lastName"}`.
 
-- Instancja: zdrowe instancje `user-service` z Consula (lista trzymana 10 s, na zmianę – round robin). Brak instancji → 503 bez wywołania.
+- Instancja: zdrowe instancje `user-service` z Consula, tylko wpisy z dokładnie tą nazwą (lista trzymana 10 s, na zmianę – round robin). Brak instancji → 503 bez wywołania.
 - Timeout 2 s na próbę. Po timeoucie, błędzie sieci albo odpowiedzi 5xx **jedno** ponowienie po 200 ms, z tym samym `id` (User Service traktuje powtórzenie tego samego `id` jako to samo żądanie). Odpowiedź 4xx – bez ponowienia.
+- Instancja bez połączenia (`ECONNREFUSED`, `EHOSTUNREACH`, `ECONNRESET`, brak połączenia) wypada z listy do następnego odświeżenia, a ponowienie idzie do kolejnej instancji z Consula (gdy innej nie ma – na ten sam adres). Gdy wypadła ostatnia, następne wywołanie pyta Consula od razu. Po timeoucie i 5xx ponowienie idzie na ten sam adres.
 - Circuit breaker (`opossum`) obejmuje całe wywołanie razem z ponowieniem: gdy w ciągu 60 s było co najmniej 10 wywołań i ponad połowa z nich zakończyła się błędem, przez 30 s kolejne rejestracje dostają 503 od razu, bez wywołania User Service. Potem jedno wywołanie próbne: sukces zamyka obwód. Odpowiedzi 4xx inne niż 408 i 429 (np. 409) nie liczą się jako awaria User Service.
 - Transakcja ma limit 10 s (dwie próby po 2 s, odstęp i zapytanie do Consula).
 
@@ -149,7 +154,7 @@ Konto `auth-service` może tylko publikować do `shop.events` z kluczem `user.re
 **Jak zobaczyć zdarzenie.**
 
 - Panel RabbitMQ http://127.0.0.1:15672 (login `admin`, hasło `RABBITMQ_ADMIN_PASSWORD` z `deploy/.env`) → Queues and Streams → `notification.q` → Get messages, Ack mode „Nack message requeue true” (wiadomość wraca do kolejki) → Get Message(s).
-- Połączenie Auth: zakładka Connections, nazwa `auth-service-<hostname>` (jedna na instancję).
+- Połączenie Auth: zakładka Connections, nazwa = ID instancji (`auth-service-<hostname>`, w Kubernetesie nazwa poda; jedna na instancję).
 - Tabela outbox (z katalogu głównego repozytorium):
 
   ```bash
