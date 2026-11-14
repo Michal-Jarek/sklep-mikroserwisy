@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Creates local secrets for Docker Compose and Kubernetes (deploy/k8s/secrets.sh):
-#   deploy/.env                  passwords (openssl rand -hex 24), also for the first Auth admin;
+#   deploy/.env                  passwords (openssl rand -hex 24), also for the first Auth admin and the Grafana
+#                                admin (Kubernetes only);
 #                                Consul ACL tokens (UUID v4, Kubernetes only): CONSUL_MANAGEMENT_TOKEN,
 #                                CONSUL_AUTH_TOKEN, CONSUL_GATEWAY_TOKEN
 #   deploy/secrets/jwt-*.pem     RS256 key pair for Auth (PKCS#8 and SPKI)
@@ -48,7 +49,8 @@ NOTIFICATION_DB_PASSWORD
 REDIS_CART_PASSWORD
 CONSUL_MANAGEMENT_TOKEN
 CONSUL_AUTH_TOKEN
-CONSUL_GATEWAY_TOKEN"
+CONSUL_GATEWAY_TOKEN
+GRAFANA_ADMIN_PASSWORD"
 
 umask 077
 

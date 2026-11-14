@@ -6,6 +6,7 @@ import {
   consulKvRawPath,
   consulServicePath,
   GATEWAY_PREFIX,
+  METRICS_PATH,
   PATHS,
 } from './routes';
 
@@ -14,6 +15,10 @@ describe('routes', () => {
   it('own endpoints and the public prefix', () => {
     expect(PATHS).toEqual({ healthLive: '/health/live', healthReady: '/health/ready' });
     expect(GATEWAY_PREFIX).toBe('/api/v1');
+  });
+
+  it('metrics endpoint of the metrics server (stage 9b, 3.1)', () => {
+    expect(METRICS_PATH).toBe('/metrics');
   });
 
   it('JWKS of Auth Service', () => {

@@ -7,7 +7,7 @@
 # range (TRUSTED_PROXIES=10.42.0.0/16), so this rule keeps the shop pods from sending a fake client address
 # directly. Consul (health check) still reaches the Gateway; the services register through consul-guard (Service
 # consul), which allows only a plain GET of the caller's own /health/* as the check (deploy/k8s/README.md, sections
-# "Pośrednik przed Consulem" and "Wyjątki").
+# "Pośrednik przed Consulem" and "Wyjątki"). Prometheus reaches only the metrics port 9080 of the Gateway, not 8080.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -31,6 +31,11 @@ spec:
         - podSelector:
             matchLabels: {app.kubernetes.io/name: consul}
       ports: [{protocol: TCP, port: 8080}]
+    - from:
+        # prometheus -> api-gateway 9080: /metrics (own server, separate port: no way to the API, decision 5).
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: prometheus}
+      ports: [{protocol: TCP, port: 9080}]
   egress:
     # api-gateway -> consul-guard 8500 (Service consul): registration, routes from KV, service discovery.
     - to:

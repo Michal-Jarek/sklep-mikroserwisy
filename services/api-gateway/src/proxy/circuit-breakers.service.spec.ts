@@ -1,5 +1,6 @@
 import { jest } from '@jest/globals';
 import type { PinoLogger } from 'nestjs-pino';
+import { GatewayMetrics } from '../metrics/gateway-metrics';
 import { BREAKER_OPTIONS, CircuitBreakers, isFailure } from './circuit-breakers.service';
 import type { ForwardResult } from './upstream.service';
 
@@ -14,8 +15,15 @@ const ERROR_502 = response(502);
 
 function createBreakers() {
   const logger = { warn: jest.fn(), info: jest.fn() };
-  const breakers = new CircuitBreakers(logger as unknown as PinoLogger);
-  return { breakers, logger };
+  const metrics = new GatewayMetrics('api-gateway-test');
+  const breakers = new CircuitBreakers(logger as unknown as PinoLogger, metrics);
+  return { breakers, logger, metrics };
+}
+
+/** gateway_circuit_breaker_state of the service, undefined while the service has no circuit. */
+async function breakerState(metrics: GatewayMetrics, service: string): Promise<number | undefined> {
+  const metric = await metrics.registry.getSingleMetric('gateway_circuit_breaker_state')?.get();
+  return metric?.values.find((value) => value.labels.service === service)?.value;
 }
 
 async function runMany(breakers: CircuitBreakers, service: string, result: ForwardResult, count: number) {
@@ -168,6 +176,21 @@ describe('CircuitBreakers (decision 12, fake clock)', () => {
     expect(breakers.rejects('product-service')).toBe(true);
     expect(breakers.rejects('review-service')).toBe(false);
     expect(await breakers.run('review-service', () => Promise.resolve(OK))).toBe(OK);
+  });
+
+  it('gateway_circuit_breaker_state: 0 when created, 2 open, 1 half-open, 0 closed again (K1)', async () => {
+    const { breakers, metrics } = createBreakers();
+    expect(await breakerState(metrics, 'a')).toBeUndefined();
+    await runMany(breakers, 'a', OK, 1);
+    expect(await breakerState(metrics, 'a')).toBe(0);
+    await runMany(breakers, 'a', ERROR_502, 10);
+    expect(await breakerState(metrics, 'a')).toBe(2);
+    await jest.advanceTimersByTimeAsync(30_000);
+    expect(await breakerState(metrics, 'a')).toBe(1);
+    await runMany(breakers, 'a', OK, 1);
+    expect(await breakerState(metrics, 'a')).toBe(0);
+    // Other services keep their own series.
+    expect(await breakerState(metrics, 'b')).toBeUndefined();
   });
 
   it('an unknown service has no circuit yet and is not rejected', () => {

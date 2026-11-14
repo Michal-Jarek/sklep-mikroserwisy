@@ -1,0 +1,11 @@
+# Grafana data source (ConfigMap grafana-datasources, /etc/grafana/provisioning/datasources): the Prometheus of the
+# namespace shop. Read only in the UI; a change here + bash deploy/k8s/up.sh monitoring restarts Grafana.
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

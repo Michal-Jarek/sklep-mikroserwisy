@@ -1,0 +1,108 @@
+# Prometheus (stage 9b): scrapes the Gateway pods (9080), RabbitMQ (15692), kube-state-metrics (9180) and the kubelet
+# of the node (10250, CPU and memory of the shop pods); jobs in deploy/monitoring/prometheus/prometheus.yml (ConfigMap
+# prometheus-config from deploy/k8s/up.sh, which fills in the node address and restarts this Deployment when the
+# file changed). Opened only through kubectl port-forward (19090:9090), never through the Ingress.
+# Data in an emptyDir: the history (24 h at most) is lost with the pod. No admin API and no lifecycle API
+# (--web.enable-admin-api, --web.enable-lifecycle stay off): nobody deletes series or reloads over HTTP.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: monitoring
+# The token is used by the job kubelet (ClusterRole shop-prometheus-kubelet, deploy/k8s/cluster/).
+automountServiceAccountToken: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: monitoring
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: monitoring
+  ports:
+    - {name: http, port: 9090, targetPort: http}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus
+      app.kubernetes.io/part-of: shop
+      app.kubernetes.io/component: monitoring
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: prometheus
+        app.kubernetes.io/part-of: shop
+        app.kubernetes.io/component: monitoring
+    spec:
+      serviceAccountName: prometheus
+      # Token of the own service account for the kubelet (decision 14, deploy/k8s/README.md, section "Wyjątki").
+      automountServiceAccountToken: true
+      # No <SERVICE>_PORT=tcp://... variables from the other Services of the namespace (convention, see README).
+      enableServiceLinks: false
+      securityContext:
+        # User nobody of the image.
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v3.15.1
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time=24h
+            - --storage.tsdb.retention.size=512MB
+          ports:
+            - {name: http, containerPort: 9090}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            # Writes only to the data directory (emptyDir).
+            readOnlyRootFilesystem: true
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+          livenessProbe:
+            httpGet: {path: /-/healthy, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          # Ready after the TSDB is open (WAL replay after a container restart).
+          readinessProbe:
+            httpGet: {path: /-/ready, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 3
+          volumeMounts:
+            - {name: config, mountPath: /etc/prometheus, readOnly: true}
+            - {name: data, mountPath: /prometheus}
+      volumes:
+        - name: config
+          configMap: {name: prometheus-config}
+        - name: data
+          emptyDir: {sizeLimit: 1Gi}

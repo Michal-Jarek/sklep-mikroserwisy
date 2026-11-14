@@ -17,6 +17,8 @@ import { HealthController } from '../health/health.controller';
 import { setupCors } from '../limits/cors';
 import { KEY_PREFIX, RATE_LIMIT_REDIS, RateLimiter, type RateLimitRedis } from '../limits/rate-limiter.service';
 import { setupRateLimit } from '../limits/setup-rate-limit';
+import { GatewayMetrics } from '../metrics/gateway-metrics';
+import { setupMetrics } from '../metrics/http-metrics';
 import { GATEWAY_PREFIX, PATHS } from '../routes';
 import { setupApp } from '../setup-app';
 import { CircuitBreakers } from './circuit-breakers.service';
@@ -112,6 +114,20 @@ async function closedPort(): Promise<number> {
   const { port } = server.address() as AddressInfo;
   await new Promise<void>((resolve) => server.close(() => resolve()));
   return port;
+}
+
+/** A service that reads the whole request and resets the connection (RST, ECONNRESET) without an answer. */
+async function startResetting(dropped: Received[]): Promise<{ server: Server; port: number }> {
+  const server = createServer((req) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => {
+      dropped.push({ method: req.method ?? '', url: req.url ?? '', headers: req.headers, body: Buffer.concat(chunks) });
+      req.socket.resetAndDestroy();
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return { server, port: (server.address() as AddressInfo).port };
 }
 
 /** Plain node:http client: sends the path exactly as given (fetch would normalize "..") and any method. */
@@ -210,6 +226,8 @@ describe('proxy (HTTP flow on a real server)', () => {
   let healthy: Instance;
   let refused: Instance;
   let refused2: Instance;
+  let refused3: Instance;
+  let refused4: Instance;
   const received: Received[] = [];
   const logLines: Record<string, unknown>[] = [];
   const discovery = new FakeDiscovery();
@@ -217,8 +235,10 @@ describe('proxy (HTTP flow on a real server)', () => {
   const authorize = jest.fn<AccessControl['authorize']>();
   const redis = new FakeRedis();
   const breakerLogger = { warn: jest.fn(), info: jest.fn() };
+  // Own registry of this application (stage 9b); values are reset before every test.
+  const metrics = new GatewayMetrics(INSTANCE_ID);
   // A fresh set of circuits for every test (a 5xx in one test must not count in another).
-  let breakers = new CircuitBreakers(breakerLogger as unknown as PinoLogger);
+  let breakers = new CircuitBreakers(breakerLogger as unknown as PinoLogger, metrics);
   const runs: Promise<unknown>[] = [];
   // The test client connects from 127.0.0.1: trusted as a proxy (TRUSTED_PROXIES) only when a test says so.
   let trustLoopback = false;
@@ -240,6 +260,8 @@ describe('proxy (HTTP flow on a real server)', () => {
     healthy = { id: 'svc-1', address: '127.0.0.1', port: started.port };
     refused = { id: 'svc-0-down', address: '127.0.0.1', port: await closedPort() };
     refused2 = { id: 'svc-0-down-2', address: '127.0.0.1', port: await closedPort() };
+    refused3 = { id: 'svc-0-down-3', address: '127.0.0.1', port: await closedPort() };
+    refused4 = { id: 'svc-0-down-4', address: '127.0.0.1', port: await closedPort() };
 
     const logger = pino(
       { level: 'info', base: { service: 'api-gateway' }, redact: { paths: REDACTED_PATHS, censor: '[REDACTED]' } },
@@ -257,6 +279,7 @@ describe('proxy (HTTP flow on a real server)', () => {
         { provide: GatewayConfigState, useValue: { current: () => config } },
         { provide: ServiceDiscovery, useValue: discovery },
         { provide: AccessControl, useValue: { authorize } },
+        { provide: GatewayMetrics, useValue: metrics },
       ],
     }).compile();
     app = moduleRef.createNestApplication<NestFastifyApplication>(createFastifyAdapter(INSTANCE_ID, logger, (address) => trustLoopback && address === '127.0.0.1'), {
@@ -264,6 +287,7 @@ describe('proxy (HTTP flow on a real server)', () => {
       bodyParser: false,
     });
     await setupApp(app, logger);
+    setupMetrics(app);
     await setupCors(app);
     await setupRateLimit(app);
     await setupProxy(app);
@@ -287,7 +311,8 @@ describe('proxy (HTTP flow on a real server)', () => {
     authorize.mockResolvedValue(null);
     redis.counters.clear();
     redis.delayMs = 0;
-    breakers = new CircuitBreakers(breakerLogger as unknown as PinoLogger);
+    breakers = new CircuitBreakers(breakerLogger as unknown as PinoLogger, metrics);
+    metrics.registry.resetMetrics();
     breakerLogger.warn.mockClear();
     runs.length = 0;
   });
@@ -539,7 +564,7 @@ describe('proxy (HTTP flow on a real server)', () => {
   });
 
   describe('errors of the service connection (decision 11)', () => {
-    it('GET: no connection -> evict and one retry on another instance', async () => {
+    it('GET: no connection -> evict and a retry on another instance', async () => {
       discovery.reset([refused, healthy]);
       const result = await gw('GET', '/products');
       expect(result.status).toBe(200);
@@ -548,10 +573,11 @@ describe('proxy (HTTP flow on a real server)', () => {
       expect(discovery.getInstance).toHaveBeenCalledTimes(2);
     });
 
-    it('GET: no connection to two instances -> 502 after exactly one retry, both evicted', async () => {
+    it('GET: no connection to both instances of the list -> 502 after 2 attempts (list exhausted), both evicted (Z15)', async () => {
       discovery.reset([refused, refused2]);
       expectError(await gw('GET', '/products'), 502, 'BAD_GATEWAY', 'Service is not reachable');
-      expect(discovery.getInstance).toHaveBeenCalledTimes(2);
+      // The third call finds the list empty.
+      expect(discovery.getInstance).toHaveBeenCalledTimes(3);
       expect(discovery.evict.mock.calls.map(([, instance]) => instance.id)).toEqual([refused.id, refused2.id]);
       const failures = logLines.filter((line) => line.msg === 'Request to the service failed');
       expect(failures.map((line) => [line.upstream, line.reason])).toEqual([
@@ -573,7 +599,7 @@ describe('proxy (HTTP flow on a real server)', () => {
       expect(received.map((item) => item.method)).toEqual(['HEAD']);
     });
 
-    it.each(['POST', 'PUT', 'PATCH', 'DELETE'])('%s: connection refused -> evict and one retry on another instance with the same body (Z11)', async (method) => {
+    it.each(['POST', 'PUT', 'PATCH', 'DELETE'])('%s: connection refused -> evict and a retry on another instance with the same body (Z11)', async (method) => {
       discovery.reset([refused, healthy]);
       const payload = '{"refreshed":true,"text":"zażółć"}';
       const result = await gw(method, '/cart/items', { headers: { 'content-type': 'application/json; charset=utf-8' }, body: payload });
@@ -587,15 +613,15 @@ describe('proxy (HTTP flow on a real server)', () => {
       expect(discovery.getInstance).toHaveBeenCalledTimes(2);
     });
 
-    it('POST: no connection to two instances -> 502 after exactly one retry, both evicted (Z11)', async () => {
+    it('POST: no connection to both instances of the list -> 502 after 2 attempts (list exhausted), both evicted (Z11, Z15)', async () => {
       discovery.reset([refused, refused2]);
       expectError(await gw('POST', '/cart/items', { body: '{}' }), 502, 'BAD_GATEWAY', 'Service is not reachable');
-      expect(discovery.getInstance).toHaveBeenCalledTimes(2);
+      expect(discovery.getInstance).toHaveBeenCalledTimes(3);
       expect(discovery.evict.mock.calls.map(([, instance]) => instance.id)).toEqual([refused.id, refused2.id]);
       expect(received).toHaveLength(0);
     });
 
-    it.each(['EHOSTUNREACH', 'UND_ERR_CONNECT_TIMEOUT'])('POST: no connection (%s) -> evict and one retry on another instance with the same body (Z11)', async (code) => {
+    it.each(['EHOSTUNREACH', 'UND_ERR_CONNECT_TIMEOUT'])('POST: no connection (%s) -> evict and a retry on another instance with the same body (Z11)', async (code) => {
       // These codes cannot be produced reliably on a local machine: the first attempt is simulated, the retry is real.
       // attempt() is private: reached through a narrower view of the service.
       const upstream = app.get<UpstreamService, { attempt: () => Promise<ForwardResult & { code?: string }> }>(UpstreamService);
@@ -701,6 +727,115 @@ describe('proxy (HTTP flow on a real server)', () => {
     it('a slower answer within the limit passes', async () => {
       const result = await gw('GET', '/products', { headers: { 'x-test-delay-ms': '300' } });
       expect(result.status).toBe(200);
+    });
+
+    describe('up to 3 attempts, each on another instance (Z15)', () => {
+      const failedAttempts = (): Record<string, unknown>[] => logLines.filter((line) => line.msg === 'Request to the service failed');
+      const failedUpstreams = (): unknown[] => failedAttempts().map((line) => line.upstream);
+      const address = (instance: Instance): string => `${instance.address}:${instance.port}`;
+      const evicted = (): string[] => discovery.evict.mock.calls.map(([, instance]) => instance.id);
+
+      it('GET: no connection to the first two instances -> the third answers, each failed one evicted', async () => {
+        // The round robin goes on after an eviction: refused, refused2 (2nd of [healthy, refused2]), then healthy.
+        discovery.reset([refused, healthy, refused2]);
+        expect((await gw('GET', '/products')).status).toBe(200);
+        expect(received).toHaveLength(1);
+        expect(failedUpstreams()).toEqual([address(refused), address(refused2)]);
+        expect(evicted()).toEqual([refused.id, refused2.id]);
+        expect(discovery.getInstance).toHaveBeenCalledTimes(3);
+      });
+
+      it('GET: no connection to 4 instances -> 502 after 3 attempts on 3 different instances, the 4th is not tried', async () => {
+        // refused, refused3 (2nd of [refused2, refused3, refused4]), refused2 (1st of [refused2, refused4]).
+        discovery.reset([refused, refused2, refused3, refused4]);
+        expectError(await gw('GET', '/products'), 502, 'BAD_GATEWAY', 'Service is not reachable');
+        expect(failedUpstreams()).toEqual([address(refused), address(refused3), address(refused2)]);
+        expect(evicted()).toEqual([refused.id, refused3.id, refused2.id]);
+        expect(discovery.getInstance).toHaveBeenCalledTimes(3);
+        expect(discovery.instances).toEqual([refused4]);
+      });
+
+      it('a tried instance that comes back on a refreshed list is skipped: no instance is tried twice', async () => {
+        // evict() removes nothing here, as after a refresh from Consul that still lists the ending pods.
+        discovery.reset([refused, refused2]);
+        discovery.evict.mockImplementationOnce(() => undefined).mockImplementationOnce(() => undefined);
+        expectError(await gw('GET', '/products'), 502, 'BAD_GATEWAY', 'Service is not reachable');
+        expect(failedUpstreams()).toEqual([address(refused), address(refused2)]);
+        expect(evicted()).toEqual([refused.id, refused2.id]);
+        // Step 9, the second instance, then tried.size + 1 = 3 calls that give only tried instances.
+        expect(discovery.getInstance).toHaveBeenCalledTimes(5);
+
+        // The tried instance comes first, an untried one next: the request goes to the untried one.
+        logLines.length = 0;
+        discovery.reset([refused, healthy]);
+        discovery.getInstance.mockResolvedValueOnce(refused).mockResolvedValueOnce(refused);
+        expect((await gw('GET', '/products')).status).toBe(200);
+        expect(failedUpstreams()).toEqual([address(refused)]);
+        expect(received).toHaveLength(1);
+        expect(discovery.getInstance).toHaveBeenCalledTimes(3);
+      });
+
+      it('POST: no connection to the first two instances -> the third gets the request once, with the same body (Z11)', async () => {
+        discovery.reset([refused, healthy, refused2]);
+        const payload = '{"third":true,"text":"zażółć"}';
+        const result = await gw('POST', '/cart/items', { headers: { 'content-type': 'application/json' }, body: payload });
+        expect(result.status).toBe(200);
+        expect(received.map((item) => [item.method, item.body.toString('utf8')])).toEqual([['POST', payload]]);
+        expect(failedAttempts().map((line) => line.reason)).toEqual(['ECONNREFUSED', 'ECONNREFUSED']);
+        expect(evicted()).toEqual([refused.id, refused2.id]);
+      });
+
+      it('POST: refused, then a reset after sending -> 502 without a third attempt (ECONNRESET, Z11)', async () => {
+        const dropped: Received[] = [];
+        const resetting = await startResetting(dropped);
+        try {
+          const resettingInstance = { id: 'svc-resetting', address: '127.0.0.1', port: resetting.port };
+          // refused, then resettingInstance (2nd of [healthy, resettingInstance]); healthy would be the third.
+          discovery.reset([refused, healthy, resettingInstance]);
+          expectError(await gw('POST', '/cart/items', { body: '{"once":true}' }), 502, 'BAD_GATEWAY', 'Service is not reachable');
+          expect(dropped.map((item) => item.body.toString('utf8'))).toEqual(['{"once":true}']);
+          expect(received).toHaveLength(0);
+          expect(failedAttempts().map((line) => [line.upstream, line.reason])).toEqual([
+            [address(refused), 'ECONNREFUSED'],
+            [address(resettingInstance), 'ECONNRESET'],
+          ]);
+          expect(discovery.getInstance).toHaveBeenCalledTimes(2);
+        } finally {
+          resetting.server.closeAllConnections();
+          await new Promise<void>((resolve) => resetting.server.close(() => resolve()));
+        }
+      });
+
+      it('GET: a reset after sending, then refused -> the third instance answers (decision 11)', async () => {
+        const dropped: Received[] = [];
+        const resetting = await startResetting(dropped);
+        try {
+          const resettingInstance = { id: 'svc-resetting', address: '127.0.0.1', port: resetting.port };
+          // resettingInstance, refused (2nd of [healthy, refused]), then healthy.
+          discovery.reset([resettingInstance, healthy, refused]);
+          expect((await gw('GET', '/products')).status).toBe(200);
+          expect(dropped).toHaveLength(1);
+          expect(received).toHaveLength(1);
+          expect(failedAttempts().map((line) => line.reason)).toEqual(['ECONNRESET', 'ECONNREFUSED']);
+          expect(evicted()).toEqual([resettingInstance.id, refused.id]);
+        } finally {
+          resetting.server.closeAllConnections();
+          await new Promise<void>((resolve) => resetting.server.close(() => resolve()));
+        }
+      });
+
+      it.each([
+        ['no response within proxy.timeoutSeconds', { 'x-test-delay-ms': '4000' }, 504],
+        ['a 503 response', { 'x-test-status': '503' }, 503],
+        ['a 502 response', { 'x-test-status': '502' }, 502],
+      ] as [string, Record<string, string>, number][])('GET: refused, then %s of the second instance -> no third attempt', async (_name, headers, status) => {
+        // Another id of the same test service: a third instance that answers at once is on the list.
+        discovery.reset([refused, healthy, { ...healthy, id: 'svc-1-copy' }]);
+        expect((await gw('GET', '/products', { headers })).status).toBe(status);
+        expect(received).toHaveLength(1);
+        expect(evicted()).toEqual([refused.id]);
+        expect(discovery.getInstance).toHaveBeenCalledTimes(2);
+      });
     });
   });
 
@@ -879,6 +1014,16 @@ describe('proxy (HTTP flow on a real server)', () => {
   });
 
   describe('circuit breaker (steps 8-10, decision 12)', () => {
+    it('a request counts once, also after 3 failed attempts: 9 such requests leave it closed, the 10th opens it (Z15)', async () => {
+      for (let i = 1; i <= 10; i += 1) {
+        discovery.reset([refused, refused2, refused3]);
+        expect((await gw('GET', '/products')).status).toBe(502);
+        expect(breakers.rejects('product-service')).toBe(i === 10);
+      }
+      expect(logLines.filter((line) => line.msg === 'Request to the service failed')).toHaveLength(30);
+      expect(runs).toHaveLength(10);
+    });
+
     it('10 x 502 open the circuit of the service: then 503 without Consul and the service; another service works (K47, E4)', async () => {
       for (let i = 0; i < 10; i += 1) {
         expect((await gw('GET', '/products', { headers: { 'x-test-status': '502' } })).status).toBe(502);
@@ -973,6 +1118,124 @@ describe('proxy (HTTP flow on a real server)', () => {
       await expect(runs[0]).resolves.toMatchObject({ kind: 'aborted' });
       expect(Date.now() - started).toBeLessThan(500);
       expect(breakers.rejects('product-service')).toBe(false);
+    });
+  });
+
+  describe('metrics (stage 9b, guidelines 3.1)', () => {
+    const REQUESTS = 'gateway_http_requests_total';
+    const DURATION = 'gateway_http_request_duration_seconds';
+    const UPSTREAM = 'gateway_upstream_requests_total';
+
+    /** Sum of the series of a family (histogram: e.g. DURATION + '_count') whose labels match. */
+    async function sumOf(family: string, labels: Record<string, string>, series = family): Promise<number> {
+      const metric = await metrics.registry.getSingleMetric(family)?.get();
+      return (metric?.values ?? [])
+        // Histogram values carry the series name (_bucket, _sum, _count), counter values do not.
+        .filter((value) => ((value as { metricName?: string }).metricName ?? family) === series)
+        // le of a histogram bucket is a number.
+        .filter((value) => Object.entries(labels).every(([name, label]) => String(value.labels[name]) === label))
+        .reduce((sum, value) => sum + value.value, 0);
+    }
+
+    /** onResponse runs when the response is finished, possibly after the client has read it: wait up to 1 s. */
+    async function expectCount(family: string, labels: Record<string, string>, expected: number, series = family): Promise<void> {
+      for (let i = 0; i < 100 && (await sumOf(family, labels, series)) !== expected; i += 1) {
+        await sleep(10);
+      }
+      expect(await sumOf(family, labels, series)).toBe(expected);
+    }
+
+    it('a response of the service: service from the route, method, code; the time from request to end of response', async () => {
+      expect((await gw('GET', '/products', { headers: { 'x-test-delay-ms': '120' } })).status).toBe(200);
+      expect((await gw('POST', '/products', { headers: { 'x-test-status': '500' }, body: '{}' })).status).toBe(500);
+      await expectCount(REQUESTS, { service: 'product-service', method: 'GET', code: '200' }, 1);
+      await expectCount(REQUESTS, { service: 'product-service', method: 'POST', code: '500' }, 1);
+      await expectCount(DURATION, { service: 'product-service', method: 'GET' }, 1, `${DURATION}_count`);
+      expect(await sumOf(DURATION, { service: 'product-service', method: 'GET' }, `${DURATION}_sum`)).toBeGreaterThanOrEqual(0.1);
+      expect(await sumOf(DURATION, { service: 'product-service', method: 'GET', le: '0.1' }, `${DURATION}_bucket`)).toBe(0);
+      expect(await sumOf(DURATION, { service: 'product-service', method: 'GET', le: '0.25' }, `${DURATION}_bucket`)).toBe(1);
+    });
+
+    it('errors of the Gateway itself are counted with the service of the route: 401, 429, 503 (K7)', async () => {
+      discovery.reset([]);
+      config = { ...CONFIG, rateLimit: { global: { max: 1, timeWindowSeconds: 60 }, routes: [] } };
+      expect((await gw('GET', '/auth/x')).status).toBe(503);
+      expect((await gw('GET', '/auth/x')).status).toBe(429);
+      config = CONFIG;
+      redis.counters.clear();
+      authorize.mockRejectedValueOnce(new AppException(401, 'UNAUTHORIZED', ERROR_MESSAGES.unauthorized));
+      expect((await gw('GET', '/cart')).status).toBe(401);
+      expect((await gw('GET', '/products')).status).toBe(503);
+      await expectCount(REQUESTS, { service: 'cart-service', method: 'GET', code: '401' }, 1);
+      await expectCount(REQUESTS, { service: 'product-service', method: 'GET', code: '503' }, 1);
+      await expectCount(REQUESTS, { service: 'auth-service', method: 'GET', code: '429' }, 1);
+      await expectCount(DURATION, { service: 'auth-service' }, 2, `${DURATION}_count`);
+    });
+
+    it('service "none": no configuration, non-canonical path, no route, outside the prefix, the prefix alone', async () => {
+      config = null;
+      expect((await gw('GET', '/products')).status).toBe(503);
+      config = CONFIG;
+      expect((await gw('GET', '/products/%2e%2e/users')).status).toBe(400);
+      expect((await gw('GET', '/payments')).status).toBe(404);
+      expect((await send(port, 'GET', '/products')).status).toBe(404);
+      expect((await gw('GET', '')).status).toBe(404);
+      await expectCount(REQUESTS, { service: 'none', code: '503' }, 1);
+      await expectCount(REQUESTS, { service: 'none', code: '400' }, 1);
+      await expectCount(REQUESTS, { service: 'none', code: '404' }, 3);
+      await expectCount(REQUESTS, { service: 'product-service' }, 0);
+    });
+
+    it('methods outside the list are OTHER, OPTIONS keeps its name', async () => {
+      expect((await gw('PROPFIND', '/products')).status).toBe(405);
+      expect((await gw('MKCOL', '/products')).status).toBe(405);
+      expect((await gw('OPTIONS', '/products')).status).toBe(405);
+      await expectCount(REQUESTS, { service: 'product-service', method: 'OTHER', code: '405' }, 2);
+      await expectCount(REQUESTS, { service: 'product-service', method: 'OPTIONS', code: '405' }, 1);
+    });
+
+    it('/health/* is not counted', async () => {
+      config = null;
+      expect((await send(port, 'GET', PATHS.healthReady)).status).toBe(503);
+      config = CONFIG;
+      expect((await send(port, 'GET', PATHS.healthReady)).status).toBe(200);
+      expect((await send(port, 'GET', PATHS.healthLive)).status).toBe(200);
+      expect((await send(port, 'GET', `${PATHS.healthLive}/x`)).status).toBe(404);
+      // A counted request after them: once it is there, the health requests would be too.
+      expect((await gw('GET', '/products')).status).toBe(200);
+      await expectCount(REQUESTS, {}, 1);
+      await expectCount(DURATION, {}, 1, `${DURATION}_count`);
+    });
+
+    it('every attempt on an instance is counted: the retry on a second instance separately (K1)', async () => {
+      discovery.reset([refused, healthy]);
+      expect((await gw('GET', '/products')).status).toBe(200);
+      expect(await sumOf(UPSTREAM, { service: 'product-service', upstream_instance: refused.id })).toBe(1);
+      expect(await sumOf(UPSTREAM, { service: 'product-service', upstream_instance: healthy.id })).toBe(1);
+      await expectCount(REQUESTS, { service: 'product-service', code: '200' }, 1);
+    });
+
+    it('every attempt is counted, up to 3 per request (Z15)', async () => {
+      discovery.reset([refused, healthy, refused2]);
+      expect((await gw('GET', '/products')).status).toBe(200);
+      for (const instance of [refused, refused2, healthy]) {
+        expect(await sumOf(UPSTREAM, { service: 'product-service', upstream_instance: instance.id })).toBe(1);
+      }
+      discovery.reset([refused, refused2, refused3, refused4]);
+      expect((await gw('GET', '/products')).status).toBe(502);
+      expect(await sumOf(UPSTREAM, { service: 'product-service' })).toBe(6);
+      expect(await sumOf(UPSTREAM, { service: 'product-service', upstream_instance: refused4.id })).toBe(0);
+      await expectCount(REQUESTS, { service: 'product-service' }, 2);
+    });
+
+    it('no path, query, user, IP or token in the output; gateway_instance on the series', async () => {
+      authorize.mockResolvedValueOnce({ userId: 'user-k6', roles: ['CUSTOMER'] });
+      const query = '/products/zz123k6?email=k6-secret@x.test';
+      expect((await gw('GET', query, { headers: { authorization: 'Bearer k6tok' } })).status).toBe(200);
+      await expectCount(REQUESTS, { service: 'product-service' }, 1);
+      const text = await metrics.registry.metrics();
+      expect(text).not.toMatch(/k6|zz123|secret|127\.0\.0\.1/);
+      expect(text).toContain(`gateway_http_requests_total{service="product-service",method="GET",code="200",gateway_instance="${INSTANCE_ID}"} 1`);
     });
   });
 

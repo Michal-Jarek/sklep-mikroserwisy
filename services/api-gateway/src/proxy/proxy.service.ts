@@ -98,7 +98,7 @@ export class ProxyService {
       throw serviceUnavailable();
     }
 
-    // 10. The request through the circuit (failures counted), with the retry on another instance (decision 11, Z11).
+    // 10. The request through the circuit (counted once), with retries on other instances (decision 11, Z11, Z15).
     const result = await this.breakers.run(service, () =>
       this.upstream.forward(service, instance, request, reply, {
         path: target.path,

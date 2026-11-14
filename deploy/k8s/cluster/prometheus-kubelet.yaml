@@ -1,0 +1,39 @@
+# The only cluster-wide objects of the shop (stage 9b, decisions 3 and 4): the service account shop/prometheus may
+# read the metrics of the kubelet (https://<node address>:10250/metrics/resource - CPU and memory of the pods,
+# job kubelet in deploy/monitoring/prometheus/prometheus.yml). Only "get" on nodes/metrics: the kubelet answers
+# /metrics/resource and /metrics/cadvisor, and refuses /pods, /runningpods/ and /configz (403). Not nodes/proxy
+# (that one allows exec in any pod).
+#
+# Applied by deploy/k8s/up.sh in the layer monitoring, before its workloads (standing consent of Michał,
+# 2026-11-14). deploy/k8s/down.sh (also --purge) never deletes it: it touches nothing outside the namespace shop.
+# Removal (Michał only):
+#   kubectl --context rancher-desktop delete clusterrolebinding,clusterrole shop-prometheus-kubelet
+# Any change of the scope (other resources, verbs, accounts, new cluster-wide objects) is a decision of Michał.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: shop-prometheus-kubelet
+  labels:
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: monitoring
+rules:
+  - apiGroups: [""]
+    resources: [nodes/metrics]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: shop-prometheus-kubelet
+  labels:
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: monitoring
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: shop-prometheus-kubelet
+subjects:
+  # ServiceAccount of deploy/k8s/monitoring/prometheus.yaml.
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: shop

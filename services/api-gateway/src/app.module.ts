@@ -7,6 +7,7 @@ import type { AppConfig } from './config/app-config';
 import { AppConfigModule } from './config/app-config.module';
 import { ConsulModule } from './consul/consul.module';
 import { HealthModule } from './health/health.module';
+import { MetricsModule } from './metrics/metrics.module';
 import { ProxyModule } from './proxy/proxy.module';
 
 @Module({})
@@ -18,6 +19,7 @@ export class AppModule {
       imports: [
         AppConfigModule.register(config),
         LoggerModule.forRoot(loggerModuleParams(logger)),
+        MetricsModule,
         ConsulModule,
         HealthModule,
         AccessModule,

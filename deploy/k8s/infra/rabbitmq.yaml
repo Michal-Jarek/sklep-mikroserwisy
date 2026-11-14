@@ -13,10 +13,12 @@ spec:
   type: ClusterIP
   selector:
     app.kubernetes.io/name: rabbitmq
-  # 5672 AMQP for the services, 15672 management UI and HTTP API (rabbitmq-setup, port-forward 18672).
+  # 5672 AMQP for the services, 15672 management UI and HTTP API (rabbitmq-setup, port-forward 18672),
+  # 15692 metrics of the built-in plugin rabbitmq_prometheus (Prometheus only, stage 9b).
   ports:
     - {name: amqp, port: 5672, targetPort: amqp}
     - {name: http, port: 15672, targetPort: http}
+    - {name: prometheus, port: 15692, targetPort: prometheus}
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -65,6 +67,7 @@ spec:
           ports:
             - {name: amqp, containerPort: 5672}
             - {name: http, containerPort: 15672}
+            - {name: prometheus, containerPort: 15692}
           # The admin account is created only on an empty volume; no guest account is created.
           env:
             - name: RABBITMQ_DEFAULT_USER

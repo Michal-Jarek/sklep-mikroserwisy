@@ -1,6 +1,6 @@
 /**
  * Every HTTP path of the Gateway in one place (stage 2, Z8): own endpoints, the prefix of the
- * proxied API, the JWKS endpoint of Auth Service and the Consul HTTP API. Code and tests use
+ * proxied API, the metrics endpoint, the JWKS endpoint of Auth Service and the Consul HTTP API. Code and tests use
  * these constants; no other file in src/ spells out a path.
  */
 
@@ -18,6 +18,9 @@ export const PATHS = {
   healthLive: fullPath(ROUTES.health.base, ROUTES.health.live),
   healthReady: fullPath(ROUTES.health.base, ROUTES.health.ready),
 };
+
+// Prometheus metrics, served only by the separate metrics server (METRICS_PORT), never on the API port.
+export const METRICS_PATH = '/metrics';
 
 // Public API prefix: /api/v1/<resource>/... is proxied to the service without the prefix.
 export const GATEWAY_PREFIX = '/api/v1';

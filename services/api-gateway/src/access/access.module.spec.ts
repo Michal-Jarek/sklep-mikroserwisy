@@ -4,6 +4,7 @@ import { pino } from 'pino';
 import { loggerModuleParams } from '../common/logger';
 import { buildAppConfig } from '../config/app-config';
 import { AppConfigModule } from '../config/app-config.module';
+import { MetricsModule } from '../metrics/metrics.module';
 import { AccessControl } from './access-control.service';
 import { AccessModule } from './access.module';
 import { JwksProvider } from './jwks-provider.service';
@@ -15,6 +16,8 @@ describe('AccessModule', () => {
       imports: [
         AppConfigModule.register(buildAppConfig({ CONSUL_HOST: 'consul', REDIS_PASSWORD: 'test-redis' })),
         LoggerModule.forRoot(loggerModuleParams(pino({ level: 'silent' }))),
+        // Global like in AppModule: ServiceDiscovery sets gateway_upstream_instances.
+        MetricsModule,
         AccessModule,
       ],
     }).compile();

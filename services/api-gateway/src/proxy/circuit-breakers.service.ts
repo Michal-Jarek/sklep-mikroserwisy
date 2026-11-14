@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import CircuitBreaker from 'opossum';
+import { BREAKER_STATE, GatewayMetrics } from '../metrics/gateway-metrics';
 import type { ForwardResult } from './upstream.service';
 
 // Decision 12 (the same values as Auth -> User): open at more than 50% failures of at least 10 calls
@@ -40,13 +41,16 @@ type Call = () => Promise<ForwardResult>;
 /**
  * One opossum circuit per target service (decision 12), created on the first request to the service.
  * Counts only network failures (isFailure, Z27). "No instance" is decided before run() and never counted.
- * Every change of state is logged.
+ * Every change of state is logged and set in gateway_circuit_breaker_state.
  */
 @Injectable()
 export class CircuitBreakers {
   private readonly breakers = new Map<string, CircuitBreaker<[Call], ForwardResult>>();
 
-  constructor(@InjectPinoLogger(CircuitBreakers.name) private readonly logger: PinoLogger) {}
+  constructor(
+    @InjectPinoLogger(CircuitBreakers.name) private readonly logger: PinoLogger,
+    private readonly metrics: GatewayMetrics,
+  ) {}
 
   /** The circuit rejects requests now: open, or half-open while its single trial request runs. */
   rejects(service: string): boolean {
@@ -86,9 +90,19 @@ export class CircuitBreakers {
         },
         { ...BREAKER_OPTIONS, name: service },
       );
-      breaker.on('open', () => this.logger.warn({ targetService: service, state: 'open' }, 'Circuit breaker opened'));
-      breaker.on('halfOpen', () => this.logger.info({ targetService: service, state: 'half-open' }, 'Circuit breaker half-open'));
-      breaker.on('close', () => this.logger.info({ targetService: service, state: 'closed' }, 'Circuit breaker closed'));
+      breaker.on('open', () => {
+        this.metrics.setBreakerState(service, BREAKER_STATE.open);
+        this.logger.warn({ targetService: service, state: 'open' }, 'Circuit breaker opened');
+      });
+      breaker.on('halfOpen', () => {
+        this.metrics.setBreakerState(service, BREAKER_STATE.halfOpen);
+        this.logger.info({ targetService: service, state: 'half-open' }, 'Circuit breaker half-open');
+      });
+      breaker.on('close', () => {
+        this.metrics.setBreakerState(service, BREAKER_STATE.closed);
+        this.logger.info({ targetService: service, state: 'closed' }, 'Circuit breaker closed');
+      });
+      this.metrics.setBreakerState(service, BREAKER_STATE.closed);
       this.breakers.set(service, breaker);
     }
     return breaker;

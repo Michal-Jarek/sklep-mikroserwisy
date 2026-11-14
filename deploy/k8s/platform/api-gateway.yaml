@@ -3,6 +3,8 @@
 # (JWKS from the Service of Auth, not from Consul, decision 8) and CONSUL_HTTP_TOKEN (own Consul token, Z9).
 # Redis password and Consul token from Secret api-gateway-secret.
 # Two replicas (load balancing level 1: Traefik -> Gateway pods), PodDisruptionBudget and HPA 2-3 (decision 15).
+# Metrics on the separate port 9080 (stage 9b): only in the headless Service api-gateway-metrics for Prometheus,
+# never in the Service api-gateway (Ingress).
 apiVersion: v1
 kind: Service
 metadata:
@@ -20,6 +22,28 @@ spec:
     app.kubernetes.io/component: platform
   ports:
     - {name: http, port: 8080, targetPort: http}
+---
+# Without a cluster address (clusterIP: None): the DNS name api-gateway-metrics.shop.svc.cluster.local resolves to the
+# addresses of the ready Gateway pods, so Prometheus scrapes every pod separately (job api-gateway, stage 9b
+# decision 8). Only the metrics port; the Ingress uses the Service api-gateway above.
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-gateway-metrics
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: api-gateway
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: platform
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: api-gateway
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: platform
+  ports:
+    - {name: metrics, port: 9080, targetPort: metrics}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -105,6 +129,8 @@ spec:
           imagePullPolicy: Never
           ports:
             - {name: http, containerPort: 8080}
+            # GET /metrics for Prometheus only (NetworkPolicy api-gateway, Service api-gateway-metrics).
+            - {name: metrics, containerPort: 9080}
           env:
             - {name: PORT, value: "8080"}
             - {name: CONSUL_HOST, value: consul}

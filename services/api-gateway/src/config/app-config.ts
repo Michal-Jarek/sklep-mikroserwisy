@@ -3,6 +3,9 @@ import { hostname } from 'node:os';
 
 export const SERVICE_NAME = 'api-gateway';
 
+// Port of the separate Prometheus metrics server (stage 9b, decision 5: API port + 1000). Not configurable.
+export const METRICS_PORT = 9080;
+
 // Injection token for the static configuration: @Inject(APP_CONFIG) config: AppConfig.
 export const APP_CONFIG = Symbol('APP_CONFIG');
 

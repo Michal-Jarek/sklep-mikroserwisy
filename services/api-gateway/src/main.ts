@@ -5,11 +5,13 @@ import { AppModule } from './app.module';
 import { createFastifyAdapter } from './common/fastify-adapter';
 import { createLogger } from './common/logger';
 import { TrustedProxies } from './common/trusted-proxies';
-import { buildAppConfig, isLogLevel } from './config/app-config';
+import { buildAppConfig, isLogLevel, METRICS_PORT } from './config/app-config';
 import { GatewayConfigState } from './config/gateway-config-state.service';
 import { ConsulRegistration } from './consul/consul-registration.service';
 import { setupCors } from './limits/cors';
 import { setupRateLimit } from './limits/setup-rate-limit';
+import { setupMetrics } from './metrics/http-metrics';
+import { MetricsServer } from './metrics/metrics-server.service';
 import { setupProxy } from './proxy/setup-proxy';
 import { setupApp } from './setup-app';
 
@@ -32,17 +34,21 @@ async function bootstrap(): Promise<void> {
   // Nest's own logs (startup, routes) go through pino as JSON too.
   app.useLogger(app.get(Logger));
   await setupApp(app, logger);
+  // Every response of the Gateway is counted in onResponse (stage 9b), also errors raised before the proxy.
+  setupMetrics(app);
   // CORS for the origins from KV (none by default): preflights are answered before the proxy route.
   await setupCors(app);
   // Rate limits (@fastify/rate-limit, counters in redis-gateway): applied by the proxy in step 3.
   await setupRateLimit(app);
   // Every /api/v1/** request: checks in the order of the guidelines, then the proxy to a service instance.
   await setupProxy(app);
-  // SIGTERM/SIGINT run onApplicationShutdown hooks (Consul deregistration).
+  // SIGTERM/SIGINT run onApplicationShutdown hooks (Consul deregistration, the metrics server).
   app.enableShutdownHooks();
 
   // The Gateway listens before the KV configuration is read: until it is loaded, ready answers 503.
   await app.listen({ port: config.port, host: '0.0.0.0' });
+  // Prometheus scrapes a separate port (decision 5): the Ingress reaches only the API port.
+  await app.get(MetricsServer).start(METRICS_PORT);
   const configState = app.get(GatewayConfigState);
   await configState.start((loaded) => {
     // The request logger of pino-http is a child created at startup: it does not follow the parent level.
@@ -50,7 +56,7 @@ async function bootstrap(): Promise<void> {
     PinoLogger.root.level = loaded.logLevel;
   });
   await app.get(ConsulRegistration).start(() => Promise.resolve(configState.current() !== null));
-  logger.info({ port: config.port, instanceId: config.instanceId }, 'API Gateway started');
+  logger.info({ port: config.port, metricsPort: METRICS_PORT, instanceId: config.instanceId }, 'API Gateway started');
 }
 
 bootstrap().catch((error: unknown) => {

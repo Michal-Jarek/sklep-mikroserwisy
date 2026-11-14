@@ -2,11 +2,12 @@
 # Stops the shop in local Kubernetes: always context rancher-desktop, namespace shop.
 #   bash deploy/k8s/down.sh [--purge]
 # Deletes by kind everything the shop runs in namespace shop: Ingresses, Traefik middlewares, HPAs,
-# PodDisruptionBudgets, Deployments, StatefulSets, Jobs, remaining pods, Services, ConfigMaps and
-# NetworkPolicies. By kind, not by label: also objects whose manifests were removed from the repo and test
-# objects. Waits until no pod is left (at most 2 minutes).
+# PodDisruptionBudgets, Deployments, StatefulSets, Jobs, remaining pods, Services, ConfigMaps,
+# NetworkPolicies, Roles, RoleBindings and ServiceAccounts (except default). By kind, not by label: also objects
+# whose manifests were removed from the repo and test objects. Waits until no pod is left (at most 2 minutes).
 # PersistentVolumeClaims (the data) and Secrets stay; --purge deletes them too (the next up.sh starts with
-# empty databases). Never deletes the namespace itself or anything outside it.
+# empty databases). Never deletes the namespace itself or anything outside it - also not the ClusterRole and
+# ClusterRoleBinding shop-prometheus-kubelet of deploy/k8s/cluster/ (removal: deploy/k8s/README.md).
 # Exit codes: 0 OK, 1 error, 2 wrong usage, no kubectl, no context rancher-desktop or the cluster does not answer.
 set -euo pipefail
 
@@ -58,6 +59,10 @@ k delete "$entry" --all
 k delete deployments.apps,statefulsets.apps,replicasets.apps,jobs.batch --all --cascade=foreground --timeout="$TIMEOUT"
 k delete pods --all --timeout="$TIMEOUT"
 k delete services,networkpolicies.networking.k8s.io --all
+# Accounts and permissions of the pods that read the API (prometheus, kube-state-metrics); cluster-wide ones stay.
+k delete roles.rbac.authorization.k8s.io,rolebindings.rbac.authorization.k8s.io --all
+# The ServiceAccount default is created by Kubernetes in every namespace (and would be recreated at once).
+k delete serviceaccounts --field-selector metadata.name!=default
 # kube-root-ca.crt is created by Kubernetes in every namespace (and would be recreated at once).
 k delete configmaps --field-selector metadata.name!=kube-root-ca.crt
 

@@ -9,7 +9,7 @@ Ten dokument zbiera zasady wiążące każdą usługę sklepu (D1–D20): co obo
 | D | Zasada w jednym zdaniu | Kogo dotyczy |
 |---|---|---|
 | [D1](#d1--identyfikatory) | Identyfikator encji to UUID zapisany tekstem, małymi literami; niepoprawny UUID → 400 `VALIDATION_ERROR`. | wszystkie usługi |
-| [D2](#d2--wyłącznik-i-ponowienia) | Wywołanie innej usługi: timeout 2 s, wyłącznik (≥ 10 wywołań, ≥ 50 % awarii → 30 s), awaria to tylko brak połączenia, timeout, 5xx, 408, 429; ponowienia po błędzie usługi tylko `GET`/`HEAD`, najwyżej 2; przełączenie na inną instancję, gdy połączenie nie powstało — każda metoda. | usługi, które wołają inne (np. Auth, Cart, Order, Review) |
+| [D2](#d2--wyłącznik-i-ponowienia) | Wywołanie innej usługi: timeout 2 s, wyłącznik (≥ 10 wywołań, ≥ 50 % awarii → 30 s), awaria to tylko brak połączenia, timeout, 5xx, 408, 429; ponowienia po błędzie usługi tylko `GET`/`HEAD`, najwyżej 2; przełączenie na inną instancję, gdy połączenie nie powstało — każda metoda. Gateway: przy braku połączenia do 3 prób, każda na innej instancji. | usługi, które wołają inne (np. Auth, Cart, Order, Review) |
 | [D3](#d3--kwoty) | Kwota to tekst z dwoma miejscami po kropce (`"19.99"`) razem z `currency`, nigdy liczba JSON. | Product, Cart, Order, Shipping, zdarzenia |
 | [D4](#d4--lekki-odczyt-produktu) | `GET /products/{id}` z rolą `SERVICE` nie woła Review ani Inventory, czyta bazę z pominięciem cache i zwraca co najmniej `id`, `name`, `price`, `currency`. | Product (wołają go Cart i Order) |
 | [D5](#d5--budżet-czasu) | Gateway czeka 10 s; usługa odpowiada w < 9 s, a przy kilku wywołaniach po kolei ma wspólny termin 8 s. | wszystkie usługi, zwłaszcza Cart i Order |
@@ -52,7 +52,7 @@ Ten dokument zbiera zasady wiążące każdą usługę sklepu (D1–D20): co obo
   - Java — Resilience4j: `COUNT_BASED`, okno 10, próg 50 %, otwarcie 30 s, 1 wywołanie w stanie półotwartym, wyjątki dla odpowiedzi 4xx poza 408 i 429 w `ignoreExceptions`.
   - Node.js — opossum (jak Auth). Auth (opossum) otwiera wyłącznik przy ponad połowie awarii, a nie przy co najmniej połowie — różnica bez znaczenia.
   - Python — własna mała klasa według opisu zachowania wyżej. `pybreaker` jest niedozwolony: trzyma blokadę przez czas wywołania, a w kodzie `async` nie liczy błędów.
-- Gateway ma inne reguły (awarią są dla niego tylko błędy sieci, 502 i 504). Usługa nie kopiuje zachowania Gateway.
+- Gateway ma inne reguły (awarią są dla niego tylko błędy sieci, 502 i 504). Przy braku połączenia Gateway robi najwyżej **3 próby** (2 ponowienia), każdą na innej instancji: dla każdej metody, gdy połączenie nie powstało, a dla `GET`/`HEAD` także po utracie połączenia w trakcie; nigdy po timeoucie odpowiedzi ani po odpowiedzi 5xx. Usługa nie kopiuje zachowania Gateway.
 
 **Dlaczego.** Odpowiedź 4xx wynika z danych żądania. Gdyby liczyła się jako awaria, błędne żądania jednego klienta otwierałyby wyłącznik i odcinały usługę wszystkim na 30 s, a ponowienia potrajałyby ruch do usługi, która odpowiada poprawnie (przegląd PR #1 i #2). Ponowienie `POST` mogłoby utworzyć coś dwa razy.
 
