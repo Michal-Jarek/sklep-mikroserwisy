@@ -38,20 +38,16 @@ spec:
                 secretKeyRef:
                   name: inventory-service-secret
                   key: DATABASE_URL
-            - name: RABBITMQ_URL
+            - name: RABBITMQ_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: inventory-service-secret
-                  key: RABBITMQ_URL
-            # adres poda i nazwa instancji (rejestracja w Consulu, nagłówek X-Instance-Id)
+                  key: RABBITMQ_PASSWORD
+            # adres poda (rejestracja w Consulu); ID instancji to domyślnie <usługa>-<hostname>
             - name: SERVICE_ADDRESS
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
-            - name: INSTANCE_ID
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
           resources:
             requests:
               cpu: 100m

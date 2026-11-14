@@ -11,12 +11,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.errors import ApiError
-from app.models import ACTIVE, RELEASED, InventoryItem, ProcessedEvent, Reservation
+from app.models import ACTIVE, ISSUED, RELEASED, InventoryItem, ProcessedEvent, Reservation
 
 logger = logging.getLogger(__name__)
 
 
-def _lock_items(db: Session, product_ids: list[int]) -> dict[int, InventoryItem]:
+def _lock_items(db: Session, product_ids: list[str]) -> dict[str, InventoryItem]:
     stmt = (
         select(InventoryItem)
         .where(InventoryItem.product_id.in_(product_ids))
@@ -26,7 +26,7 @@ def _lock_items(db: Session, product_ids: list[int]) -> dict[int, InventoryItem]
     return {item.product_id: item for item in db.scalars(stmt)}
 
 
-def set_stock(db: Session, product_id: int, quantity: int, _retry: bool = True) -> InventoryItem:
+def set_stock(db: Session, product_id: str, quantity: int, _retry: bool = True) -> InventoryItem:
     item = db.get(InventoryItem, product_id, with_for_update=True)
     if item is None:
         item = InventoryItem(product_id=product_id, quantity=quantity, reserved=0)
@@ -53,9 +53,9 @@ def _existing_reservations(db: Session, order_id: str) -> list[Reservation]:
     return list(db.scalars(stmt))
 
 
-def reserve(db: Session, order_id: str, items: list[tuple[int, int]]) -> tuple[list[Reservation], bool]:
+def reserve(db: Session, order_id: str, items: list[tuple[str, int]]) -> tuple[list[Reservation], bool]:
     """Zwraca (rezerwacje, utworzono_nowe). Powtórzone żądanie dla tego samego zamówienia jest idempotentne."""
-    wanted: dict[int, int] = {}
+    wanted: dict[str, int] = {}
     for product_id, qty in items:
         wanted[product_id] = wanted.get(product_id, 0) + qty
 
@@ -97,10 +97,22 @@ def reserve(db: Session, order_id: str, items: list[tuple[int, int]]) -> tuple[l
 
 
 def release(db: Session, order_id: str, event_id: str | None = None) -> int:
-    """Zwalnia rezerwacje zamówienia (idempotentnie). Zwraca liczbę zwolnionych pozycji.
+    """Zwalnia rezerwacje ACTIVE zamówienia (idempotentnie). Zwraca liczbę zwolnionych pozycji.
 
     Gdy podano event_id, zdarzenie jest zapisywane jako przetworzone w tej samej transakcji.
     """
+    return _close_reservations(db, order_id, event_id, RELEASED, take_from_stock=False)
+
+
+def issue(db: Session, order_id: str, event_id: str | None = None) -> int:
+    """Wydanie towaru przy wysyłce: dla rezerwacji ACTIVE zmniejsza quantity i reserved o tę samą ilość.
+
+    Rezerwacja dostaje status ISSUED, więc późniejsze order.cancelled jej nie zwolni.
+    """
+    return _close_reservations(db, order_id, event_id, ISSUED, take_from_stock=True)
+
+
+def _close_reservations(db: Session, order_id: str, event_id: str | None, new_status: str, take_from_stock: bool) -> int:
     if event_id and db.get(ProcessedEvent, event_id) is not None:
         logger.info("Zdarzenie %s było już przetworzone, pomijam", event_id)
         return 0
@@ -118,7 +130,9 @@ def release(db: Session, order_id: str, event_id: str | None = None) -> int:
             item = stock.get(row.product_id)
             if item is not None:
                 item.reserved = max(0, item.reserved - row.quantity)
-            row.status = RELEASED
+                if take_from_stock:
+                    item.quantity = max(0, item.quantity - row.quantity)
+            row.status = new_status
 
     if event_id:
         db.add(ProcessedEvent(event_id=event_id))
