@@ -1,6 +1,7 @@
 import { jest } from '@jest/globals';
 import type { PinoLogger } from 'nestjs-pino';
 import { buildAppConfig } from '../config/app-config';
+import { GatewayMetrics } from '../metrics/gateway-metrics';
 import { consulHealthyInstancesPath } from '../routes';
 import { DISCOVERY_CACHE_MS, DISCOVERY_EMPTY_CACHE_MS, parseHealthyInstances, ServiceDiscovery } from './service-discovery.service';
 
@@ -29,8 +30,15 @@ function json(body: unknown): Response {
 
 function createDiscovery(env: Record<string, string> = ENV) {
   const logger = { info: jest.fn(), warn: jest.fn() };
-  const discovery = new ServiceDiscovery(buildAppConfig(env), logger as unknown as PinoLogger);
-  return { discovery, logger };
+  const metrics = new GatewayMetrics('api-gateway-test');
+  const discovery = new ServiceDiscovery(buildAppConfig(env), logger as unknown as PinoLogger, metrics);
+  return { discovery, logger, metrics };
+}
+
+/** gateway_upstream_instances of the service, undefined before the first list from Consul. */
+async function instancesGauge(metrics: GatewayMetrics, service: string): Promise<number | undefined> {
+  const metric = await metrics.registry.getSingleMetric('gateway_upstream_instances')?.get();
+  return metric?.values.find((value) => value.labels.service === service)?.value;
 }
 
 async function ids(discovery: ServiceDiscovery, service: string, count: number): Promise<(string | undefined)[]> {
@@ -289,5 +297,55 @@ describe('ServiceDiscovery', () => {
     const only = await discovery.getInstance('product-service');
     discovery.evict('product-service', only!);
     expect(await discovery.getInstance('product-service')).toBeNull();
+  });
+
+  it('gateway_upstream_instances: the list length after every refresh from Consul and after evict (K1)', async () => {
+    const consul = mockConsul(() => json(THREE));
+    const { discovery, metrics } = createDiscovery();
+    expect(await instancesGauge(metrics, 'product-service')).toBeUndefined();
+
+    const first = await discovery.getInstance('product-service');
+    expect(await instancesGauge(metrics, 'product-service')).toBe(3);
+    discovery.evict('product-service', first!);
+    expect(await instancesGauge(metrics, 'product-service')).toBe(2);
+    // evict of a service without a list sets nothing.
+    discovery.evict('cart-service', first!);
+    expect(await instancesGauge(metrics, 'cart-service')).toBeUndefined();
+
+    // A failed refresh keeps the last known list (and the value).
+    consul.set(() => new TypeError('fetch failed'));
+    now += DISCOVERY_CACHE_MS;
+    await discovery.getInstance('product-service');
+    expect(await instancesGauge(metrics, 'product-service')).toBe(2);
+
+    consul.set(() => json([entry('stub-1', '10.0.0.1')]));
+    now += DISCOVERY_CACHE_MS;
+    await discovery.getInstance('product-service');
+    expect(await instancesGauge(metrics, 'product-service')).toBe(1);
+
+    consul.set(() => json([]));
+    now += DISCOVERY_CACHE_MS;
+    expect(await discovery.getInstance('product-service')).toBeNull();
+    expect(await instancesGauge(metrics, 'product-service')).toBe(0);
+  });
+
+  it('Z13: a refresh from Consul removes series of instances that left the list, evict does not', async () => {
+    const consul = mockConsul(() => json(THREE));
+    const { discovery, metrics } = createDiscovery();
+    const series = async () =>
+      (await metrics.registry.getSingleMetric('gateway_upstream_requests_total')!.get()).values.map((value) => value.labels.upstream_instance).sort();
+    for (const instance of [await discovery.getInstance('product-service'), await discovery.getInstance('product-service')]) {
+      metrics.recordUpstreamAttempt('product-service', instance!.id);
+    }
+    expect(await series()).toEqual(['stub-1', 'stub-2']);
+
+    discovery.evict('product-service', { id: 'stub-1', address: '10.0.0.1', port: 9000 });
+    expect(await series()).toEqual(['stub-1', 'stub-2']);
+
+    consul.set(() => json([entry('stub-2', '10.0.0.2'), entry('stub-3', '10.0.0.3')]));
+    now += DISCOVERY_CACHE_MS;
+    await discovery.getInstance('product-service');
+    expect(await series()).toEqual(['stub-2']);
+    expect(await instancesGauge(metrics, 'product-service')).toBe(2);
   });
 });

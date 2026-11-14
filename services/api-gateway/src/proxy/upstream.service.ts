@@ -4,6 +4,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { IncomingHttpHeaders } from 'node:http';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { type Instance, ServiceDiscovery } from '../consul/service-discovery.service';
+import { GatewayMetrics } from '../metrics/gateway-metrics';
 import { classifyUpstreamError, type UpstreamErrorKind } from './upstream-error';
 import { buildUpstreamHeaders, filterResponseHeaders, type ForwardedFor, mergeVary } from './upstream-headers';
 
@@ -34,6 +35,9 @@ export type ForwardResult =
 // One attempt; code = the error code of a failed attempt (decides the retry of POST, PUT, PATCH, DELETE).
 type AttemptResult = ForwardResult & { code?: string };
 
+// At most 3 attempts per request, each on another instance (Z15): at most 2 retries (D2). Several pods may
+// end at once (HPA scale-down, kubectl scale) while the cached list still has them.
+const MAX_ATTEMPTS = 3;
 // These methods are retried after any lost connection (decision 11), including a reset after sending.
 const RETRIED_METHODS = new Set(['GET', 'HEAD']);
 // The connection was never established: the request never reached the service (Z11). A reset
@@ -46,14 +50,17 @@ const DEFAULT_CONTENT_TYPE = 'application/octet-stream';
 export class UpstreamService {
   constructor(
     private readonly discovery: ServiceDiscovery,
+    private readonly metrics: GatewayMetrics,
     @InjectPinoLogger(UpstreamService.name) private readonly logger: PinoLogger,
   ) {}
 
   /**
    * Step 10 of guidelines 3.4: the request to the instance chosen in step 9, through reply-from.
-   * No connection -> the instance is evicted from the cached list; one immediate retry on another instance
-   * from Consul (if there is one): GET/HEAD after any lost connection, other methods only when the connection
-   * was never established (Z11). No retry after a timeout or a 5xx response.
+   * No connection -> the instance is evicted from the cached list and the request goes at once to the next
+   * instance from Consul that was not tried yet, up to MAX_ATTEMPTS attempts (Z15): GET/HEAD after any lost
+   * connection, other methods only when the connection was never established (Z11). No more instances to
+   * try -> the result of the last attempt. No retry after a timeout or a 5xx response. The caller runs
+   * forward() through the circuit, so the request counts there once (the result of the last attempt).
    */
   async forward(
     service: string,
@@ -62,25 +69,47 @@ export class UpstreamService {
     reply: FastifyReply,
     target: UpstreamRequest,
   ): Promise<ForwardResult> {
-    const first = await this.attempt(service, instance, request, reply, target);
-    if (first.kind !== 'unreachable') {
-      return first;
+    const tried = new Set<string>();
+    let current = instance;
+    for (;;) {
+      tried.add(current.id);
+      const result = await this.attempt(service, current, request, reply, target);
+      if (result.kind !== 'unreachable') {
+        return result;
+      }
+      this.discovery.evict(service, current);
+      if (tried.size >= MAX_ATTEMPTS) {
+        return result;
+      }
+      // Other methods only when the connection was never established: the request never reached the service,
+      // so a retry cannot run it twice.
+      if (!RETRIED_METHODS.has(request.method) && !NOT_CONNECTED_CODES.has(result.code ?? '')) {
+        return result;
+      }
+      const next = await this.nextUntried(service, tried);
+      if (!next) {
+        return result;
+      }
+      current = next;
     }
-    this.discovery.evict(service, instance);
-    // Other methods only when the connection was never established: the request never reached the service,
-    // so a retry cannot run it twice.
-    if (!RETRIED_METHODS.has(request.method) && !NOT_CONNECTED_CODES.has(first.code ?? '')) {
-      return first;
+  }
+
+  /**
+   * Next instance of the round robin that was not tried for this request, or null. evict() keeps the tried
+   * ones out of the cached list, but a refresh from Consul may bring them back: tried.size + 1 calls reach
+   * every other instance of the list.
+   */
+  private async nextUntried(service: string, tried: ReadonlySet<string>): Promise<Instance | null> {
+    for (let i = 0; i <= tried.size; i += 1) {
+      const next = await this.discovery.getInstance(service);
+      if (!next) {
+        return null;
+      }
+      if (!tried.has(next.id)) {
+        return next;
+      }
     }
-    const next = await this.discovery.getInstance(service);
-    if (!next || next.id === instance.id) {
-      return first;
-    }
-    const second = await this.attempt(service, next, request, reply, target);
-    if (second.kind === 'unreachable') {
-      this.discovery.evict(service, next);
-    }
-    return second;
+    return null;
   }
 
   private attempt(
@@ -104,6 +133,8 @@ export class UpstreamService {
         resolve({ kind: 'aborted', upstream });
         return;
       }
+      // Every attempt is counted, also the retries on other instances (up to MAX_ATTEMPTS per request).
+      this.metrics.recordUpstreamAttempt(service, instance.id);
       // A client that leaves before the answer: reply-from calls neither onResponse nor onError, so
       // without this the promise (and a half-open circuit waiting for its trial) would never settle.
       const onClose = (): void => resolve({ kind: 'aborted', upstream });

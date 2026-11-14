@@ -23,5 +23,6 @@ COPY --from=build /app/dist ./dist
 COPY package.json ./
 # Numeric UID:GID (1000 = node in the base image), so Kubernetes runAsNonRoot can check it without /etc/passwd.
 USER 1000:1000
-EXPOSE 8080
+# 8080 API (Ingress, Consul health check), 9080 Prometheus metrics (inside the cluster only, stage 9b).
+EXPOSE 8080 9080
 CMD ["node", "dist/main.js"]

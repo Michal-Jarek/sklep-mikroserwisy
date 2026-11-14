@@ -422,7 +422,7 @@ Konta w RabbitMQ (vhost `/`). Żadne konto usługi nie tworzy exchange, kolejek 
 
 ### Hasła w `deploy/.env`
 
-Wszystkie 22 zmienne tworzy `bash deploy/create-secrets.sh` (hasła losowe, 48 znaków `0-9a-f`; tokeny Consula `CONSUL_*_TOKEN` – UUID). Każdy kontener dostaje tylko hasła, których potrzebuje.
+Wszystkie 23 zmienne tworzy `bash deploy/create-secrets.sh` (hasła losowe, 48 znaków `0-9a-f`; tokeny Consula `CONSUL_*_TOKEN` – UUID). Każdy kontener dostaje tylko hasła, których potrzebuje.
 
 | Zmienna | Do czego | Kontener |
 |---|---|---|
@@ -438,6 +438,7 @@ Wszystkie 22 zmienne tworzy `bash deploy/create-secrets.sh` (hasła losowe, 48 z
 | `REDIS_CART_PASSWORD` | Redis koszyka | `redis-cart` (i Cart po scaleniu PR) |
 | `CONSUL_MANAGEMENT_TOKEN` | token zarządzający Consula z ACL – tylko Kubernetes ([k8s/README.md](k8s/README.md), „Consul z ACL”); compose go nie używa | – |
 | `CONSUL_AUTH_TOKEN`, `CONSUL_GATEWAY_TOKEN` | tokeny Consula Auth i Gateway – jedyne, które mogą zarejestrować nazwy `auth-service` i `api-gateway`; tylko Kubernetes ([k8s/README.md](k8s/README.md), „Consul z ACL”); compose ich nie używa | – |
+| `GRAFANA_ADMIN_PASSWORD` | konto `admin` Grafany (panel metryk) – tylko Kubernetes ([k8s/README.md](k8s/README.md), „Metryki (Prometheus i Grafana)”); compose go nie używa | – |
 
 Hasło do własnej usługi uruchamianej z VS Code przenosi się z `deploy/.env` do lokalnego `.env` usługi bez wyświetlania – polecenie w [docs/patterns.md](../docs/patterns.md). Haseł nie wkleja się do czatu, issue ani do repo.
 

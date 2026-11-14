@@ -832,7 +832,7 @@ def call_headers(user_id: str | None, roles: list[str], request_id: str) -> dict
 Wzorce w repo:
 
 - Auth → User (Node.js, opossum, jedno ponowienie `POST` z tym samym `id`): [services/auth-service/src/user-client/user-client.service.ts](../services/auth-service/src/user-client/user-client.service.ts), opis: [README Auth](../services/auth-service/README.md#rejestracja-i-user-service). Auth (opossum) otwiera wyłącznik przy ponad połowie awarii, a D2 — przy co najmniej połowie; różnica bez znaczenia.
-- Gateway ma **inne** reguły (awarią są dla niego tylko błędy sieci, 502 i 504; `GET` ponawia raz, od razu, do innej instancji): [README Gateway, „Circuit breaker”](../services/api-gateway/README.md#circuit-breaker). Usługa ich nie kopiuje.
+- Gateway ma **inne** reguły (awarią są dla niego tylko błędy sieci, 502 i 504; przy braku połączenia próbuje od razu kolejnych instancji — razem najwyżej 3 próby, `GET`/`HEAD` także po utracie połączenia): [README Gateway, „Circuit breaker”](../services/api-gateway/README.md#circuit-breaker). Usługa ich nie kopiuje.
 
 ## 5. Wpis usługi w Docker Compose
 

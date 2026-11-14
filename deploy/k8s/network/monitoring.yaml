@@ -1,0 +1,83 @@
+# Monitoring (stage 9b): Prometheus, Grafana and kube-state-metrics. One NetworkPolicy per pod, named like the pod
+# label app.kubernetes.io/name. Grafana and Prometheus are opened only through kubectl port-forward (node traffic,
+# always allowed), never through the Ingress. The two egress rules to addresses outside the pod network (prometheus
+# -> kubelet of the node, kube-state-metrics -> Kubernetes API) are in the template node-access.yaml.tpl: deploy/k8s/
+# up.sh fills in the addresses (deploy/k8s/README.md, section "Wyjątki"). Prometheus reaches neither Consul nor the
+# API port 8080 of the Gateway; Grafana reaches nothing but Prometheus (no internet).
+# Outgoing DNS: dns.yaml. Everything else is blocked by default-deny.yaml.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: prometheus
+  namespace: shop
+  labels:
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: network
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: prometheus}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        # grafana -> prometheus 9090: queries of the dashboard.
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: grafana}
+      ports: [{protocol: TCP, port: 9090}]
+  egress:
+    # prometheus -> api-gateway 9080: /metrics of every Gateway pod (pod addresses from the headless Service
+    # api-gateway-metrics). Only the metrics port: the API (8080) stays closed (decision 5).
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: api-gateway}
+      ports: [{protocol: TCP, port: 9080}]
+    # prometheus -> rabbitmq 15692: /metrics and /metrics/detailed of the plugin rabbitmq_prometheus.
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: rabbitmq}
+      ports: [{protocol: TCP, port: 15692}]
+    # prometheus -> kube-state-metrics 9180: replicas, HPA and restarts of the shop objects.
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: kube-state-metrics}
+      ports: [{protocol: TCP, port: 9180}]
+---
+# grafana: no ingress rule (only kubectl port-forward from the node); grafana -> prometheus 9090 only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: grafana
+  namespace: shop
+  labels:
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: network
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: grafana}
+  policyTypes: [Ingress, Egress]
+  egress:
+    # grafana -> prometheus 9090: the data source of the dashboards.
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: prometheus}
+      ports: [{protocol: TCP, port: 9090}]
+---
+# kube-state-metrics: only prometheus -> 9180 (metrics). Its egress to the Kubernetes API is the policy
+# kube-state-metrics-api of the template node-access.yaml.tpl.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kube-state-metrics
+  namespace: shop
+  labels:
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: network
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: kube-state-metrics}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        # prometheus -> kube-state-metrics 9180: job kube-state-metrics.
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: prometheus}
+      ports: [{protocol: TCP, port: 9180}]

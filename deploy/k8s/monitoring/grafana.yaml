@@ -1,0 +1,126 @@
+# Grafana (stage 9b): the dashboard "Sklep" from deploy/monitoring/grafana/dashboards/shop.json on the Prometheus of
+# the namespace. Opened only through kubectl port-forward (13000:3000), never through the Ingress. Anonymous users
+# only view (Viewer); the account admin logs in with GRAFANA_ADMIN_PASSWORD from deploy/.env (Secret grafana-secret,
+# decision 2). Data source, dashboard provider and dashboards come from ConfigMaps created by deploy/k8s/up.sh from
+# deploy/monitoring/grafana/ (a changed ConfigMap restarts this Deployment); the other provisioning directories of
+# the image (plugins, alerting, ...) stay. Database in an emptyDir: changes made in the UI are lost with the pod.
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: monitoring
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: monitoring
+  ports:
+    - {name: http, port: 3000, targetPort: http}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: grafana
+      app.kubernetes.io/part-of: shop
+      app.kubernetes.io/component: monitoring
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: grafana
+        app.kubernetes.io/part-of: shop
+        app.kubernetes.io/component: monitoring
+    spec:
+      # Account default without a token: Grafana talks only to Prometheus.
+      automountServiceAccountToken: false
+      # No <SERVICE>_PORT=tcp://... variables from the other Services of the namespace (convention, see README).
+      enableServiceLinks: false
+      securityContext:
+        # USER 472 of the image (its group is root, 472 avoids it); fsGroup for the emptyDir volumes.
+        runAsNonRoot: true
+        runAsUser: 472
+        runAsGroup: 472
+        fsGroup: 472
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: grafana
+          image: grafana/grafana:13.3.1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - {name: http, containerPort: 3000}
+          env:
+            # View without login, nothing else (no saving, no Explore).
+            - {name: GF_AUTH_ANONYMOUS_ENABLED, value: "true"}
+            - {name: GF_AUTH_ANONYMOUS_ORG_ROLE, value: Viewer}
+            # Account admin (set when the empty database is created, i.e. on every new pod).
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom: {secretKeyRef: {name: grafana-secret, key: GF_SECURITY_ADMIN_PASSWORD}}
+            - {name: GF_USERS_ALLOW_SIGN_UP, value: "false"}
+            # Decision 11: without these two Grafana 13.3.1 copies ~170 MB of bundled plugins into the data directory
+            # at every start and runs a process per data source plugin (~630 MiB); only Prometheus is used.
+            - {name: GF_PLUGINS_PREINSTALL_DISABLED, value: "true"}
+            - name: GF_PLUGINS_DISABLE_PLUGINS
+              value: cloudwatch,elasticsearch,grafana-postgresql-datasource,grafana-pyroscope-datasource,influxdb,jaeger,loki,mssql,mysql,opentsdb,stackdriver,tempo,zipkin
+            # No calls to the internet (the NetworkPolicy blocks them anyway).
+            - {name: GF_ANALYTICS_REPORTING_ENABLED, value: "false"}
+            - {name: GF_ANALYTICS_CHECK_FOR_UPDATES, value: "false"}
+            - {name: GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES, value: "false"}
+            - {name: GF_NEWS_NEWS_FEED_ENABLED, value: "false"}
+            - {name: GF_SECURITY_DISABLE_GRAVATAR, value: "true"}
+            # Home page = the dashboard "Sklep".
+            - {name: GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH, value: /etc/grafana/dashboards/shop.json}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            # Writes only to /var/lib/grafana (database, plugins) and /tmp (emptyDir); logs go to stdout.
+            readOnlyRootFilesystem: true
+          # 512Mi: measured up to 383 MiB after many panel refreshes (stage 9b, Z12); about 200 MiB after start.
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+          # The first start creates the database (migrations) before the HTTP server answers.
+          startupProbe:
+            httpGet: {path: /api/health, port: http}
+            periodSeconds: 2
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: {path: /api/health, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: {path: /api/health, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 3
+          volumeMounts:
+            - {name: datasources, mountPath: /etc/grafana/provisioning/datasources, readOnly: true}
+            - {name: dashboard-providers, mountPath: /etc/grafana/provisioning/dashboards, readOnly: true}
+            - {name: dashboards, mountPath: /etc/grafana/dashboards, readOnly: true}
+            - {name: data, mountPath: /var/lib/grafana}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: datasources
+          configMap: {name: grafana-datasources}
+        - name: dashboard-providers
+          configMap: {name: grafana-dashboard-providers}
+        - name: dashboards
+          configMap: {name: grafana-dashboards}
+        - name: data
+          emptyDir: {sizeLimit: 256Mi}
+        - name: tmp
+          emptyDir: {sizeLimit: 16Mi}

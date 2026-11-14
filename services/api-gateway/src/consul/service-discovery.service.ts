@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { APP_CONFIG, type AppConfig } from '../config/app-config';
+import { GatewayMetrics } from '../metrics/gateway-metrics';
 import { consulHealthyInstancesPath } from '../routes';
 import { consulFetch, consulStatusError, describeError } from './consul-http';
 
@@ -69,6 +70,7 @@ export class ServiceDiscovery {
   constructor(
     @Inject(APP_CONFIG) private readonly config: AppConfig,
     @InjectPinoLogger(ServiceDiscovery.name) private readonly logger: PinoLogger,
+    private readonly metrics: GatewayMetrics,
   ) {}
 
   /** Next instance of the service (round robin), or null when there is no healthy instance (-> 503). */
@@ -99,6 +101,7 @@ export class ServiceDiscovery {
     const entry = this.cache.get(serviceName);
     if (entry?.instances) {
       entry.instances = entry.instances.filter((item) => item.id !== instance.id);
+      this.metrics.setUpstreamInstances(serviceName, entry.instances.length);
       if (entry.instances.length === 0) {
         entry.refreshAt = Math.min(entry.refreshAt, Date.now() + DISCOVERY_EMPTY_CACHE_MS);
       }
@@ -120,6 +123,10 @@ export class ServiceDiscovery {
         throw consulStatusError('Consul', response.status);
       }
       entry.instances = parseHealthyInstances(await response.json(), serviceName);
+      this.metrics.refreshUpstreamInstances(
+        serviceName,
+        entry.instances.map((instance) => instance.id),
+      );
       if (entry.instances.length === 0) {
         cacheMs = DISCOVERY_EMPTY_CACHE_MS;
       }

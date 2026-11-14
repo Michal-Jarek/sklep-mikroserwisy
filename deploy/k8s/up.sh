@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 # Starts the shop in local Kubernetes (Rancher Desktop): always context rancher-desktop, namespace shop.
-#   bash deploy/k8s/up.sh [infra|platform|services|all] [--build]          (default: all)
+#   bash deploy/k8s/up.sh [infra|platform|services|monitoring|all] [--build]          (default: all)
 # Order: namespace -> Secrets (secrets.sh) -> ConfigMaps from files in deploy/ -> network/ -> layer(s).
-# all = infra -> platform -> services. A layer is the directory deploy/k8s/<layer>/: one component per *.yaml,
+# all = infra -> platform -> services -> monitoring. First the script reads the InternalIP of the only node and the
+# address and port of the Kubernetes API (EndpointSlice of the Service kubernetes): they replace __NODE_IP__ in the
+# ConfigMap prometheus-config and __NODE_IP__, __API_IP__, __API_PORT__ in the template network/node-access.yaml.tpl
+# (no address is stored in the repo; the API address can change after a restart of the VM). The layer monitoring
+# first applies the cluster-wide objects of cluster/prometheus-kubelet.yaml (ClusterRole and ClusterRoleBinding,
+# standing consent of Michał; down.sh never deletes them).
+# A layer is the directory deploy/k8s/<layer>/: one component per *.yaml,
 # a Job always alone in its own file. infra: workloads, wait for Ready, then the Jobs; platform and services:
 # the Jobs (migrations) first, then the workloads. A Job is deleted and created again on every run (a Job
 # cannot be changed) and the script waits for Complete right away (it is removed 10 minutes after it ends).
@@ -24,7 +30,7 @@ dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo=$(cd "$dir/../.." && pwd)
 
 usage() {
-  echo "usage: bash deploy/k8s/up.sh [infra|platform|services|all] [--build]" >&2
+  echo "usage: bash deploy/k8s/up.sh [infra|platform|services|monitoring|all] [--build]" >&2
   exit 2
 }
 
@@ -32,7 +38,7 @@ target=""
 build=0
 for arg in "$@"; do
   case $arg in
-    infra | platform | services | all)
+    infra | platform | services | monitoring | all)
       [ -z "$target" ] || usage
       target=$arg
       ;;
@@ -63,6 +69,36 @@ if [ "$memory" -eq 0 ]; then
 elif [ "$memory" -lt "$MIN_MEMORY" ]; then
   echo "warning: the Rancher Desktop VM has $((memory / 1048576)) MiB, at least 7.5 GiB recommended" \
     "(Preferences > Virtual Machine)" >&2
+fi
+
+# Addresses outside the pod network for the job kubelet of Prometheus and the template network/node-access.yaml.tpl,
+# read on every run.
+ipv4_regex='^[0-9]{1,3}(\.[0-9]{1,3}){3}$'
+node_count=$(kubectl --context "$CONTEXT" get nodes -o name | wc -l | tr -d ' ')
+if [ "$node_count" -ne 1 ]; then
+  echo "the cluster has $node_count nodes, exactly one expected (Prometheus scrapes the kubelet of one node address)" >&2
+  exit 1
+fi
+node_ip=""
+for address in $(kubectl --context "$CONTEXT" get nodes \
+  -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}'); do
+  if [[ $address =~ $ipv4_regex ]]; then
+    node_ip=$address
+    break
+  fi
+done
+if [ -z "$node_ip" ]; then
+  echo "the node has no IPv4 InternalIP (kubectl --context $CONTEXT get nodes -o wide)" >&2
+  exit 1
+fi
+api_ip=""
+api_port=""
+read -r api_ip api_port _ <<<"$(kubectl --context "$CONTEXT" -n default get endpointslices \
+  -l kubernetes.io/service-name=kubernetes \
+  -o jsonpath='{range .items[?(@.addressType=="IPv4")]}{.endpoints[0].addresses[0]} {.ports[0].port}{"\n"}{end}')" || true
+if ! [[ $api_ip =~ $ipv4_regex && $api_port =~ ^[0-9]+$ ]]; then
+  echo "no IPv4 address of the Kubernetes API in the EndpointSlice of the Service kubernetes (namespace default)" >&2
+  exit 1
 fi
 
 if [ "$build" -eq 1 ]; then
@@ -101,10 +137,35 @@ apply_configmap postgres-init --from-file="$repo/deploy/postgres/init"
 apply_configmap mongo-init --from-file="$repo/deploy/mongo/init"
 apply_configmap rabbitmq-setup --from-file="$repo/deploy/rabbitmq/definitions.json" \
   --from-file="$repo/deploy/rabbitmq/setup.sh"
+# Prometheus and Grafana load these files at start (no reload over HTTP): a changed ConfigMap restarts the running
+# Deployment.
+# prometheus-config: __NODE_IP__ replaced on stdout, the file in the repo stays a template.
+prometheus_configmap=$(sed "s/__NODE_IP__/$node_ip/g" "$repo/deploy/monitoring/prometheus/prometheus.yml" |
+  apply_configmap prometheus-config --from-file=prometheus.yml=/dev/stdin)
+echo "$prometheus_configmap"
+if [ "$prometheus_configmap" = "configmap/prometheus-config configured" ] && k get deployment prometheus >/dev/null 2>&1; then
+  k rollout restart deployment/prometheus
+fi
+grafana_configmaps=$(apply_configmap grafana-datasources --from-file="$repo/deploy/monitoring/grafana/datasources.yaml")
+grafana_configmaps+=$'\n'$(apply_configmap grafana-dashboard-providers \
+  --from-file="$repo/deploy/monitoring/grafana/dashboards.yaml")
+grafana_configmaps+=$'\n'$(apply_configmap grafana-dashboards --from-file="$repo/deploy/monitoring/grafana/dashboards")
+echo "$grafana_configmaps"
+case $grafana_configmaps in
+  *" configured"*)
+    if k get deployment grafana >/dev/null 2>&1; then
+      k rollout restart deployment/grafana
+    fi
+    ;;
+esac
 
 if compgen -G "$dir/network/*.yaml" >/dev/null; then
   echo "== network"
   k apply -f "$dir/network/"
+  # The two egress rules to the node and to the API with the addresses of this run (the template is not *.yaml,
+  # so the line above skips it).
+  sed -e "s/__NODE_IP__/$node_ip/g" -e "s/__API_IP__/$api_ip/g" -e "s/__API_PORT__/$api_port/g" \
+    "$dir/network/node-access.yaml.tpl" | k apply -f -
 fi
 
 deadline=0
@@ -201,6 +262,10 @@ start_layer() {
   done
   echo "== $layer"
   deadline=$((SECONDS + LAYER_TIMEOUT))
+  # Only this file outside the namespace (ClusterRole and ClusterRoleBinding for the kubelet metrics of Prometheus).
+  if [ "$layer" = monitoring ]; then
+    kubectl --context "$CONTEXT" apply -f "$dir/cluster/prometheus-kubelet.yaml"
+  fi
   if [ "$layer" != infra ] && [ ${#jobs[@]} -gt 0 ]; then
     for f in "${jobs[@]}"; do
       run_job "$layer" "$f"
@@ -224,7 +289,7 @@ start_layer() {
 }
 
 case $target in
-  all) layers="infra platform services" ;;
+  all) layers="infra platform services monitoring" ;;
   *) layers=$target ;;
 esac
 for layer in $layers; do

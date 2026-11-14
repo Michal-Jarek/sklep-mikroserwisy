@@ -1,0 +1,148 @@
+# kube-state-metrics: state of the shop objects as metrics for Prometheus (replicas of Deployments and
+# StatefulSets, HPA, pod phase and container restarts). Only the namespace shop: a Role with list/watch on four
+# resources, no ClusterRole (stage 9b, decision 12). Prometheus scrapes kube-state-metrics:9180 (job
+# kube-state-metrics); the self metrics on 9181 are not scraped.
+# The only pod of the shop besides prometheus with a service account token (decision 14): it reads the API.
+# Its way to the API is the NetworkPolicy kube-state-metrics-api from the template network/node-access.yaml.tpl
+# (ipBlock of the API address, filled in by deploy/k8s/up.sh).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kube-state-metrics
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: kube-state-metrics
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: monitoring
+automountServiceAccountToken: true
+---
+# Read only, only what --resources below lists (secrets, configmaps and the other namespaces stay closed).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kube-state-metrics
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: kube-state-metrics
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: monitoring
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [list, watch]
+  - apiGroups: [apps]
+    resources: [deployments, statefulsets]
+    verbs: [list, watch]
+  - apiGroups: [autoscaling]
+    resources: [horizontalpodautoscalers]
+    verbs: [list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kube-state-metrics
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: kube-state-metrics
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: monitoring
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kube-state-metrics
+subjects:
+  - kind: ServiceAccount
+    name: kube-state-metrics
+    namespace: shop
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kube-state-metrics
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: kube-state-metrics
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: monitoring
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: kube-state-metrics
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: monitoring
+  # Only the metrics of the objects; the self metrics port (telemetry, 9181) is not exposed.
+  ports:
+    - {name: http-metrics, port: 9180, targetPort: http-metrics}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kube-state-metrics
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: kube-state-metrics
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kube-state-metrics
+      app.kubernetes.io/part-of: shop
+      app.kubernetes.io/component: monitoring
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kube-state-metrics
+        app.kubernetes.io/part-of: shop
+        app.kubernetes.io/component: monitoring
+    spec:
+      serviceAccountName: kube-state-metrics
+      # Token of the own service account (Role above): kube-state-metrics lists and watches the objects through
+      # the API (decision 14, an exception described in deploy/k8s/README.md, section "Wyjątki").
+      automountServiceAccountToken: true
+      # No <SERVICE>_PORT=tcp://... variables from the other Services of the namespace (convention, see README).
+      # The address of the API (KUBERNETES_SERVICE_HOST) is always set by Kubernetes.
+      enableServiceLinks: false
+      securityContext:
+        # User nobody of the image (uid 65534); nothing is written to disk.
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: kube-state-metrics
+          image: registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.20.0
+          imagePullPolicy: IfNotPresent
+          # The image entrypoint sets --port=8080 --telemetry-port=8081; the whole command line is set here instead.
+          command: ["/kube-state-metrics"]
+          args:
+            - --namespaces=shop
+            - --resources=pods,deployments,statefulsets,horizontalpodautoscalers
+            # 9xxx: not to be confused with the service ports 8080-8089.
+            - --port=9180
+            - --telemetry-port=9181
+          ports:
+            - {name: http-metrics, containerPort: 9180}
+            - {name: telemetry, containerPort: 9181}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {cpu: 200m, memory: 128Mi}
+          # As in the manifests of kube-state-metrics v2.20: /livez on the metrics port, /readyz on the telemetry
+          # port. The kubelet probes come from the node, so the NetworkPolicy does not block them.
+          livenessProbe:
+            httpGet: {path: /livez, port: http-metrics}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: {path: /readyz, port: telemetry}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5

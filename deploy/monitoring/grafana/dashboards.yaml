@@ -1,0 +1,13 @@
+# Grafana dashboard provider (ConfigMap grafana-dashboard-providers, /etc/grafana/provisioning/dashboards): the
+# dashboards are the files of deploy/monitoring/grafana/dashboards/ (ConfigMap grafana-dashboards). Saving in the UI
+# is not possible: a permanent change = exported JSON in the repo + bash deploy/k8s/up.sh monitoring.
+apiVersion: 1
+providers:
+  - name: shop
+    orgId: 1
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/dashboards

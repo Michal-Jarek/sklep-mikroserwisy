@@ -1,0 +1,60 @@
+# Prometheus of the shop in Kubernetes (deploy/k8s/monitoring/prometheus.yaml, namespace shop).
+# deploy/k8s/up.sh puts this file into the ConfigMap prometheus-config (key prometheus.yml) and replaces the marker
+# in the target of the job kubelet with the InternalIP of the node; a changed ConfigMap restarts the Prometheus pod.
+# The job names are used by the Grafana dashboard (deploy/monitoring/grafana/dashboards/shop.json). No secrets in
+# this file: the job kubelet reads the token of the service account prometheus from its file in the pod.
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+
+scrape_configs:
+  # Every ready Gateway pod separately: the headless Service api-gateway-metrics resolves to the pod addresses.
+  - job_name: api-gateway
+    dns_sd_configs:
+      - names: [api-gateway-metrics.shop.svc.cluster.local]
+        type: A
+        port: 9080
+        refresh_interval: 15s
+
+  # Built-in plugin rabbitmq_prometheus: totals of the broker (messages, connections, memory).
+  - job_name: rabbitmq
+    static_configs:
+      - targets: [rabbitmq.shop.svc.cluster.local:15692]
+
+  # The same plugin, numbers per queue (messages ready and unacknowledged, consumers), including the *.dlq queues.
+  - job_name: rabbitmq-queues
+    metrics_path: /metrics/detailed
+    params:
+      family: [queue_coarse_metrics, queue_consumer_count]
+    static_configs:
+      - targets: [rabbitmq.shop.svc.cluster.local:15692]
+
+  # Replicas of Deployments and StatefulSets, HPA, pod phase and container restarts (namespace shop only).
+  - job_name: kube-state-metrics
+    static_configs:
+      - targets: [kube-state-metrics.shop.svc.cluster.local:9180]
+
+  # CPU and memory of the node and of the pods from the kubelet of the only node (ClusterRole
+  # shop-prometheus-kubelet: get nodes/metrics). TLS verified with the cluster CA, the node address is in the SAN
+  # of the kubelet certificate.
+  - job_name: kubelet
+    scheme: https
+    metrics_path: /metrics/resource
+    # The kubelet sends its own timestamps; without this a removed pod stays in queries for 5 min.
+    track_timestamps_staleness: true
+    authorization:
+      credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    tls_config:
+      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    static_configs:
+      - targets: ['__NODE_IP__:10250']
+    metric_relabel_configs:
+      # Kept: node_* (no namespace label) and every series of the namespace shop; pods of other namespaces dropped.
+      - source_labels: [__name__, namespace]
+        separator: ;
+        regex: 'node_.+;.*|.+;shop'
+        action: keep
+
+  - job_name: prometheus
+    static_configs:
+      - targets: [localhost:9090]

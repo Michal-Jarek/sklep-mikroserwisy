@@ -213,8 +213,8 @@ spec:
             matchLabels: {app.kubernetes.io/name: cart-service}
       ports: [{protocol: TCP, port: 6379}]
 ---
-# rabbitmq: event senders and receivers -> 5672 (AMQP); Job rabbitmq-setup -> 15672 (HTTP API). No egress.
-# The management UI (15672) only through kubectl port-forward (node traffic).
+# rabbitmq: event senders and receivers -> 5672 (AMQP); Job rabbitmq-setup -> 15672 (HTTP API); prometheus -> 15692
+# (metrics). No egress. The management UI (15672) only through kubectl port-forward (node traffic).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -247,6 +247,11 @@ spec:
         - podSelector:
             matchLabels: {app.kubernetes.io/name: rabbitmq-setup}
       ports: [{protocol: TCP, port: 15672}]
+    - from:
+        # prometheus -> rabbitmq 15692: metrics of the plugin rabbitmq_prometheus (queues, DLQ, message rates).
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: prometheus}
+      ports: [{protocol: TCP, port: 15692}]
 ---
 # Job rabbitmq-setup -> rabbitmq 15672 (HTTP API of rabbitmqadmin).
 apiVersion: networking.k8s.io/v1

@@ -28,7 +28,7 @@ Szybki start: sekcje [„Uruchomienie w Docker Compose”](#uruchomienie-w-docke
 | `GET /health/live` | **200** `{"status":"UP"}` | proces działa; bez sprawdzania zależności |
 | `GET /health/ready` | **200** `{"status":"UP"}`, gdy konfiguracja z Consul KV jest wczytana i poprawna; inaczej **503** `SERVICE_UNAVAILABLE` | Redis, Consul (po wczytaniu konfiguracji) i Auth Service nie są warunkiem |
 | `/api/v1/**` | odpowiedź usługi albo błąd Gateway | `OPTIONS` tylko jako zapytanie wstępne CORS (sekcja „CORS”), inaczej **405** |
-| każda inna ścieżka | **404** `NOT_FOUND` | |
+| każda inna ścieżka | **404** `NOT_FOUND` | także `/metrics` – metryki są na osobnym porcie 9080 (sekcja „Metryki”) |
 
 Gateway nie ma Swaggera (`/docs`, `/openapi.json`); dokumentację API mają usługi.
 
@@ -67,12 +67,14 @@ Gdy usługa nie odpowiada:
 
 | Sytuacja | Odpowiedź Gateway | Ponowienie |
 |---|---|---|
-| brak połączenia z instancją (`ECONNREFUSED`, `EHOSTUNREACH`, `ECONNRESET` przed odpowiedzią, brak połączenia w 2 s) | **502** `BAD_GATEWAY`; instancja wypada z listy do następnego odświeżenia z Consula (do 10 s; gdy była ostatnia na liście – odświeżenie po 2 s) | jedno, od razu, do innej instancji (jeśli jest): `GET` i `HEAD` przy każdym z tych błędów; `POST`, `PUT`, `PATCH`, `DELETE` tylko, gdy połączenie nie powstało (`ECONNREFUSED`, `EHOSTUNREACH`, brak połączenia w 2 s), bez `ECONNRESET` |
+| brak połączenia z instancją (`ECONNREFUSED`, `EHOSTUNREACH`, `ECONNRESET` przed odpowiedzią, brak połączenia w 2 s) | **502** `BAD_GATEWAY`, gdy nie udała się żadna próba; każda instancja bez połączenia wypada z listy do następnego odświeżenia z Consula (do 10 s; gdy była ostatnia na liście – odświeżenie po 2 s) | do 2, od razu, każde do innej instancji z listy (razem najwyżej 3 próby; instancja już próbowana w tym żądaniu nie dostaje go drugi raz; gdy na liście nie ma innej instancji – koniec): `GET` i `HEAD` przy każdym z tych błędów; `POST`, `PUT`, `PATCH`, `DELETE` tylko, gdy połączenie nie powstało (`ECONNREFUSED`, `EHOSTUNREACH`, brak połączenia w 2 s), bez `ECONNRESET` |
 | brak odpowiedzi w `proxy.timeoutSeconds` | **504** `GATEWAY_TIMEOUT` | nie |
 | inny błąd sieci przed odpowiedzią | **502** `BAD_GATEWAY` | nie |
 | odpowiedź 5xx usługi | odpowiedź usługi bez zmian | nie |
 
 Ponowienie `POST`, `PUT`, `PATCH` i `DELETE` jest bezpieczne, bo usługa nie dostała żądania i nie wykona go dwa razy; ponowienie wysyła tę samą treść. Takie żądania trafiają na zamykany pod, który jest jeszcze na liście instancji (np. podczas `rollout restart`). Po zerwaniu połączenia w trakcie (`ECONNRESET`), po przekroczeniu czasu odpowiedzi i po odpowiedzi 5xx Gateway ich nie ponawia, bo usługa mogła już wykonać żądanie.
+
+Ponowienia są dwa, a nie jedno, bo kilka podów usługi może kończyć się naraz (zejście HPA o więcej niż jeden pod, `kubectl scale`). Kończący się pod wyrejestrowuje się z Consula dopiero po SIGTERM, a Gateway trzyma listę instancji do 10 s, więc przy jednym ponowieniu obie próby mogły trafić w zamknięte pody (**502**), choć działający pod był na liście. Limit 3 prób to zasada D2 (najwyżej 2 ponowienia, `docs/decisions.md`). Próba bez połączenia trwa najwyżej 2 s, więc ponowienia przy braku połączenia wydłużają żądanie najwyżej o ok. 4 s; `GET` i `HEAD` po zerwaniu połączenia w trakcie – najwyżej o czas dwóch kolejnych prób (połączenie i `proxy.timeoutSeconds`).
 
 Do circuit breakera usługi liczą się jako awarie tylko awarie sieci: brak połączenia, brak odpowiedzi w czasie, inny błąd sieci oraz odpowiedzi usługi 502 i 504 (sekcja „Limity żądań i circuit breaker”). Odpowiedzi 500 i 503 usługi nie są awarią. Żądanie odrzucone przed wysłaniem (400 z kroku 10) nie liczy się.
 
@@ -266,7 +268,7 @@ Gateway ma osobny obwód (`opossum`) dla każdej usługi docelowej, np. `product
 | czas otwarcia | 30 s, potem jedno żądanie próbne (stan półotwarty) |
 | własny timeout | brak; czas pilnuje proxy (2 s na połączenie, `proxy.timeoutSeconds` na odpowiedź) |
 
-- **Awaria (tylko sieć):** brak połączenia (po ewentualnym ponowieniu), brak odpowiedzi w czasie, inny błąd sieci, odpowiedź usługi 502 albo 504. Odpowiedź usługi i tak trafia do klienta bez zmian.
+- **Awaria (tylko sieć):** brak połączenia (po ewentualnych ponowieniach – obwód liczy żądanie raz, z wynikiem ostatniej próby, nie każdą próbę), brak odpowiedzi w czasie, inny błąd sieci, odpowiedź usługi 502 albo 504. Odpowiedź usługi i tak trafia do klienta bez zmian.
 - **Sukces:** każda inna odpowiedź usługi, także 4xx (np. 404, 409), 500 i 503. Usługa, która odpowiada 500 albo 503, odpowiada szybko i nie zajmuje zasobów Gateway, a błąd 500 wywołany żądaniem jednego klienta nie może wyłączać usługi pozostałym (np. 503 Auth Service przy awarii User Service nie blokuje logowania).
 - **Nie liczy się:** brak zdrowej instancji w Consulu (503 z kroku 9), żądanie odrzucone przed wysłaniem do usługi (400 `Bad request` z kroku 10) i żądanie, którego klient rozłączył się przed odpowiedzią usługi (liczone jak sukces).
 - **Obwód otwarty:** od razu **503** `SERVICE_UNAVAILABLE`, bez pytania Consula i usługi. Inne usługi działają normalnie.
@@ -316,6 +318,42 @@ Treść zawsze `{"status","error","message","requestId"}`.
 | 504 `GATEWAY_TIMEOUT` | brak odpowiedzi usługi w `proxy.timeoutSeconds` | `Service did not respond in time` |
 
 Błąd zwrócony przez usługę (np. jej 404 albo 409) przechodzi bez zmian i nie jest błędem Gateway. Odpowiedź usługi ma zwykle nagłówek `X-Instance-Id`, błąd Gateway nigdy go nie ma. Komunikat 404 dla braku trasy i dla reguły `blocked` jest ten sam, więc z zewnątrz nie widać, czy endpoint wewnętrzny istnieje.
+
+## Metryki
+
+Gateway wystawia metryki w formacie Prometheus na **osobnym porcie 9080**: `GET /metrics` (także `HEAD`) → **200**, `Content-Type: text/plain; version=0.0.4; charset=utf-8`. Inna ścieżka → **404**, inna metoda → **405** (krótki tekst, nie format zespołu). Port jest stały (bez zmiennej środowiskowej), serwer słucha na `0.0.0.0`, startuje razem z Gateway i zamyka się przy jego zatrzymaniu. Nie jest rejestrowany w Consulu.
+
+Port 9080 jest dostępny tylko wewnątrz kontenera albo klastra: w Docker Compose nie jest opublikowany na laptopie, w Kubernetesie zbiera go Prometheus przez usługę bez adresu `api-gateway-metrics` (Service `api-gateway` i Ingress mają tylko 8080). `/metrics` nie jest dostępne przez Ingress ani przez port API – osobny port oddziela drogi: Traefik dochodzi tylko do 8080, Prometheus tylko do 9080, więc z zewnątrz nie widać metryk, a Prometheus nie ma drogi do API (decyzja 5 etapu 9b). Jak zbierać i oglądać metryki w klastrze: [deploy/k8s/README.md](../../deploy/k8s/README.md#metryki-prometheus-i-grafana), sekcja „Metryki (Prometheus i Grafana)”.
+
+Podgląd w Docker Compose (z katalogu głównego repozytorium):
+
+```bash
+docker compose -f deploy/compose.yaml exec api-gateway wget -qO- http://127.0.0.1:9080/metrics | grep '^gateway_'
+```
+
+| Metryka | Typ | Etykiety | Kiedy się zmienia |
+|---|---|---|---|
+| `gateway_http_requests_total` | counter | `service`, `method`, `code` | każda odpowiedź Gateway, także jego własne błędy (400, 401, 403, 404, 405, 429, 502, 503, 504); bez `/health/*` |
+| `gateway_http_request_duration_seconds` | histogram | `service`, `method` | jw.; czas od przyjęcia żądania do końca odpowiedzi; kubełki `0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10` s |
+| `gateway_upstream_requests_total` | counter | `service`, `upstream_instance` | każda próba wysłania żądania do instancji usługi, do 3 na żądanie (także ponowienia na innych instancjach); serie instancji, których nie ma na nowej liście z Consula, są usuwane przy odświeżeniu listy (opis przy `upstream_instance`) |
+| `gateway_upstream_instances` | gauge | `service` | liczba zdrowych instancji znanych Gateway: po każdym odświeżeniu listy z Consula i po wyłączeniu instancji po nieudanym połączeniu |
+| `gateway_circuit_breaker_state` | gauge | `service` | `0` zamknięty, `1` półotwarty, `2` otwarty; przy utworzeniu obwodu (pierwsze żądanie do usługi) i przy każdej zmianie stanu |
+| `process_*`, `nodejs_*` | różne | — | domyślne metryki `prom-client` (pamięć, CPU, pętla zdarzeń, GC) |
+
+Wartości etykiet:
+
+- `service` – nazwa usługi z tabeli `routes` w KV dla pierwszego segmentu ścieżki pod `/api/v1` (sekcje „Trasy” i „Kanoniczna ścieżka”), także gdy żądanie skończyło się przed wysłaniem do usługi (429, 401, 404 z reguły `blocked`); `none`, gdy konfiguracja nie jest wczytana, ścieżka jest niekanoniczna, poza `/api/v1` albo bez trasy. Możliwe wartości: nazwy usług z `routes` i `none`.
+- `method` – `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`; każda inna metoda → `OTHER`.
+- `code` – kod statusu wysłany klientowi, np. `"200"`.
+- `upstream_instance` – ID instancji usługi w Consulu (w Kubernetesie nazwa poda). Serie istnieją tylko dla instancji z ostatniej listy zdrowych instancji z Consula: przy każdym odświeżeniu listy (co 10 s) Gateway usuwa serie instancji tej usługi, których na liście już nie ma (przy wyłączeniu instancji po nieudanym połączeniu seria zostaje, bo instancja zwykle wraca przy następnym odświeżeniu). Na usługę jest najwyżej 20 wartości; próby do kolejnych instancji są liczone jako `other`, a seria `other` znika przy pierwszym odświeżeniu, po którym usługa ma ≤ 20 instancji. Instancja, która wróci po usunięciu serii, liczy się od zera. Dzięki temu liczba serii nie rośnie od kolejnych rejestracji w Consulu (także przez pośrednika `consul-guard`) ani od kolejnych wdrożeń i skalowania (stare nazwy podów nie zostają na wykresach do restartu Gateway).
+- `gateway_instance` – na każdej serii: `INSTANCE_ID` tej instancji Gateway (sekcja „Zmienne środowiskowe”). Etykieta `instance` należy do Prometheusa, dlatego Gateway jej nie używa.
+
+Ograniczenia:
+
+- W etykietach nigdy nie ma ścieżki, query, ID użytkownika, adresu IP ani nagłówków, więc liczba serii nie rośnie od żądań klientów, a w metrykach nie ma danych osobowych.
+- Żądanie, którego klient rozłączył się przed odpowiedzią, może nie zostać policzone (Fastify nie wywołuje wtedy `onResponse`).
+- Odpowiedzi wysyłane przez serwer HTTP przed Fastify – 400 dla żądania, którego nie da się odczytać (np. nieznana metoda `BREW`), 408 i 431 – nie są liczone.
+- Liczniki są w pamięci instancji i zerują się przy restarcie; sumy dla całego Gateway liczy Prometheus (np. `sum by (service) (rate(gateway_http_requests_total[1m]))`).
 
 ## Konfiguracja w Consul KV
 

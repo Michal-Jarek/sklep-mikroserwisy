@@ -1,6 +1,6 @@
 # Sklep w Kubernetesie (Rancher Desktop)
 
-Cały sklep w lokalnym klastrze Kubernetes z Rancher Desktop (k3s), w przestrzeni nazw `shop`: infrastruktura (Consul z ACL, PostgreSQL, MongoDB, dwa Redisy, RabbitMQ, Mailpit), API Gateway, Auth Service, User Service, frontend i usługi zespołu. Klaster używa tych samych plików konfiguracji co Docker Compose (`deploy/consul/config/`, `deploy/postgres/init/`, `deploy/mongo/init/`, `deploy/rabbitmq/`), tych samych haseł z `deploy/.env` i tych samych obrazów `:dev`. Z zewnątrz sklep jest dostępny tylko przez Ingress `https://shop.localhost` (sekcja „Ingress i TLS”).
+Cały sklep w lokalnym klastrze Kubernetes z Rancher Desktop (k3s), w przestrzeni nazw `shop`: infrastruktura (Consul z ACL, PostgreSQL, MongoDB, dwa Redisy, RabbitMQ, Mailpit), API Gateway, Auth Service, User Service, frontend, usługi zespołu i monitoring (Prometheus, Grafana, kube-state-metrics — sekcja „Metryki (Prometheus i Grafana)”). Klaster używa tych samych plików konfiguracji co Docker Compose (`deploy/consul/config/`, `deploy/postgres/init/`, `deploy/mongo/init/`, `deploy/rabbitmq/`), tych samych haseł z `deploy/.env` i tych samych obrazów `:dev`. Z zewnątrz sklep jest dostępny tylko przez Ingress `https://shop.localhost` (sekcja „Ingress i TLS”).
 
 Opis infrastruktury, haseł i konwencji wspólnych z compose: [deploy/README.md](../README.md).
 
@@ -16,12 +16,12 @@ Opis infrastruktury, haseł i konwencji wspólnych z compose: [deploy/README.md]
    kubectl config get-contexts rancher-desktop
    ```
    Wynik: jeden wiersz z nazwą `rancher-desktop`. Błąd `not found` oznacza, że Kubernetes w Rancher Desktop jest wyłączony albo jeszcze startuje.
-3. **Hasła** – ten sam skrypt co dla compose. Dopisuje brakujące zmienne, w tym trzy tokeny Consula (tylko dla Kubernetesa): `CONSUL_MANAGEMENT_TOKEN` (token zarządzający), `CONSUL_AUTH_TOKEN` i `CONSUL_GATEWAY_TOKEN` (tokeny Auth i Gateway, sekcja „Consul z ACL”):
+3. **Hasła** – ten sam skrypt co dla compose. Dopisuje brakujące zmienne, w tym tylko dla Kubernetesa trzy tokeny Consula: `CONSUL_MANAGEMENT_TOKEN` (token zarządzający), `CONSUL_AUTH_TOKEN` i `CONSUL_GATEWAY_TOKEN` (tokeny Auth i Gateway, sekcja „Consul z ACL”) oraz hasło admina Grafany `GRAFANA_ADMIN_PASSWORD` (sekcja „Metryki”):
    ```bash
    bash deploy/create-secrets.sh
    ```
 4. **mkcert** (od części 7b – certyfikat `shop.localhost`): instalacja według [README mkcert](https://github.com/FiloSottile/mkcert), potem raz `mkcert -install` (dodaje lokalny urząd certyfikacji do systemu i przeglądarek).
-5. **Wolna pamięć:** compose i Kubernetes mogą działać naraz (porty się nie pokrywają), ale na maszynie 8 GB wygodniej zatrzymać compose (`docker compose -f deploy/compose.yaml --profile full-shop stop`).
+5. **Wolna pamięć:** compose i Kubernetes mogą działać naraz (porty się nie pokrywają), ale na maszynie 8 GB wygodniej zatrzymać compose (`docker compose -f deploy/compose.yaml --profile full-shop stop`). Monitoring (warstwa `monitoring`) zajmuje ok. 300 MiB po starcie i do ok. 450 MiB po dłuższym oglądaniu panelu (Grafana rośnie do ok. 380 MiB); obraz Grafany ma ok. 1,9 GB, więc pierwsze uruchomienie tej warstwy trwa dłużej (pobieranie obrazu).
 
 ## Uruchomienie od zera
 
@@ -40,15 +40,20 @@ Wszystkie pody `Running` i `READY 1/1`, pody Jobów (`consul-kv-seed-…`, `rabb
 
 ### Warstwy
 
-`bash deploy/k8s/up.sh [infra|platform|services|all] [--build]` (bez argumentu: `all`). Warstwa to katalog `deploy/k8s/<warstwa>/`; `all` = `infra` → `platform` → `services`.
+`bash deploy/k8s/up.sh [infra|platform|services|monitoring|all] [--build]` (bez argumentu: `all`). Warstwa to katalog `deploy/k8s/<warstwa>/`; `all` = `infra` → `platform` → `services` → `monitoring`.
 
 | Warstwa | Obciążenia | Joby |
 |---|---|---|
 | `infra` | `consul`, `consul-guard` (2 repliki), `postgres`, `mongo`, `redis-gateway`, `redis-cart`, `rabbitmq`, `mailpit` | `consul-kv-seed`, `rabbitmq-setup` (po obciążeniach) |
 | `platform` (jak profil compose `platform`) | `api-gateway` (2 repliki), `auth-service`, `user-service`, `frontend`, Ingress | `auth-migrate`, `user-migrate` (przed obciążeniami) |
 | `services` | `cart-service`, `inventory-service`, `review-service`, `product-service`, `notification-service` | `product-migrate` (przed obciążeniami) |
+| `monitoring` | `prometheus`, `grafana`, `kube-state-metrics`; przed nimi obiekty całego klastra z `cluster/prometheus-kubelet.yaml` | — |
 
-Kolejność kroków `up.sh`: przestrzeń `shop` (`namespace.yaml`) → Secrety (`secrets.sh`) → ConfigMapy z plików `deploy/` → NetworkPolicy (`network/`, jeśli są) → warstwy. Na każdą warstwę skrypt czeka najwyżej 5 minut (`rollout status` obciążeń, `Complete` Jobów).
+Kolejność kroków `up.sh`: przestrzeń `shop` (`namespace.yaml`) → Secrety (`secrets.sh`) → ConfigMapy z plików `deploy/` → NetworkPolicy (`network/*.yaml`, jeśli są, i szablon `network/node-access.yaml.tpl`) → warstwy. Na każdą warstwę skrypt czeka najwyżej 5 minut (`rollout status` obciążeń, `Complete` Jobów).
+
+Przed tymi krokami `up.sh` odczytuje z klastra dwa adresy spoza sieci podów: `InternalIP` jedynego węzła (kubelet) i adres z portem API Kubernetesa (EndpointSlice usługi `kubernetes` w przestrzeni `default`). Podstawia je przy każdym uruchomieniu w ConfigMapie `prometheus-config` i w szablonie `node-access.yaml.tpl` (polecenie `sed` na standardowe wyjście, pliki w repo się nie zmieniają; w repo nie ma żadnego adresu). Klaster z więcej niż jednym węzłem, węzeł bez adresu IPv4 albo brak adresu API → komunikat i kod 1, zanim skrypt cokolwiek zmieni.
+
+Bez monitoringu (np. maszyna wirtualna z mniejszą pamięcią): `bash deploy/k8s/up.sh infra && bash deploy/k8s/up.sh platform && bash deploy/k8s/up.sh services`.
 
 Kody wyjścia: `0` – gotowe; `1` – błąd (Job zakończony błędem – skrypt wypisuje ostatnie 20 linii logu każdego jego kontenera, także `wait-for-network`; brak obrazu w Dockerze – sprawdzane tylko pody sklepu, z etykietą `app.kubernetes.io/part-of: shop`; przekroczony czas – skrypt wypisuje listę podów); `2` – złe argumenty, brak `kubectl`, brak kontekstu `rancher-desktop` (w `kubectl`, a przy `--build` także w Dockerze) albo klaster nie odpowiada. Warstwa bez plików: przy `all` komunikat `skipping <warstwa>: no manifests` i przejście dalej, przy jawnie podanej warstwie – ten sam komunikat i kod 1.
 
@@ -59,6 +64,7 @@ Ponowne uruchomienie jest bezpieczne: niezmienione obiekty zostają (`unchanged`
 | plik w `deploy/consul/config/` albo `deploy/rabbitmq/` | `bash deploy/k8s/up.sh infra` |
 | kod usługi (nowy obraz) | `bash deploy/k8s/up.sh <warstwa> --build` – skrypt najpierw buduje obrazy, a potem w podanej warstwie (przy `all` – w każdej), po jej Jobach migracji, robi `rollout restart` wdrożeń z obrazami `:dev` (przy `imagePullPolicy: Never` pody same nie pobierają nowego obrazu); nowy kod nie startuje na starym schemacie bazy, a wdrożeń innych warstw skrypt nie restartuje |
 | manifest w `deploy/k8s/<warstwa>/` | `bash deploy/k8s/up.sh <warstwa>` |
+| plik w `deploy/monitoring/` (konfiguracja Prometheusa, źródło danych i panele Grafany) | `bash deploy/k8s/up.sh monitoring` – zmieniona ConfigMapa (`configured`) → `rollout restart` Prometheusa albo Grafany (sekcja „Metryki”) |
 | wpis usługi w `deploy/compose.yaml` (zmienne, obraz, polecenie) | ta sama zmiana w manifeście `deploy/k8s/<warstwa>/<usługa>.yaml` (zmienne 1:1 z compose, kryterium K30), potem `bash deploy/k8s/up.sh <warstwa>`; bez tego Kubernetes po cichu działa ze starymi zmiennymi |
 | hasło w `deploy/.env` | procedura „Zmiana hasła” w sekcji „Infrastruktura w klastrze” (hasła baz i RabbitMQ zapisują się w danych – jak w compose) |
 
@@ -69,9 +75,9 @@ bash deploy/k8s/down.sh            # dane zostają
 bash deploy/k8s/down.sh --purge    # usuwa też dane i Secrety
 ```
 
-`down.sh` usuwa z przestrzeni `shop` wszystkie obiekty sklepu według rodzaju (nie według etykiet, więc także pozostałości po usuniętych manifestach i obiekty testowe): Ingress i middleware Traefika, HPA, PodDisruptionBudget, Deploymenty, StatefulSety, Joby, pozostałe pody, Service, ConfigMapy i NetworkPolicy. Czeka, aż znikną wszystkie pody (najwyżej 2 minuty). Wolumeny (PersistentVolumeClaim – dane PostgreSQL, MongoDB, RabbitMQ, Consula i koszyków) i Secrety zostają, więc następne `up.sh` startuje z tymi samymi danymi.
+`down.sh` usuwa z przestrzeni `shop` wszystkie obiekty sklepu według rodzaju (nie według etykiet, więc także pozostałości po usuniętych manifestach i obiekty testowe): Ingress i middleware Traefika, HPA, PodDisruptionBudget, Deploymenty, StatefulSety, Joby, pozostałe pody, Service, ConfigMapy, NetworkPolicy, Role, RoleBinding i ServiceAccount (poza `default`, które Kubernetes ma w każdej przestrzeni). Czeka, aż znikną wszystkie pody (najwyżej 2 minuty). Wolumeny (PersistentVolumeClaim – dane PostgreSQL, MongoDB, RabbitMQ, Consula i koszyków) i Secrety zostają, więc następne `up.sh` startuje z tymi samymi danymi.
 
-`--purge` usuwa dodatkowo wolumeny i Secrety: następne `up.sh` zakłada bazy, konta i token Consula od nowa. Żadna wersja nie usuwa przestrzeni `shop` ani niczego poza nią.
+`--purge` usuwa dodatkowo wolumeny i Secrety: następne `up.sh` zakłada bazy, konta i token Consula od nowa. Żadna wersja nie usuwa przestrzeni `shop` ani niczego poza nią — także ClusterRole i ClusterRoleBinding `shop-prometheus-kubelet` z `deploy/k8s/cluster/` zostają (sekcja „Wyjątki”).
 
 ## Struktura `deploy/k8s/`
 
@@ -79,7 +85,7 @@ bash deploy/k8s/down.sh --purge    # usuwa też dane i Secrety
 deploy/k8s/
   README.md        ten plik
   namespace.yaml   przestrzeń shop z etykietami Pod Security
-  up.sh            uruchomienie (warstwy, --build)
+  up.sh            uruchomienie (warstwy, --build, adresy węzła i API)
   down.sh          zatrzymanie (--purge)
   secrets.sh       Secrety z deploy/.env i deploy/secrets/ (uruchamia go up.sh)
   infra/           consul.yaml, consul-server.hcl, consul-kv-seed.yaml (Job), consul-acl-setup.sh,
@@ -89,8 +95,17 @@ deploy/k8s/
                    user-service.yaml, frontend.yaml, ingress.yaml
   services/        cart-service.yaml, inventory-service.yaml, review-service.yaml, product-migrate.yaml (Job),
                    product-service.yaml, notification-service.yaml
-  network/         NetworkPolicy całej przestrzeni
+  monitoring/      prometheus.yaml, grafana.yaml, kube-state-metrics.yaml
+  cluster/         prometheus-kubelet.yaml (ClusterRole i ClusterRoleBinding; stosuje up.sh w warstwie monitoring)
+  network/         NetworkPolicy całej przestrzeni (*.yaml) i szablon node-access.yaml.tpl (adresy wstawia up.sh)
+deploy/monitoring/ konfiguracja z repo dla ConfigMap warstwy monitoring:
+  prometheus/prometheus.yml                 zadania zbierania (job) Prometheusa
+  grafana/datasources.yaml                  źródło danych Grafany (Prometheus)
+  grafana/dashboards.yaml                   dostawca paneli z plików
+  grafana/dashboards/shop.json              panel „Sklep”
 ```
+
+Pliki konfiguracji Prometheusa i Grafany leżą poza `deploy/k8s/monitoring/`, bo `up.sh` stosuje jako manifest każdy `*.yaml` katalogu warstwy.
 
 Manifesty w `services/<usługa>/k8s/` (przykłady zespołu) **nie są używane** przy wdrożeniu – sklep w klastrze stawiają wyłącznie pliki z `deploy/k8s/`.
 
@@ -99,8 +114,8 @@ Manifesty w `services/<usługa>/k8s/` (przykłady zespołu) **nie są używane**
 Wzór dla każdego manifestu w `deploy/k8s/`:
 
 - **Jeden plik = jeden komponent** (obciążenie z jego Service, PodDisruptionBudget, HPA). **Job zawsze w osobnym pliku** – sam Job z etykietą `app.kubernetes.io/component: job`; `up.sh` rozpoznaje go po `kind: Job`, usuwa i tworzy od nowa przy każdym uruchomieniu, ustawia kolejność z tabeli „Warstwy”. Joby mają `ttlSecondsAfterFinished: 600`.
-- **Etykiety** na obiekcie i w szablonie poda: `app.kubernetes.io/name: <nazwa>` (= nazwa w compose, w Consulu i nazwa Service), `app.kubernetes.io/part-of: shop`, `app.kubernetes.io/component: infra | platform | service | job`. NetworkPolicy wybiera pody po `app.kubernetes.io/name`.
-- **Bezpieczeństwo kontenera** (każdy kontener i initContainer): `runAsNonRoot: true`, `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]`, `seccompProfile.type: RuntimeDefault`; pod: `automountServiceAccountToken: false`, `runAsUser`/`runAsGroup` = użytkownik z `Dockerfile` (Gateway, Auth, User, Cart `1000:1000`; Inventory, Review, Product, Notification `10001`; frontend `101`; obrazy infrastruktury – ich własny użytkownik, np. Consul `100:1000`), `fsGroup` przy wolumenach, a przy wolumenie trwałym (StatefulSet z PVC) także `fsGroupChangePolicy: OnRootMismatch` – bez tego kubelet zmienia prawa plików przy każdym montowaniu (RabbitMQ odrzuca wtedy `.erlang.cookie` po restarcie poda).
+- **Etykiety** na obiekcie i w szablonie poda: `app.kubernetes.io/name: <nazwa>` (= nazwa w compose, w Consulu i nazwa Service), `app.kubernetes.io/part-of: shop`, `app.kubernetes.io/component: infra | platform | service | monitoring | job`. NetworkPolicy wybiera pody po `app.kubernetes.io/name`.
+- **Bezpieczeństwo kontenera** (każdy kontener i initContainer): `runAsNonRoot: true`, `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]`, `seccompProfile.type: RuntimeDefault`; pod: `automountServiceAccountToken: false` (wyjątki: `prometheus` i `kube-state-metrics` — sekcja „Wyjątki”), `runAsUser`/`runAsGroup` = użytkownik z `Dockerfile` (Gateway, Auth, User, Cart `1000:1000`; Inventory, Review, Product, Notification `10001`; frontend `101`; obrazy infrastruktury i monitoringu – ich własny użytkownik, np. Consul `100:1000`, Prometheus i kube-state-metrics `65534`, Grafana `472`), `fsGroup` przy wolumenach, a przy wolumenie trwałym (StatefulSet z PVC) także `fsGroupChangePolicy: OnRootMismatch` – bez tego kubelet zmienia prawa plików przy każdym montowaniu (RabbitMQ odrzuca wtedy `.erlang.cookie` po restarcie poda).
 - **`enableServiceLinks: false`** w każdym podzie: inaczej Kubernetes dodaje do środowiska zmienne `<SERVICE>_PORT=tcp://…` i `<SERVICE>_SERVICE_HOST` dla każdej Service w przestrzeni (np. `CONSUL_PORT`, `RABBITMQ_PORT`); usługa, która nie ustawia takiej zmiennej jawnie i liczy na wartość domyślną, dostałaby `tcp://…` zamiast numeru portu. `readOnlyRootFilesystem: true` wszędzie, gdzie obraz na to pozwala (`emptyDir` na `/tmp` i katalogi robocze); wyjątki w sekcji „Wyjątki”. Przestrzeń wymusza Pod Security `baseline`, a `restricted` tylko ostrzega (`Warning: would violate PodSecurity "restricted"` przy `apply` = odstępstwo do opisania).
 - **initContainer `wait-for-network`** (Z12, Z13) w każdym obciążeniu, które przy starcie łączy się z Consulem (Gateway, Auth, User, usługi zespołu — cel `consul:8500`, czyli pośrednik `consul-guard`; sam `consul-guard` — `consul-server:8500`), i w każdym Jobie (`consul-kv-seed` → `consul-server:8500`, `rabbitmq-setup` → `rabbitmq:15672`, `*-migrate` → `postgres:5432`): w obrazie usługi albo Joba, próba TCP co 0,5 s, najwyżej 30 s, potem kod 1; ten sam `securityContext` co kontener główny, zasoby 10m/16Mi – 100m/64Mi. Powód: NetworkPolicy obejmuje nowy pod z opóźnieniem ok. 1,2 s (sekcja „NetworkPolicy”).
 - **Zasoby** (`requests`/`limits`, punkt wyjścia z pomiaru compose):
@@ -119,13 +134,16 @@ Wzór dla każdego manifestu w `deploy/k8s/`:
   | `rabbitmq` | 192Mi | 512Mi | 100m | 1000m |
   | `redis-gateway`, `redis-cart` | 16Mi | 64Mi | 10m | 200m |
   | `mailpit` | 32Mi | 128Mi | 10m | 200m |
+  | `prometheus` | 64Mi | 512Mi | 50m | 500m |
+  | `grafana` | 128Mi | 512Mi | 50m | 500m |
+  | `kube-state-metrics` | 32Mi | 128Mi | 10m | 200m |
   | Joby | 64Mi | 256Mi | 25m | 500m |
 
 - **Sondy** usług: startupProbe `/health/live` (`periodSeconds: 2`, `failureThreshold: 60`), liveness `/health/live` (`periodSeconds: 10`, `timeoutSeconds: 2`, `failureThreshold: 3`), readiness `/health/ready` (`periodSeconds: 5`, `timeoutSeconds: 3`). Infrastruktura – polecenia jak healthcheck w compose (Consul: lider wybrany; PostgreSQL `pg_isready -h 127.0.0.1`; Redis `redis-cli ping`; RabbitMQ `check_port_connectivity`), Mongo – `tcpSocket 27017`.
 - **Zamykanie:** każda usługa rejestrowana w Consulu ma `lifecycle.preStop.sleep.seconds: 10` i `terminationGracePeriodSeconds: 30` (inni trzymają listę adresów z Consula do 10 s). Gateway ma PodDisruptionBudget `minAvailable: 1`. Consul nie rejestruje sam siebie, więc nie ma `preStop`. `consul-guard` (też nie w Consulu): `preStop` 5 s (pod wypada z endpointów Service `consul`), po SIGTERM kończy rozpoczęte żądania (do 10 s), PodDisruptionBudget `minAvailable: 1`.
 - **Sekrety:** jeden Secret na obciążenie `<nazwa>-secret`, klucze = nazwy zmiennych środowiskowych (`secretKeyRef`); Joby migracji używają Secretu swojej usługi. Tworzy je `secrets.sh` (tabela niżej). Wartości nigdy nie trafiają do repo ani do manifestów.
 - **Zmienne:** dokładnie te z wpisu usługi w `deploy/compose.yaml` (nazwy i wartości nie-sekretne 1:1; hosty compose = nazwy Service w `shop`). Dodatkowo `SERVICE_ADDRESS` z `status.podIP` (adres rejestracji w Consulu) i `INSTANCE_ID` z `metadata.name` (poza Inventory i Review – ich kod sam dodaje przedrostek). Wyjątek: nginx frontendu wymaga pełnej nazwy (`GATEWAY_URL=http://api-gateway.shop.svc.cluster.local:8080`).
-- **Obrazy:** usługi – te same `<nazwa>:dev` co compose, `imagePullPolicy: Never` (k3s używa Dockera Rancher Desktop, obraz z `docker build` widać od razu); infrastruktura – obrazy publiczne w tych samych wersjach co compose, `imagePullPolicy: IfNotPresent`.
+- **Obrazy:** usługi – te same `<nazwa>:dev` co compose, `imagePullPolicy: Never` (k3s używa Dockera Rancher Desktop, obraz z `docker build` widać od razu); infrastruktura – obrazy publiczne w tych samych wersjach co compose, `imagePullPolicy: IfNotPresent`; monitoring (nie ma go w compose) – obrazy publiczne z przypiętą wersją: `prom/prometheus:v3.15.1`, `grafana/grafana:13.3.1`, `registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.20.0`, `imagePullPolicy: IfNotPresent`.
 - **Service** zawsze `type: ClusterIP`, nazwa = nazwa usługi, port z tabeli portów. Żadnych innych typów Service, portów na węźle ani sieci węzła w podach – z zewnątrz tylko Ingress (kryterium K2 sprawdza to `grep` po całym `deploy/k8s/`, także po tym pliku).
 
 ### Secrety (`secrets.sh`)
@@ -150,6 +168,7 @@ Dlaczego `--server-side` (menedżer pól `shop-secrets`): zwykłe `kubectl apply
 | `inventory-service-secret` | `DATABASE_URL` (z hasłem, jak w compose), `RABBITMQ_PASSWORD` | `INVENTORY_DB_PASSWORD`, `INVENTORY_RABBITMQ_PASSWORD` |
 | `review-service-secret` | `MONGODB_URL` (z hasłem, jak w compose) | `REVIEW_DB_PASSWORD` |
 | `notification-service-secret` | `DB_PASSWORD`, `RABBITMQ_PASSWORD` | `NOTIFICATION_DB_PASSWORD`, `NOTIFICATION_RABBITMQ_PASSWORD` |
+| `grafana-secret` | `GF_SECURITY_ADMIN_PASSWORD` (hasło konta `admin` Grafany) | `GRAFANA_ADMIN_PASSWORD` (tylko Kubernetes; compose go nie używa) |
 | `shop-tls` | `tls.crt`, `tls.key` | certyfikat mkcert (część 7b) |
 
 Wartości Secretów nie wyświetla się (`kubectl get secret -o yaml` pokazuje je w base64, czyli jawnie). Lista kluczy i ich długości bez wartości: `kubectl --context rancher-desktop -n shop describe secret <nazwa>`.
@@ -167,6 +186,10 @@ Tworzone przy każdym `up.sh` z plików repo poleceniem `kubectl create configma
 | `postgres-init` | `deploy/postgres/init/*` | `postgres` (tryb `0755`) |
 | `mongo-init` | `deploy/mongo/init/*` | `mongo` |
 | `rabbitmq-setup` | `deploy/rabbitmq/definitions.json`, `deploy/rabbitmq/setup.sh` | Job `rabbitmq-setup` |
+| `prometheus-config` | `deploy/monitoring/prometheus/prometheus.yml` (adres węzła wstawiony przez `up.sh` w miejsce `__NODE_IP__`) | `prometheus` (`/etc/prometheus`); zmiana treści → `up.sh` robi `rollout restart deploy/prometheus` |
+| `grafana-datasources` | `deploy/monitoring/grafana/datasources.yaml` | `grafana` (`/etc/grafana/provisioning/datasources`) |
+| `grafana-dashboard-providers` | `deploy/monitoring/grafana/dashboards.yaml` | `grafana` (`/etc/grafana/provisioning/dashboards`) |
+| `grafana-dashboards` | `deploy/monitoring/grafana/dashboards/*` | `grafana` (`/etc/grafana/dashboards`); zmiana treści którejkolwiek z trzech ConfigMap Grafany → `up.sh` robi `rollout restart deploy/grafana` |
 
 ## Infrastruktura w klastrze
 
@@ -178,7 +201,7 @@ Tworzone przy każdym `up.sh` z plików repo poleceniem `kubectl create configma
 | `mongo` | StatefulSet + Service `mongo:27017` | `mongo-0` | PVC `data-mongo-0` (1Gi) | `999:999` (`mongodb` z obrazu) |
 | `redis-gateway` | Deployment + Service `redis-gateway:6379` | `redis-gateway-…` | brak (liczniki limitów, jak w compose) | `999:1000` (`redis` z obrazu) |
 | `redis-cart` | StatefulSet + Service `redis-cart:6379` | `redis-cart-0` | PVC `data-redis-cart-0` (512Mi), AOF | `999:1000` |
-| `rabbitmq` | StatefulSet + Service `rabbitmq` (`amqp` 5672, `http` 15672) | `rabbitmq-0` | PVC `data-rabbitmq-0` (1Gi) | `100:101` (`rabbitmq` z obrazu) |
+| `rabbitmq` | StatefulSet + Service `rabbitmq` (`amqp` 5672, `http` 15672, `prometheus` 15692 – metryki dla Prometheusa) | `rabbitmq-0` | PVC `data-rabbitmq-0` (1Gi) | `100:101` (`rabbitmq` z obrazu) |
 | `mailpit` | Deployment + Service `mailpit` (`smtp` 1025, `http` 8025) | `mailpit-…` | brak (wiadomości znikają przy restarcie) | `1000:1000` |
 
 - StatefulSety używają zwykłego Service ClusterIP jako `serviceName` – każdy komponent ma jedną replikę, a klienci łączą się po nazwie Service.
@@ -232,6 +255,8 @@ W klastrze nic poza Ingressem nie ma portu na laptopie. Panele i Swagger otwiera
 | Mailpit (e-maile) | `kubectl --context rancher-desktop -n shop port-forward svc/mailpit 18025:8025` | http://127.0.0.1:18025 (także `localhost:18025`) |
 | Panel RabbitMQ | `kubectl --context rancher-desktop -n shop port-forward svc/rabbitmq 18672:15672` | http://127.0.0.1:18672 (konto `admin`, hasło `RABBITMQ_ADMIN_PASSWORD` z `deploy/.env`) |
 | Swagger usługi | `kubectl --context rancher-desktop -n shop port-forward svc/<usługa> 1808x:808x` (np. Product `18083:8083`) | np. http://127.0.0.1:18083/docs |
+| Grafana (panel „Sklep”) | `kubectl --context rancher-desktop -n shop port-forward svc/grafana 13000:3000` | http://127.0.0.1:13000 (bez logowania: podgląd; konto `admin`, hasło `GRAFANA_ADMIN_PASSWORD` z `deploy/.env`) |
+| Prometheus | `kubectl --context rancher-desktop -n shop port-forward svc/prometheus 19090:9090` | http://127.0.0.1:19090 (cele: http://127.0.0.1:19090/targets) |
 
 ## Consul z ACL
 
@@ -340,7 +365,7 @@ Zmiana `consul-server.hcl`: `bash deploy/k8s/up.sh infra`, potem `k rollout rest
 | Job `auth-migrate` | `platform/auth-migrate.yaml` | `prisma migrate deploy` na `auth_db` (to samo polecenie co w compose) |
 | Job `user-migrate` | `platform/user-migrate.yaml` | `alembic upgrade head` na `user_db` |
 | Deployment + Service `auth-service:8081` | `platform/auth-service.yaml` | 1 replika; hasła i token Consula z `auth-service-secret`, klucz prywatny JWT z `auth-jwt-secret` jako plik `/run/secrets/jwt-private.pem` (`0440`, grupa `1000` przez `fsGroup`); konto admina: `ADMIN_EMAIL` z `auth-service-secret` (domyślnie `admin@sklep.local`; inny adres: `ADMIN_EMAIL=…` w `deploy/.env` przed pierwszym startem, jak w compose) |
-| Deployment + Service `api-gateway:8080`, PodDisruptionBudget, HPA | `platform/api-gateway.yaml` | 2 repliki (HPA 2–3); zmienne jak w compose poza `TRUSTED_PROXIES`, `AUTH_JWKS_ORIGIN` i `CONSUL_HTTP_TOKEN` (niżej) |
+| Deployment + Service `api-gateway:8080`, Service `api-gateway-metrics:9080` (bez adresu, `clusterIP: None`), PodDisruptionBudget, HPA | `platform/api-gateway.yaml` | 2 repliki (HPA 2–3); zmienne jak w compose poza `TRUSTED_PROXIES`, `AUTH_JWKS_ORIGIN` i `CONSUL_HTTP_TOKEN` (niżej); metryki na osobnym porcie 9080 tylko dla Prometheusa (sekcja „Metryki”) |
 | Deployment + Service `user-service:8082` | `platform/user-service.yaml` | 1 replika (Auth tworzy w niej profil przy rejestracji — dlatego User jest w tej warstwie, jak w profilu compose `platform`) |
 | Deployment + Service `frontend:8080` | `platform/frontend.yaml` | nginx z aplikacją React (sekcja „Ingress i TLS”) |
 
@@ -438,6 +463,140 @@ k port-forward svc/notification-service 18087:8087   # http://127.0.0.1:18087/do
 k port-forward svc/review-service 18088:8088         # http://127.0.0.1:18088/docs
 ```
 
+## Metryki (Prometheus i Grafana)
+
+Warstwa `monitoring` (`bash deploy/k8s/up.sh monitoring`, także ostatnia część `all`): Prometheus co 15 s zbiera metryki, Grafana pokazuje panel „Sklep”, kube-state-metrics podaje stan obiektów przestrzeni `shop`. Grafanę i Prometheusa otwiera się tylko przez `kubectl port-forward` — z zewnątrz (Ingress) nie widać ani metryk, ani paneli. W compose monitoringu nie ma.
+
+| Obiekt | Plik | Co |
+|---|---|---|
+| ServiceAccount, Service `prometheus:9090`, Deployment | `monitoring/prometheus.yaml` | 1 replika, `prom/prometheus:v3.15.1`, użytkownik `65534`; dane w `emptyDir` (do 1Gi), retencja 24 h albo 512 MB — historia znika razem z podem (restart, `up.sh` po zmianie konfiguracji); bez API administracyjnego (`--web.enable-admin-api`) i bez przeładowania konfiguracji przez HTTP (`--web.enable-lifecycle`) |
+| Service `grafana:3000`, Deployment | `monitoring/grafana.yaml` | 1 replika, `grafana/grafana:13.3.1`, użytkownik `472`, konto `default` bez tokenu; baza w `emptyDir` |
+| ServiceAccount, Role, RoleBinding, Service `kube-state-metrics:9180`, Deployment | `monitoring/kube-state-metrics.yaml` | stan Deploymentów, StatefulSetów, HPA i podów tylko z przestrzeni `shop` (rola `list`/`watch` w `shop`) |
+| ClusterRole i ClusterRoleBinding `shop-prometheus-kubelet` | `cluster/prometheus-kubelet.yaml` | konto `shop/prometheus` może czytać metryki kubeleta (`get` na `nodes/metrics`); sekcja „Wyjątki” |
+
+### Co zbieramy
+
+Plik `deploy/monitoring/prometheus/prometheus.yml` (ConfigMapa `prometheus-config`). Nazwa zadania (`job`) jest etykietą, po której panel wybiera serie.
+
+| `job` | Skąd | Co |
+|---|---|---|
+| `api-gateway` | każdy gotowy pod Gateway osobno, port 9080, `/metrics`; adresy podów z DNS usługi bez adresu `api-gateway-metrics` (odświeżane co 15 s) | ruch, kody odpowiedzi i czas na usługę, próby wysłania do instancji, instancje widziane przez Gateway, stan wyłączników, pamięć i CPU procesu (opis metryk: [services/api-gateway/README.md](../../services/api-gateway/README.md), sekcja „Metryki”) |
+| `rabbitmq` | `rabbitmq:15692`, `/metrics` (wbudowana wtyczka `rabbitmq_prometheus`) | sumy brokera: wiadomości, połączenia, kanały, pamięć |
+| `rabbitmq-queues` | `rabbitmq:15692`, `/metrics/detailed?family=queue_coarse_metrics&family=queue_consumer_count` | liczby na kolejkę (8 kolejek, w tym `*.dlq`): wiadomości gotowe i nieprzyjęte, odbiorcy |
+| `kube-state-metrics` | `kube-state-metrics:9180`, `/metrics` | repliki Deploymentów i StatefulSetów (dostępne i oczekiwane), HPA, faza podów, restarty kontenerów |
+| `kubelet` | kubelet węzła, port 10250, `/metrics/resource` (HTTPS; certyfikat sprawdzany urzędem z konta usługi, token konta `prometheus` z pliku w podzie) | CPU i pamięć węzła (`node_*`) oraz każdego kontenera i poda `shop`; serie podów z innych przestrzeni są odrzucane przy zbieraniu |
+| `prometheus` | `localhost:9090` | sam Prometheus |
+
+Metryki ruchu pochodzą tylko z Gateway: usługi zespołu i Auth nie wystawiają własnych metryk, ale przez Gateway przechodzi każde żądanie z zewnątrz, więc widać ruch i błędy wszystkich usług. Nowa usługa (np. Order i Shipping w etapie 8) pojawia się na panelu sama, gdy ma trasę w Gateway — lista usług nie jest nigdzie wpisana na sztywno.
+
+Sprawdzenie celów (wszystkie `up`, liczba celów `api-gateway` = liczba podów Gateway):
+```bash
+kubectl --context rancher-desktop -n shop port-forward svc/prometheus 19090:9090 >/dev/null &
+pf=$!; sleep 2
+curl -s http://127.0.0.1:19090/api/v1/targets | jq -r '.data.activeTargets[] | "\(.labels.job) \(.health) \(.lastError)"' | sort | uniq -c
+kill "$pf"
+```
+
+### Jak otworzyć
+
+```bash
+kubectl --context rancher-desktop -n shop port-forward svc/grafana 13000:3000       # Grafana
+kubectl --context rancher-desktop -n shop port-forward svc/prometheus 19090:9090    # Prometheus
+```
+- **Grafana:** http://127.0.0.1:13000 — strona domowa to panel „Sklep”, bez logowania; ten sam panel pod http://127.0.0.1:13000/d/shop.
+- **Prometheus:** http://127.0.0.1:19090 — zapytania PromQL (Query), cele (Status → Targets, http://127.0.0.1:19090/targets), bieżąca konfiguracja (http://127.0.0.1:19090/config). Prometheus nie ma logowania; tak jak Consul UI i panel Mailpit jest dostępny tylko z laptopa przez `port-forward`.
+
+`port-forward` działa do Ctrl+C. Inne pody przestrzeni nie mają drogi do Grafany ani do Prometheusa (NetworkPolicy), a Ingress kieruje tylko do Gateway (8080) i frontendu.
+
+### Logowanie admina
+
+Bez logowania Grafana tylko pokazuje panele (rola `Viewer`): bez zapisywania, bez edycji źródła danych i bez Explore; zakładanie kont jest wyłączone. Konto administratora: login `admin`, hasło — zmienna `GRAFANA_ADMIN_PASSWORD` z `deploy/.env` (tak jak panel RabbitMQ). Zmienną dopisuje `bash deploy/create-secrets.sh`, a `secrets.sh` (uruchamia go `up.sh`) wkłada ją do Secretu `grafana-secret`. Logowanie: „Sign in” w Grafanie. Admin ma Explore i może układać panel w interfejsie; zmiana na stałe idzie przez repo (niżej).
+
+Baza Grafany jest w `emptyDir`, więc każdy nowy pod zaczyna od pustej bazy: konta, ustawienia i zmiany zrobione w interfejsie znikają przy restarcie poda, a hasło admina jest zawsze to z Secretu. Zmiana hasła — nowa wartość w `deploy/.env`, potem:
+```bash
+bash deploy/k8s/secrets.sh && kubectl --context rancher-desktop -n shop rollout restart deploy/grafana
+```
+Sprawdzenie hasła bez wyświetlania go (hasło rozwija powłoka w podzie):
+```bash
+kubectl --context rancher-desktop -n shop exec deploy/grafana -- sh -c 'curl -s -o /dev/null -w "%{http_code}\n" -u "admin:$GF_SECURITY_ADMIN_PASSWORD" http://127.0.0.1:3000/api/admin/settings'   # 200
+```
+Złe hasło: `401` na `/api/user` i przy logowaniu; na `/api/admin/settings` jest `403`, bo Grafana z włączonym podglądem bez logowania traktuje takie żądanie jak anonima.
+
+Grafana ma wyłączone wbudowane wtyczki źródeł danych poza Prometheusem (`GF_PLUGINS_DISABLE_PLUGINS`) i instalowanie wtyczek przy starcie (`GF_PLUGINS_PREINSTALL_DISABLED`): bez tego wersja 13.3.1 kopiuje przy każdym starcie ok. 170 MB wtyczek do katalogu danych i uruchamia proces dla każdej z nich (ok. 630 MiB pamięci zamiast ok. 210–240 MiB). Nie łączy się z internetem (sprawdzanie aktualizacji, statystyki, wiadomości i Gravatar wyłączone; NetworkPolicy i tak to blokuje). Logi idą na standardowe wyjście (`kubectl --context rancher-desktop -n shop logs deploy/grafana`).
+
+### Zmiana panelu na stałe
+
+Panel „Sklep” to plik `deploy/monitoring/grafana/dashboards/shop.json` (ConfigMapa `grafana-dashboards`). Dostawca paneli z `deploy/monitoring/grafana/dashboards.yaml` nie pozwala zapisać ani usunąć panelu w interfejsie. Zmiana na stałe:
+1. Zalogowany admin zmienia panel w interfejsie (Edit), bez zapisywania.
+2. Export → Export as JSON, bez opcji eksportu dla innej instancji (źródło danych zostaje `uid: prometheus`); skopiowany JSON zastępuje całą treść `shop.json`, `uid` zostaje `shop`.
+3. `bash deploy/k8s/up.sh monitoring` — ConfigMapa `grafana-dashboards` jest `configured`, skrypt robi `rollout restart deploy/grafana`, a nowy pod (gotowy po ok. 10 s) pokazuje nowy panel.
+
+Tak samo konfiguracja Prometheusa: zmiana w `deploy/monitoring/prometheus/prometheus.yml` + `bash deploy/k8s/up.sh monitoring` → nowy pod Prometheusa z nową konfiguracją (zebrane dane znikają, bo są w `emptyDir`). Bez zmian w plikach `up.sh monitoring` niczego nie restartuje (ConfigMapy `unchanged`).
+
+### Co pokazuje panel
+
+Panel „Sklep” (http://127.0.0.1:13000/d/shop) odświeża się co 10 s i domyślnie pokazuje ostatnie 30 minut w strefie czasowej przeglądarki. Lista „Usługa” u góry filtruje wiersz „Ruch przez Gateway” (domyślnie wszystkie usługi). Usługi biorą się z metryk Gateway (etykieta `service`), więc nowa usługa z trasą w Gateway pojawia się na liście i na wykresach sama. Wartość `none` to żądania bez trasy (np. ścieżka spoza `/api/v1`). Opis każdego wykresu jest pod ikoną „i” przy tytule.
+
+| Wiersz | Panel | Jak czytać |
+|---|---|---|
+| Ruch przez Gateway | Żądania/s na usługę | wszystkie odpowiedzi Gateway na usługę (suma po replikach Gateway), także błędy samego Gateway (401, 429, 503) |
+| | Błędy 5xx/s na usługę i kod | słupki według usługi i kodu: `503` — brak zdrowej instancji albo otwarty wyłącznik, `504` — usługa nie odpowiedziała w czasie, `502` — błąd połączenia, `500` — błąd w usłudze. Bez błędów napis „Brak odpowiedzi 5xx” |
+| | Odsetek 5xx na usługę | udział odpowiedzi 5xx w odpowiedziach usługi; `0 %` — bez błędów serwera, `100 %` — usługa niedostępna. Usługa bez ruchu w ostatniej minucie nie ma wartości. Oś do 5 %, przy większych wartościach rośnie sama |
+| | Błędy 4xx/s według kodu | `401` brak albo zły token, `403` brak roli, `404` brak trasy albo zasobu, `429` limit żądań Gateway (cały ruch z laptopa ma jeden adres — sekcja „Wyjątki”) |
+| | Czas odpowiedzi p50 i p95 | czas od przyjęcia żądania przez Gateway do końca odpowiedzi; p95 = 95 % żądań było szybszych. Liczony z histogramu (kubełki od 5 ms do 10 s), więc to przybliżenie |
+| | Stan wyłączników (circuit breaker) | pasek na usługę: zielony „zamknięty” (ruch idzie do usługi), czerwony „otwarty” (Gateway od razu odpowiada `503` przez 30 s), pomarańczowy „półotwarty” (czeka na jedno żądanie próbne). Najgorszy stan wśród replik Gateway. Usługa pojawia się po pierwszym żądaniu do niej |
+| | Instancje widziane przez Gateway | liczba zdrowych instancji usługi na liście Gateway (z Consula); `0` = Gateway odpowiada `503`. Przy skalowaniu (HPA) rośnie razem z liczbą podów |
+| | Rozkład żądań na instancje usług | próby wysłania żądania do każdego poda usługi; przy kilku replikach widać podział ruchu (load balancing w Gateway) |
+| | Żądania od startu Gateway | liczba odpowiedzi Gateway na usługę od startu podów Gateway; pokazuje każde żądanie, także pierwsze (wykresy „/s” go nie widzą — akapit pod tabelą); zeruje się przy restarcie poda Gateway |
+| Zasoby | Pamięć podów, CPU podów (rdzenie) | każdy pod `shop` według kubeleta; tabela obok wykresu sortuje pody od największej bieżącej wartości |
+| | Pamięć węzła | pamięć robocza maszyny wirtualnej Rancher Desktop i suma podów sklepu |
+| | Repliki HPA | aktualna i docelowa liczba replik według autoskalera (`api-gateway` 2–3, `product-service` 1–3) |
+| | Repliki Gateway zbierane | ile replik Gateway Prometheus właśnie zbiera (`up{job="api-gateway"} == 1`); zielone przy 2 i więcej |
+| | Repliki wdrożeń: dostępne i oczekiwane | tabela Deploymentów; kolumna „Brakuje” > 0 na czerwono — pody nie wstały albo usługa jest zatrzymana |
+| | Restarty kontenerów | restarty od utworzenia poda; wartość > 0 na pomarańczowo |
+| Zdarzenia (RabbitMQ) | Wiadomości w kolejkach | wiadomości gotowe (czekają na odbiorcę) i niepotwierdzone (pobrane, w przetwarzaniu) w każdej kolejce poza `*.dlq`. Zwykle `0` — odbiorca przetwarza zdarzenie od razu |
+| | Wiadomości w DLQ | osobny kafelek na każdą kolejkę `*.dlq`: zielone `0`, **czerwone, gdy jest co najmniej 1 wiadomość** — zdarzenie, którego odbiorca nie przetworzył po 3 próbach (sprawdzić w panelu RabbitMQ, sekcja „Porty na laptopie”) |
+| | Odbiorcy na kolejkę | podłączeni odbiorcy; `notification.q` ma 1 (2 przy pokazie „Dwie kopie Notification”), kolejki DLQ i kolejki usług z etapu 8 — 0 |
+| | Przepływ wiadomości/s | cały broker: przyjęte od nadawców, dostarczone odbiorcom, potwierdzone (ack) |
+| | Pamięć brokera | pamięć procesu RabbitMQ i próg, po którym broker wstrzymuje nadawców |
+| Zbieranie | Działające cele na zadanie, Cele Prometheusa | liczba celów z udanym ostatnim pobraniem na zadanie (`api-gateway` = liczba replik Gateway, reszta 1) i każdy cel osobno („działa”/„nie działa”). Czerwone `0` = brak danych z tego źródła — szczegóły w Prometheusie, Status → Targets |
+
+Wykresy z `rate()` (żądania/s, błędy, czas, przepływ wiadomości) potrzebują dwóch pobrań metryk, czyli ok. 30 s danych: zaraz po starcie Prometheusa są puste. Ruch, który tworzy nową serię (pierwsze żądanie danej usługi z daną metodą i kodem na danej replice Gateway), nie jest widoczny w `rate()` i `increase()` — seria zaczyna się od wartości, która już zawiera te żądania; widać dopiero kolejne. Usługa z jednym żądaniem na przebieg (np. Auth, Inventory, Review) może się więc nie pojawić na wykresach „/s” nawet po kilku przebiegach (2 repliki Gateway — każdy przebieg może trafić w nową serię drugiej repliki); każde żądanie, także pierwsze, widać na panelu „Żądania od startu Gateway”. Prometheus trzyma dane w `emptyDir`, więc każdy nowy pod Prometheusa (np. po `up.sh monitoring` ze zmianą `prometheus.yml`) zaczyna od pustej historii.
+
+### Pokazy na panelu
+
+Polecenia z funkcjami `k` i `api` z sekcji „Pokazy” i z otwartym panelem (port-forward Grafany i Prometheusa — „Jak otworzyć”). Przed pokazami przez Ingress wyzerować limity Gateway (`FLUSHALL` z „Pokazów”), inaczej część żądań dostanie `429`, i puścić jeden przebieg rozgrzewający `bash postman/run.sh k8s` (tworzy serie metryk — akapit wyżej), a pokazy zacząć ≥ 30 s po nim. Ruch scenariusza najpewniej widać na panelu „Żądania od startu Gateway”. Każdy pokaz kończy się przywróceniem stanu.
+
+**Ruch scenariusza zakupu.** `bash postman/run.sh k8s` (ok. 45 żądań w kilka sekund). Po 15–30 s na „Żądania/s na usługę” są skoki dla Auth, User, Product, Cart, Inventory, Review i Order (do etapu 8 Order to jedno żądanie z odpowiedzią `404`, a kroki Order i Shipping są pomijane), na „Błędy 4xx/s” — `400`, `401`, `403`, `404`, `409` z kroków, które sprawdzają odmowy, na „Rozkład żądań na instancje” — nazwy podów, a w wierszu RabbitMQ — przepływ po rejestracji (zdarzenie `user.registered`). Zmierzone (etap 9b): po jednym przebiegu na panelu „Żądania od startu Gateway” 7 usług; na wykresach „/s” zaraz po starcie Gateway tylko usługi z kilkoma żądaniami na przebieg (Cart, User, Product), na klastrze po kilku przebiegach — wszystkie 7. Wyraźniejsze wykresy dają 2 przebiegi w odstępie ok. 30 s; trzeci w tej samej minucie dostaje `429` na logowaniu (limit 5 logowań na minutę — „Problemy”) i widać go na „Błędy 4xx/s” jako `429`.
+
+**Zatrzymana usługa → `503` w ciągu minuty.** Review do zera replik, pętla publicznego `GET /reviews` przez Ingress, powrót:
+```bash
+k scale deploy/review-service --replicas=0
+for i in $(seq 90); do echo "$(date +%T) $(api '/reviews?productId=9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d' -o /dev/null -w '%{http_code}')"; sleep 1; done
+k scale deploy/review-service --replicas=1 && k rollout status deploy/review-service
+```
+Pętla wypisuje `503` po kilku sekundach (Gateway odświeża listę instancji z Consula). Na panelu: „Instancje widziane przez Gateway” dla `review-service` spada do `0`, „Błędy 5xx/s” pokazują słupki `review-service 503`, „Odsetek 5xx” dochodzi do 100 %, w tabeli „Repliki wdrożeń” `review-service` ma `0`/`0`. Wyłącznik zostaje zamknięty — brak instancji nie liczy się jako awaria (sekcja „Circuit breaker” w README Gateway). Zmierzone: pierwsze `503` po 10 s od `scale`, pierwsza wartość > 0 na wykresie 5xx po kolejnych 20 s, instancje `0` po 25 s. Po `scale … --replicas=1` Review rejestruje się w Consulu przy starcie: po ok. 7 s pętla dostaje znowu odpowiedź usługi (nie `503`), instancje wracają do `1`. Gdy po powrocie Gateway dalej odpowiada `503` — wiersz „Inventory albo Review nie ma w Consulu” w „Problemach”.
+
+**Otwarty wyłącznik.** Zamrożenie kontenera Review (`docker pause` — proces stoi, połączenia się nawiązują, odpowiedzi nie ma), 24 równoległe żądania, odmrożenie:
+```bash
+cid=$(docker --context rancher-desktop ps -q --filter name=k8s_review-service_review-service)
+docker --context rancher-desktop pause "$cid"
+for i in $(seq 24); do api '/reviews?productId=9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d' -o /dev/null -w '%{http_code}\n' & done; wait
+docker --context rancher-desktop unpause "$cid"
+# żądanie próbne co 3 s: przez 30 s Gateway od razu odpowiada 503, potem próba zamyka wyłącznik
+for i in $(seq 25); do api '/reviews?productId=9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d' -o /dev/null -w '%{http_code}\n'; sleep 3; done
+```
+`unpause` od razu po żądaniach: kontener zamrożony dłużej niż ok. 30 s zrestartuje sonda liveness. Każde z 24 żądań kończy się `504` po ok. 10 s (czas na odpowiedź w Gateway). 24, bo każda z 2 replik Gateway ma własny wyłącznik i dostaje ok. połowę żądań, a wyłącznik otwiera się dopiero od 10 żądań. Na panelu: „Stan wyłączników” — czerwony pasek „otwarty” przy `review-service`, „Błędy 5xx/s” — słupki `504`, potem `503` (żądania odrzucone przy otwartym wyłączniku); po 30 s pomarańczowy „półotwarty”, po udanym żądaniu próbnym znowu zielony. Zmierzone: 24 × `504` po 10,5 s każde; stan `otwarty` w Prometheusie 8 s po ostatniej odpowiedzi (Grafana pokazuje go przy następnym odświeżeniu, do 10 s później); Gateway odpowiadał `503` przez 30 s, pierwsze żądanie po 30 s dostało znowu odpowiedź usługi, stan `zamknięty` 43 s po `unpause`. Stanu `półotwarty` przy żądaniach co 3 s zwykle nie widać — trwa krócej niż odstęp zbierania (15 s). Kolumna „Restarty” Review bez zmian.
+
+**HPA Product.** Obciążenie jak w „Pokazach” (bezpośrednio do Product przez `port-forward`, 20 pętli przez 90 s). Gateway odświeża listę instancji przy żądaniach do usługi, więc w drugim terminalu lekki ruch przez Ingress na czas pokazu: `for i in $(seq 150); do api /products -o /dev/null; sleep 2; done`. Na panelu: „Repliki HPA” — `product-service aktualne` rośnie do 2–3, „CPU podów” — skok poda Product, „Instancje widziane przez Gateway” i „Rozkład żądań na instancje” — nowe pody Product; po zakończeniu obciążenia wszystko wraca do 1. Zmierzone: 3 gotowe pody Product po ok. 30 s obciążenia, na panelu (HPA i instancje = 3) po ok. 40 s; po końcu obciążenia 1 pod po ok. 80 s, instancje Gateway `1` po ok. 100 s. Przy zejściu o kilka podów naraz (np. 3 → 1) Gateway ma jeszcze przez kilka sekund na liście kończące się pody: wyrejestrowują się z Consula dopiero po SIGTERM, a lista jest trzymana do 10 s. Przy braku połączenia Gateway próbuje więc kolejnych instancji, każdej najwyżej raz, razem do 3 prób ([README Gateway](../../services/api-gateway/README.md#przebieg-żądania), tabela pod „Gdy usługa nie odpowiada”). Dzięki temu lekki ruch przez Ingress nie dostaje w czasie pokazu `502` (decyzja Michała M2 etapu 9b → A; wcześniej, przy jednym ponowieniu, zdarzały się pojedyncze `502`; zmierzone po zmianie: 2 przebiegi 3 → 1 pod ruchem, 504 żądania, 0 × `502`, w tym jedno żądanie, w którym dwa kończące się pody odmówiły połączenia, a trzecia próba trafiła w żywy pod).
+
+**Wiadomość w DLQ.** Wiadomość testowa do `notification.dlq` kontem admina RabbitMQ (hasło rozwija powłoka w podzie, nie pojawia się w poleceniu ani na ekranie), potem opróżnienie kolejki:
+```bash
+k exec rabbitmq-0 -- sh -c 'RABBITMQADMIN_USERNAME="$RABBITMQ_DEFAULT_USER" RABBITMQADMIN_PASSWORD="$RABBITMQ_DEFAULT_PASS" rabbitmqadmin --non-interactive publish message --routing-key notification.dlq --payload "test"'
+k exec rabbitmq-0 -- rabbitmqctl purge_queue notification.dlq
+```
+Na panelu kafelek `notification.dlq` w „Wiadomości w DLQ” zmienia się na czerwone `1`, po `purge_queue` wraca do zielonego `0`. Zmierzone: czerwone `1` po 11 s od wysłania wiadomości, zielone `0` po 15 s od `purge_queue` (zbieranie co 15 s + odświeżanie panelu co 10 s).
+
 ## NetworkPolicy
 
 Usługi ufają nagłówkom `X-User-Id` i `X-User-Roles` tylko dlatego, że do usług nie ma innej drogi niż przez Gateway. W klastrze pilnują tego reguły NetworkPolicy w `deploy/k8s/network/`: domyślnie każde połączenie w przestrzeni `shop` jest zablokowane (do podów i z podów), a otwarte są tylko połączenia z tabeli niżej. k3s egzekwuje reguły kontrolerem kube-router: zablokowane połączenie jest od razu odrzucane (`connection refused`), nie czeka do limitu czasu.
@@ -449,13 +608,15 @@ Usługi ufają nagłówkom `X-User-Id` i `X-User-Roles` tylko dlatego, że do us
 | `infra.yaml` | Consul (serwer i `consul-guard`), PostgreSQL, MongoDB, oba Redisy, RabbitMQ, Mailpit oraz Joby `consul-kv-seed` i `rabbitmq-setup` |
 | `platform.yaml` | Gateway, frontend, Auth, User oraz Joby `auth-migrate` i `user-migrate` |
 | `services.yaml` | Cart, Product (+ Job `product-migrate`), Inventory, Review, Notification oraz Order i Shipping (przygotowane na etap 8) |
+| `monitoring.yaml` | Prometheus, Grafana, kube-state-metrics |
+| `node-access.yaml.tpl` | szablon, nie manifest (`kubectl apply -f network/` go pomija): `prometheus-node` i `kube-state-metrics-api` — po jednej regule wyjścia `ipBlock` do kubeleta węzła i do API Kubernetesa; adresy wstawia `up.sh` przy każdym uruchomieniu (sekcja „Wyjątki”) |
 
 Zasady zapisu:
-- **Jedna NetworkPolicy na pod**, nazwana jak jego etykieta `app.kubernetes.io/name` (`k get netpol cart-service`). Wybiera pody po tej etykiecie — także pody Jobów.
+- **Jedna NetworkPolicy na pod**, nazwana jak jego etykieta `app.kubernetes.io/name` (`k get netpol cart-service`). Wybiera pody po tej etykiecie — także pody Jobów. Wyjątek: dwie polityki z szablonu `node-access.yaml.tpl` dodają podom `prometheus` i `kube-state-metrics` po jednej regule wyjścia (sekcja „Wyjątki”).
 - Reguły się sumują. Połączenie A → B działa tylko wtedy, gdy **i** reguła wyjścia A pozwala na B (port), **i** reguła wejścia B pozwala na A. Dlatego każde połączenie z tabeli jest zapisane dwa razy: w polityce wołającego (`egress`) i wołanego (`ingress`), z komentarzem „kto → kto i po co”.
 - Reguły wybierają **pody**, nie adresy Service: usługi wołają się po adresie poda z Consula. Połączenie przez nazwę Service (np. `consul:8500` → pod `consul-guard`) też przechodzi, bo reguła sprawdza adres docelowego poda.
-- Gateway i frontend przyjmują ruch z zewnątrz tylko od Traefika: w jednym elemencie `from` jest `namespaceSelector` (`kubernetes.io/metadata.name: kube-system`) **i** `podSelector` (`app.kubernetes.io/name: traefik`) — oba warunki naraz. Gateway ufa `X-Forwarded-For` od całego zakresu podów (`TRUSTED_PROXIES=10.42.0.0/16`, decyzja 10), więc ta reguła blokuje bezpośrednie żądania innych podów z fałszywym adresem klienta. Drogę pośrednią przez health check w Consulu (Consul też łączy się z Gateway) zamyka pośrednik `consul-guard` — sekcja „Pośrednik przed Consulem”.
-- Nic poza tabelą: żadnych reguł `ipBlock`, żadnego wyjścia do internetu, do API Kubernetesa ani do węzła. Consul ma dlatego `CHECKPOINT_DISABLE=1`.
+- Gateway i frontend przyjmują ruch z zewnątrz tylko od Traefika: w jednym elemencie `from` jest `namespaceSelector` (`kubernetes.io/metadata.name: kube-system`) **i** `podSelector` (`app.kubernetes.io/name: traefik`) — oba warunki naraz. Gateway ufa `X-Forwarded-For` od całego zakresu podów (`TRUSTED_PROXIES=10.42.0.0/16`, decyzja 10), więc ta reguła blokuje bezpośrednie żądania innych podów z fałszywym adresem klienta. Drogę pośrednią przez health check w Consulu (Consul też łączy się z Gateway) zamyka pośrednik `consul-guard` — sekcja „Pośrednik przed Consulem”. Prometheus dochodzi do Gateway tylko na port metryk 9080 (osobny serwer, tylko `GET /metrics`), do API na 8080 nie.
+- Nic poza tabelą: żadnego wyjścia do internetu (Consul ma dlatego `CHECKPOINT_DISABLE=1`, Grafana wyłączone sprawdzanie aktualizacji). Reguły `ipBlock` są tylko dwie, z szablonu `node-access.yaml.tpl`: Prometheus → kubelet węzła (10250) i kube-state-metrics → API Kubernetesa. Żaden inny pod nie ma drogi do API ani do węzła (poza chwilą tuż po starcie nowego poda — sekcja „Wyjątki”).
 
 ### Tabela połączeń
 
@@ -464,7 +625,7 @@ Porty usług: Gateway 8080, Auth 8081, User 8082, Product 8083, Inventory 8084, 
 | Pod (cel) | Wejście dozwolone od (port poda) | Wyjście dozwolone do |
 |---|---|---|
 | wszystkie | — | DNS: `kube-system`, `k8s-app: kube-dns`, 53/UDP i 53/TCP |
-| `api-gateway` | Traefik (`kube-system`), `consul` — 8080 | `consul` 8500, `redis-gateway` 6379, `auth-service` 8081 (JWKS i trasy `/auth`), wszystkie usługi 8082–8089 |
+| `api-gateway` | Traefik (`kube-system`), `consul` — 8080; `prometheus` — 9080 (metryki) | `consul` 8500, `redis-gateway` 6379, `auth-service` 8081 (JWKS i trasy `/auth`), wszystkie usługi 8082–8089 |
 | `frontend` | Traefik (`kube-system`) — 8080 | — |
 | `auth-service` | `api-gateway`, `consul` — 8081 | `postgres` 5432, `rabbitmq` 5672, `consul` 8500, `user-service` 8082 |
 | `user-service` | `api-gateway`, `auth-service`, `notification-service`, `consul` — 8082 | `postgres` 5432, `consul` 8500 |
@@ -480,16 +641,19 @@ Porty usług: Gateway 8080, Auth 8081, User 8082, Product 8083, Inventory 8084, 
 | `postgres` | usługi z bazą w PostgreSQL (Auth, User, Product, Inventory, Order, Shipping) i Joby migracji — 5432 | — |
 | `mongo` | `review-service`, `notification-service` — 27017 | — |
 | `redis-gateway` / `redis-cart` | `api-gateway` / `cart-service` — 6379 | — |
-| `rabbitmq` | `auth-service`, `notification-service`, `inventory-service`, `order-service`, `shipping-service` — 5672; Job `rabbitmq-setup` — 15672 | — |
+| `rabbitmq` | `auth-service`, `notification-service`, `inventory-service`, `order-service`, `shipping-service` — 5672; Job `rabbitmq-setup` — 15672; `prometheus` — 15692 (metryki) | — |
 | `mailpit` | `notification-service` — 1025 | — |
 | Joby `consul-kv-seed` / `rabbitmq-setup` | — | `consul` (serwer) 8500 / `rabbitmq` 15672 |
 | Joby `auth-migrate`, `user-migrate`, `product-migrate` (oraz `order-migrate`, `shipping-migrate` — etap 8) | — | `postgres` 5432 |
+| `prometheus` | `grafana` — 9090 | `api-gateway` 9080, `rabbitmq` 15692, `kube-state-metrics` 9180; kubelet węzła 10250 (`ipBlock`, szablon) |
+| `grafana` | — (tylko `port-forward` z węzła) | `prometheus` 9090 |
+| `kube-state-metrics` | `prometheus` — 9180 | API Kubernetesa: adres i port z EndpointSlice usługi `kubernetes` (`ipBlock`, szablon) |
 
 - **Order i Shipping** mają reguły z góry (pody powstaną w etapie 8). Joby `order-migrate` i `shipping-migrate` są w regułach według konwencji nazw `<usługa>-migrate`; jeśli etap 8 nie użyje Jobów migracji (np. migracja przy starcie usługi), te dwie polityki i wpisy w `postgres` można usunąć.
 - Inventory ma wyjście do RabbitMQ, choć jego odbiorca zdarzeń jest dziś wyłączony (decyzja 17) — reguła odpowiada tabeli połączeń architektury.
-- Panel RabbitMQ (15672), interfejs Mailpit (8025), Consul UI i Swagger usług działają tylko przez `kubectl port-forward` — ruch z węzła (niżej), reguły go nie blokują.
+- Panel RabbitMQ (15672), interfejs Mailpit (8025), Consul UI, Swagger usług, Grafana (3000) i Prometheus (9090) działają tylko przez `kubectl port-forward` — ruch z węzła (niżej), reguły go nie blokują.
 - **Zmiana tabeli połączeń** (nowa ścieżka między usługami) to decyzja Michała: nowa usługa albo nowe wywołanie = dopisanie reguły wyjścia u wołającego i wejścia u wołanego w tym samym pliku, z komentarzem.
-- `up.sh` stosuje `network/` **przed** warstwami, więc przy starcie od zera Joby i pody od początku działają pod regułami (DNS i reguły Jobów muszą być w katalogu od pierwszego uruchomienia). `down.sh` usuwa wszystkie NetworkPolicy z `shop`.
+- `up.sh` stosuje `network/` (i szablon z adresami) **przed** warstwami, więc przy starcie od zera Joby i pody od początku działają pod regułami (DNS i reguły Jobów muszą być w katalogu od pierwszego uruchomienia). `down.sh` usuwa wszystkie NetworkPolicy z `shop`.
 
 ### Opóźnienie reguł dla nowego poda (Z12, Z13)
 
@@ -503,6 +667,9 @@ k exec deploy/cart-service -- python3 -c "import socket; socket.create_connectio
 k exec deploy/cart-service -- python3 -c "import socket; socket.create_connection(('user-service', 8082), 3); print('OPEN')"
 # drugie: ConnectionRefusedError od razu – Cart nie ma prawa łączyć się z User
 k exec deploy/frontend -- nc -z -w 3 api-gateway 8080; echo "exit=$?"   # 1: frontend nie łączy się z Gateway
+gw=$(k get pods -l app.kubernetes.io/name=api-gateway -o jsonpath='{.items[0].status.podIP}')
+k exec deploy/prometheus -- nc -z -w 3 "$gw" 9080; echo "exit=$?"   # 0: Prometheus pobiera metryki Gateway
+k exec deploy/prometheus -- nc -z -w 3 "$gw" 8080; echo "exit=$?"   # 1: do API Gateway Prometheus nie ma drogi
 ```
 Odmowa przychodzi od razu (Python: `ConnectionRefusedError` w czasie poniżej 1 ms); `nc` z BusyBox po odmowie kończy się dopiero po ok. 1 s — to zachowanie programu, nie reguł.
 
@@ -534,9 +701,43 @@ Wyjątek węzła (ruch z maszyny wirtualnej przechodzi mimo reguł) — sekcja �
   docker run --rm --network host alpine:3.22 nc -z -w 3 "$ip" 8080; echo "exit=$?"    # 0: węzeł przechodzi
   ```
 
+- **Dwie reguły `ipBlock` (etap 9b, decyzja 13).** Kubelet węzła i API Kubernetesa nie są podami, więc reguła z `podSelector` ich nie wskaże. Dlatego szablon `network/node-access.yaml.tpl` zawiera dwie polityki tylko z wyjściem, każda z jedną regułą `ipBlock` `/32`: `prometheus-node` (pody `prometheus` → adres węzła, TCP 10250 — CPU i pamięć podów z kubeleta) i `kube-state-metrics-api` (pody `kube-state-metrics` → adres i port API). To także jedyny wyjątek od „jedna NetworkPolicy na pod”: wejście i pozostałe wyjścia tych podów są w `network/monitoring.yaml`, a polityki z szablonu tylko dodają po jednej regule. Adresów nie ma w repo — `up.sh` (krok `network`) wylicza je przy każdym uruchomieniu i podstawia w szablonie (`sed` na wyjście, bez zmiany pliku):
+  ```bash
+  # węzeł: InternalIP jedynego węzła (więcej węzłów = błąd up.sh)
+  kubectl --context rancher-desktop get nodes -o jsonpath='{.items[*].status.addresses[?(@.type=="InternalIP")].address}'
+  # API: adres i port z EndpointSlice usługi kubernetes
+  kubectl --context rancher-desktop -n default get endpointslices -l kubernetes.io/service-name=kubernetes \
+    -o jsonpath='{.items[0].endpoints[0].addresses[0]} {.items[0].ports[0].port}'
+  # porównanie z regułami w klastrze
+  kubectl --context rancher-desktop -n shop get netpol prometheus-node kube-state-metrics-api \
+    -o jsonpath='{range .items[*]}{.metadata.name} {.spec.egress[0].to[0].ipBlock.cidr} {.spec.egress[0].ports[0].port}{"\n"}{end}'
+  ```
+  Dziś to dwa różne adresy (węzeł np. `192.168.5.15`, API np. `192.168.64.3:6443`). kube-state-metrics łączy się z API przez adres Service `kubernetes` (zmienna `KUBERNETES_SERVICE_HOST`, port 443); k3s zamienia go na adres z EndpointSlice, zanim zadziała reguła, więc reguła wskazuje adres końcowy, a nie adres Service. Adres API może się zmienić po restarcie maszyny wirtualnej Rancher Desktop — wtedy `bash deploy/k8s/up.sh monitoring` (sekcja „Problemy”). Sprawdzone: Prometheus → węzeł:10250 dochodzi, → API i → węzeł:22 — odmowa; kube-state-metrics → API dochodzi, → węzeł:10250 i → `api-gateway:8080` — odmowa.
+- **Tokeny kont usług tylko w `prometheus` i `kube-state-metrics` (decyzja 14).** Wszystkie inne pody mają `automountServiceAccountToken: false` i konto `default` bez uprawnień. Te dwa mają własne konta (`ServiceAccount` `prometheus` w `monitoring/prometheus.yaml`, `kube-state-metrics` w `monitoring/kube-state-metrics.yaml`) z tokenem montowanym w `/var/run/secrets/kubernetes.io/serviceaccount/`: Prometheus wysyła go do kubeleta (`credentials_file`, nigdy w konfiguracji) i sprawdza certyfikat kubeleta urzędem z tego samego katalogu (`ca.crt`, bez `insecure_skip_verify`), a kube-state-metrics czyta nim API. Uprawnienia:
+  - `kube-state-metrics` — `Role` tylko w `shop`: `list` i `watch` na `pods`, `deployments`, `statefulsets`, `horizontalpodautoscalers`; bez Secretów, ConfigMap i innych przestrzeni (bez ClusterRole);
+  - `prometheus` — tylko ClusterRole z następnego punktu; w API nie może nic odczytać.
+
+  Sprawdzenie (wynik `yes no no yes no no no`):
+  ```bash
+  SA=system:serviceaccount:shop
+  kubectl --context rancher-desktop auth can-i get nodes --subresource=metrics --as=$SA:prometheus
+  kubectl --context rancher-desktop auth can-i get nodes --subresource=proxy --as=$SA:prometheus
+  kubectl --context rancher-desktop -n shop auth can-i list pods --as=$SA:prometheus
+  kubectl --context rancher-desktop -n shop auth can-i list pods --as=$SA:kube-state-metrics
+  kubectl --context rancher-desktop -n shop auth can-i list secrets --as=$SA:kube-state-metrics
+  kubectl --context rancher-desktop -n default auth can-i list pods --as=$SA:kube-state-metrics
+  kubectl --context rancher-desktop -n shop auth can-i list pods --as=$SA:default
+  ```
+  Podzasób podaje się przez `--subresource=metrics`: zapis `get nodes/metrics` `kubectl auth can-i` czyta jako „węzeł o nazwie `metrics`” i zawsze odpowiada `no`.
+- **Obiekty całego klastra: ClusterRole i ClusterRoleBinding `shop-prometheus-kubelet` (decyzje 3 i 4).** Jedyne obiekty sklepu poza przestrzenią `shop` (plik `cluster/prometheus-kubelet.yaml`): konto `shop/prometheus` może wykonać `get` na `nodes/metrics`, czyli czytać metryki kubeleta. Kubelet z tym uprawnieniem odpowiada na `/metrics/resource` (zbierane), `/metrics/cadvisor` i `/metrics` (`200`), a odmawia `/pods`, `/runningpods/` i `/configz` (`403`); bez tokenu — `401`. Świadomie nie `nodes/proxy`: to uprawnienie pozwala przez kubelet na `exec` w dowolnym podzie. Plik stosuje `up.sh` w warstwie `monitoring` (przed obciążeniami) na podstawie stałej zgody Michała z 2026-11-14 — wyłącznie ten plik i dokładnie ten zakres; każda zmiana zakresu (inne zasoby, czasowniki, konta, nowe obiekty całego klastra) to decyzja Michała. `down.sh` (także `--purge`) go nie usuwa, bo nie dotyka niczego poza `shop`. Usunięcie (tylko Michał, np. po zakończeniu projektu):
+  ```bash
+  kubectl --context rancher-desktop delete clusterrolebinding,clusterrole shop-prometheus-kubelet
+  ```
+  Bez tych obiektów cel `kubelet` w Prometheusie ma błąd `403` i panele CPU i pamięci podów są puste; następne `up.sh monitoring` zakłada je od nowa.
+- **Wyjście nowego poda w pierwszej chwili po starcie (pomiar etapu 9b; przyjęte jako znane ograniczenie lokalnego klastra — decyzja Michała 2026-11-14).** Sekcja „Opóźnienie reguł dla nowego poda (Z12, Z13)” opisuje, że nowy pod przez chwilę nie dochodzi do celów w `shop`, bo ich reguły wejścia jeszcze nie znają jego adresu. Druga strona tego samego opóźnienia: przez ok. 0,7–2 s od startu nowego poda jego **wyjście nie jest jeszcze filtrowane**, więc dochodzi do celów **bez** reguły wejścia w `shop` — sprawdzone: API Kubernetesa i kubelet węzła; prawdopodobnie też inne cele spoza `shop` (nie sprawdzane) (zmierzone: pod z etykietą `kube-state-metrics` przy celowo złym adresie w `ipBlock` łączył się z API od `t+0,00` do `t+0,69 s`, od `t+0,80 s` odmowa; pod bez etykiet sklepu dochodził do węzła:10250 i API w pierwszych ~1–2 s). Połączenie otwarte w tym czasie trwa dalej (np. obserwacja API przez kube-state-metrics), dopóki któraś strona go nie zamknie. Restart kontenera w tym samym podzie okna nie ma (sprawdzone: po restarcie odmowa od `t+0,00`) — dotyczy tylko nowego poda. W usługach z `wait-for-network` okno w praktyce przypada na kontener inicjujący (kod z repo), a kod usługi startuje już pod regułami; bez `wait-for-network` są infrastruktura, frontend i monitoring. Cele w `shop` z regułą wejścia są chronione jak dotąd. Sprawdzenia reguł (`conn`, `nc`) robi się dlatego najwcześniej 5 s po starcie poda. Wzorzec produkcyjny: wtyczka sieci, która egzekwuje reguły, zanim kontener poda wystartuje (np. Cilium, Calico), i wzajemne uwierzytelnianie usług (mTLS w service mesh) — wtedy samo połączenie nie wystarcza, żeby usługa przyjęła żądanie; w tym projekcie bez zmian w klastrze i manifestach.
 - **Nazwy usług zespołu nie są chronione w Consulu (Z9, Z20, świadome ryzyko).** Zastrzeżone są `auth-service` i `api-gateway` — razem z każdym wariantem wielkości liter (`AUTH-SERVICE`, `Api-Gateway`), bo bez tokenu można zapisywać tylko dokładne nazwy z listy dozwolonych (sekcja „Consul z ACL”). Usługi zespołu (User, Cart, Inventory, Review, Product, Notification) rejestrują się bez tokenu, bo ochrona ich nazw wymagałaby tokenów w kodzie każdej z nich (poza zakresem etapu). NetworkPolicy częściowo to ogranicza: Gateway i usługi łączą się tylko z podami o etykiecie docelowej usługi na jej porcie, więc wpis z adresem obcego poda kończy się odmową połączenia (502, instancja wypada z listy), a nie przejęciem ruchu. Przejęty pod usługi zespołu może jednak zarejestrować cudzą nazwę ze swoim adresem i swoim portem (np. pod Cart jako `user-service` na `:8085`, z którym Gateway może się łączyć) i dostać część żądań tej usługi razem z nagłówkami `X-User-Id` i `X-User-Roles`. Pośrednik `consul-guard` (sekcja „Pośrednik przed Consulem”) zawęża resztę do własnego adresu: rejestracja tylko z adresem poda, który ją wysyła, i bez zastępowania wpisu innego poda; wyrejestrowanie tylko własnego wpisu; tryb maintenance niedostępny (`403`). Zostaje świadome ryzyko podszycia pod nazwę usługi zespołu z **własnym** adresem poda (wpis dochodzi obok prawdziwych instancji, nie zastępuje ich).
 - **Health checki Consula (M2 — zamknięte pośrednikiem `consul-guard`; Z23, Z27).** Rejestrujący pod może ustawić tylko zwykłe `GET` na własne `/health/ready` albo `/health/live` — bez nagłówków, treści, cudzego adresu i bez podążania za przekierowaniem — a pole `Output` checków jest puste (`discard_check_output`). Zostaje podszycie pod nazwę usługi zespołu z poprzedniego punktu. Sprawdzenie i szczegóły — sekcja „Pośrednik przed Consulem”.
-- **`readOnlyRootFilesystem` i ostrzeżenia Pod Security `restricted`:** infrastruktura (Consul, PostgreSQL, MongoDB, oba Redisy, RabbitMQ, Mailpit i Joby) działa z systemem plików tylko do odczytu, bez ostrzeżeń `restricted` – wyjątków nie ma; zapis tylko do wolumenu danych i `emptyDir` (`/tmp`, gniazdo PostgreSQL `/var/run/postgresql`, `/data/configdb` MongoDB). Frontend (`101:101`) też bez wyjątku: zapis do `/etc/nginx/conf.d` (skrypt startowy obrazu tworzy tam `default.conf` z szablonu — bez zapisywalnego `conf.d` nginx startuje po cichu z domyślną konfiguracją obrazu, bez tras SPA i nagłówków) i `/tmp` (`emptyDir`). Gateway, Auth, User i Joby migracji (`1000:1000`) też bez wyjątku — zapis tylko do `emptyDir` na `/tmp` (sprawdzone `docker run --read-only`: migracje Prisma i Alembic, start, rejestracja konta). Usługi zespołu, ich kontenery `wait-for-network` i `product-migrate` — też bez wyjątku (`emptyDir` na `/tmp`).
+- **`readOnlyRootFilesystem` i ostrzeżenia Pod Security `restricted`:** infrastruktura (Consul, PostgreSQL, MongoDB, oba Redisy, RabbitMQ, Mailpit i Joby) działa z systemem plików tylko do odczytu, bez ostrzeżeń `restricted` – wyjątków nie ma; zapis tylko do wolumenu danych i `emptyDir` (`/tmp`, gniazdo PostgreSQL `/var/run/postgresql`, `/data/configdb` MongoDB). Frontend (`101:101`) też bez wyjątku: zapis do `/etc/nginx/conf.d` (skrypt startowy obrazu tworzy tam `default.conf` z szablonu — bez zapisywalnego `conf.d` nginx startuje po cichu z domyślną konfiguracją obrazu, bez tras SPA i nagłówków) i `/tmp` (`emptyDir`). Gateway, Auth, User i Joby migracji (`1000:1000`) też bez wyjątku — zapis tylko do `emptyDir` na `/tmp` (sprawdzone `docker run --read-only`: migracje Prisma i Alembic, start, rejestracja konta). Usługi zespołu, ich kontenery `wait-for-network` i `product-migrate` — też bez wyjątku (`emptyDir` na `/tmp`). Monitoring (Prometheus, Grafana, kube-state-metrics) — też bez wyjątku: zapis tylko do `emptyDir` (dane Prometheusa, baza Grafany i `/tmp`), `kubectl apply --dry-run=server -f deploy/k8s/monitoring/` bez ostrzeżeń `restricted`.
 - **Dłuższe czasy sond RabbitMQ (odstępstwo od wspólnego wzoru sond).** Każde wywołanie `rabbitmq-diagnostics` uruchamia maszynę Erlanga (ok. 0,45 s bez obciążenia), a nieudana sonda liveness restartuje cały broker, więc: startup co 5 s do 180 s, liveness `timeoutSeconds: 10`, readiness `timeoutSeconds: 5` (jak `timeout: 10s` w compose). `terminationGracePeriodSeconds: 60` – czas na zapis stanu kolejek quorum.
 
 ## Pokazy
@@ -588,7 +789,7 @@ kill "$pf"
 
 W ciągu ok. minuty HPA podnosi Product do 2–3 replik; po ok. minucie bez obciążenia wraca do 1. Kolumna `TARGETS` pokazuje `<unknown>` przez ok. minutę po starcie poda (metrics-server). HPA Gateway (2–3) trzyma co najmniej 2 repliki (`k get hpa api-gateway`).
 
-Pokazy load balancingu Gateway (2 repliki na zmianę: `X-Gateway-Instance-Id`) — sekcja „Platforma”; pokaz odmowy NetworkPolicy — sekcja „NetworkPolicy”.
+Pokazy load balancingu Gateway (2 repliki na zmianę: `X-Gateway-Instance-Id`) — sekcja „Platforma”; pokaz odmowy NetworkPolicy — sekcja „NetworkPolicy”. Pokazy na panelu Grafany (zatrzymana usługa → `503`, otwarty wyłącznik, HPA, wiadomość w DLQ) — sekcja „Metryki (Prometheus i Grafana)”, „Pokazy na panelu”.
 
 ## Problemy
 
@@ -620,3 +821,8 @@ Pokazy load balancingu Gateway (2 repliki na zmianę: `X-Gateway-Instance-Id`) �
 | `The StatefulSet "consul" is invalid: spec: Forbidden: updates to statefulset spec …` przy `up.sh` | Klaster postawiony przed pośrednikiem (`serviceName` zmieniony na `consul-server`): jednorazowo `bash deploy/k8s/down.sh && bash deploy/k8s/up.sh all` (dane zostają). |
 | Pody `consul-guard` nie są gotowe (`0/1`), usługi bez Consula | `/guard/ready` = serwer Consula nie ma lidera albo jest nieosiągalny: `kubectl --context rancher-desktop -n shop get pods -l app.kubernetes.io/name=consul` i `… logs deploy/consul-guard`. |
 | `CONSUL_AUTH_TOKEN in deploy/.env is not a lowercase UUID` albo `… must be different` (z `secrets.sh`) | Wartość wpisana ręcznie. Usunąć linie `CONSUL_AUTH_TOKEN` i `CONSUL_GATEWAY_TOKEN` z `deploy/.env`, `bash deploy/create-secrets.sh`, potem kroki „Zmiana tokenu Auth albo Gateway”. |
+| Po restarcie Rancher Desktop panele „Zasoby” są puste albo stoją w miejscu (repliki, HPA, pamięć podów się nie zmieniają); w Prometheusie (Status → Targets) cel `kube-state-metrics` albo `kubelet` ma błąd połączenia; w logu `kubectl --context rancher-desktop -n shop logs deploy/kube-state-metrics` linie błędów (zaczynają się od `E`) | Zmienił się adres maszyny wirtualnej — najczęściej adres API Kubernetesa (rzadziej adres węzła), a polityki `prometheus-node` i `kube-state-metrics-api` oraz konfiguracja Prometheusa mają adresy z ostatniego `up.sh` (sekcja „Wyjątki”, „Dwie reguły `ipBlock`” — tam polecenia porównania). Objaw bywa opóźniony: kube-state-metrics może jeszcze przez jakiś czas działać na połączeniu z API nawiązanym tuż po starcie poda i traci API dopiero, gdy to połączenie się zerwie. Rozwiązanie: `bash deploy/k8s/up.sh monitoring && kubectl --context rancher-desktop -n shop rollout restart deploy/kube-state-metrics` — `up.sh` wylicza adresy od nowa i podmienia reguły (przy zmianie adresu węzła sam restartuje Prometheusa, bo zmienia się jego ConfigMapa), restart kube-state-metrics zamyka stare połączenie z API. |
+| Puste panele CPU i pamięci podów albo replik (bez restartu Rancher Desktop) | Najpierw cele Prometheusa (`port-forward` na 19090, sekcja „Metryki”): `curl -s http://127.0.0.1:19090/api/v1/targets \| jq -r '.data.activeTargets[] \| select(.labels.job=="kubelet" or .labels.job=="kube-state-metrics") \| "\(.labels.job) \(.health) \(.lastError)"'` — oczekiwane `up` i pusty błąd. `kubelet` z `403` → brak ClusterRole albo powiązania: `kubectl --context rancher-desktop get clusterrole,clusterrolebinding shop-prometheus-kubelet` (2 obiekty) i `kubectl --context rancher-desktop auth can-i get nodes --subresource=metrics --as=system:serviceaccount:shop:prometheus` (`yes`); brakujące zakłada `bash deploy/k8s/up.sh monitoring`. `kubelet` albo `kube-state-metrics` z `connection refused` / `context deadline exceeded` → poprzedni wiersz. `kube-state-metrics` `up`, ale bez serii `kube_*` → uprawnienia roli: `kubectl --context rancher-desktop -n shop auth can-i list pods --as=system:serviceaccount:shop:kube-state-metrics` (`yes`) i `kubectl --context rancher-desktop -n shop logs deploy/kube-state-metrics \| grep -c -i forbidden` (`0`). Panele CPU (`rate`) potrzebują dwóch próbek — pierwsze wartości ok. 30 s po starcie Prometheusa. |
+| Trzeba usunąć wszystko, co sklep założył poza przestrzenią `shop` (np. po zakończeniu projektu) | `down.sh` (także `--purge`) celowo nie usuwa obiektów całego klastra. Jedyne takie obiekty to ClusterRole i ClusterRoleBinding `shop-prometheus-kubelet` (sekcja „Wyjątki”); usuwa je Michał: `kubectl --context rancher-desktop delete clusterrolebinding,clusterrole shop-prometheus-kubelet`. Następne `bash deploy/k8s/up.sh monitoring` (albo `all`) zakłada je od nowa. |
+| Panel „Sklep”: wykresy ruchu puste („No data”) albo „Brak odpowiedzi 5xx/4xx” zaraz po starcie | `rate()` potrzebuje dwóch pobrań metryk (co 15 s), więc dane są po ok. 30 s ruchu; nowy pod Prometheusa zaczyna od pustej historii (`emptyDir`). Puść ruch (`bash postman/run.sh k8s`) i odczekaj 30 s. Pusty jest też panel usługi, do której jeszcze nikt nie wysłał żądania (wyłącznik i instancje Gateway tworzy przy pierwszym żądaniu). |
+| Panel „Sklep”: wiersz „Ruch przez Gateway” pusty, a w „Zbieraniu” `api-gateway` ma `0` | Prometheus nie zbiera Gateway — Status → Targets w Prometheusie (`lastError`); Gateway bez portu 9080 to stary obraz (`bash deploy/k8s/up.sh platform --build`). |
