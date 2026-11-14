@@ -1,0 +1,135 @@
+# MongoDB for Review and Notification (user <s>_service with readWrite on <s>_db only, created by
+# deploy/mongo/init/01-service-users.js from ConfigMap mongo-init on an empty volume).
+# Passwords from Secret mongo-secret (created by deploy/k8s/secrets.sh). Same behaviour as in deploy/compose.yaml.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: mongo
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: infra
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: mongo
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: infra
+  ports:
+    - {name: mongo, port: 27017, targetPort: mongo}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongo
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: mongo
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: infra
+spec:
+  # The ClusterIP Service above; no headless Service (single replica, no replica set).
+  serviceName: mongo
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mongo
+      app.kubernetes.io/part-of: shop
+      app.kubernetes.io/component: infra
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mongo
+        app.kubernetes.io/part-of: shop
+        app.kubernetes.io/component: infra
+    spec:
+      automountServiceAccountToken: false
+      # No <SERVICE>_PORT=tcp://... variables from the other Services of the namespace (convention, see README).
+      enableServiceLinks: false
+      securityContext:
+        # User mongodb of the image (uid/gid 999) for the whole container, also probes and "kubectl exec"
+        # (the image itself drops root only for mongod). fsGroup: emptyDirs writable, otherwise mongod
+        # does not start without root.
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        # Change ownership only on the first (empty) mount, not on every pod start (see rabbitmq.yaml).
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: mongo
+          image: mongo:8.0
+          imagePullPolicy: IfNotPresent
+          # The default WiredTiger cache is half of the memory minus 1 GB; 256 MB is enough here.
+          # --noscripting disables server-side JavaScript ($where, $function, mapReduce with JS):
+          # the services do not need it, and an injected query operator cannot run code.
+          args: ["mongod", "--wiredTigerCacheSizeGB", "0.25", "--noscripting"]
+          ports:
+            - {name: mongo, containerPort: 27017}
+          env:
+            # mongosh (init scripts, "kubectl exec") writes to $HOME/.mongodb; the HOME of user mongodb
+            # is /data/db (the data volume).
+            - name: HOME
+              value: /tmp
+            # The admin account is created only on an empty volume. The service passwords are read by
+            # deploy/mongo/init/01-service-users.js.
+            - name: MONGO_INITDB_ROOT_USERNAME
+              value: admin
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom: {secretKeyRef: {name: mongo-secret, key: MONGO_INITDB_ROOT_PASSWORD}}
+            - name: REVIEW_DB_PASSWORD
+              valueFrom: {secretKeyRef: {name: mongo-secret, key: REVIEW_DB_PASSWORD}}
+            - name: NOTIFICATION_DB_PASSWORD
+              valueFrom: {secretKeyRef: {name: mongo-secret, key: NOTIFICATION_DB_PASSWORD}}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            # Writes only to the data volume, /data/configdb and /tmp (emptyDir below).
+            readOnlyRootFilesystem: true
+          resources:
+            requests: {cpu: 100m, memory: 320Mi}
+            limits: {cpu: 1000m, memory: 640Mi}
+          # TCP on the pod IP: during init scripts the image runs a temporary mongod on 127.0.0.1 only,
+          # so the port opens only after them - the same condition as the compose healthcheck through
+          # the hostname, without the CPU cost of mongosh. The startup probe covers the init (up to 120 s).
+          startupProbe:
+            tcpSocket: {port: mongo}
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 60
+          readinessProbe:
+            tcpSocket: {port: mongo}
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            tcpSocket: {port: mongo}
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          volumeMounts:
+            - {name: data, mountPath: /data/db}
+            - {name: init, mountPath: /docker-entrypoint-initdb.d, readOnly: true}
+            # Declared as VOLUME in the image, unused without a replica set.
+            - {name: configdb, mountPath: /data/configdb}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: init
+          configMap: {name: mongo-init}
+        - name: configdb
+          emptyDir: {sizeLimit: 1Mi}
+        - name: tmp
+          emptyDir: {sizeLimit: 64Mi}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: mongo
+          app.kubernetes.io/part-of: shop
+          app.kubernetes.io/component: infra
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests: {storage: 1Gi}

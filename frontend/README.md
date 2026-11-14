@@ -61,7 +61,8 @@ Aplikacja: `http://127.0.0.1:5173`, wszystkie usługi łącznie z Auth to atrapy
 | `npm run typecheck` | `tsc -b` (aplikacja, testy, konfiguracja i E2E) |
 | `npm run lint` | ESLint |
 | `npm test` | testy Vitest (jsdom) |
-| `npm run test:e2e` | testy Playwright (sekcja „Testy E2E”) |
+| `npm run test:e2e` | testy Playwright projektów `mocked` i `compose` (sekcja „Testy E2E”) |
+| `npm run test:e2e:k8s` | testy Playwright projektu `k8s` (wymaga sklepu w klastrze) |
 
 ## Testy
 
@@ -75,12 +76,13 @@ Testy Vitest leżą obok kodu (`*.test.ts`, `*.test.tsx`), strefa czasowa testó
 
 ## Testy E2E (Playwright)
 
-Dwa projekty w `playwright.config.ts`:
+Trzy projekty w `playwright.config.ts`:
 
 | Projekt | Testy | Przeciw czemu |
 |---|---|---|
 | `mocked` | `e2e/mocked/` | serwer Vite w trybie atrap, który Playwright uruchamia sam (`127.0.0.1:5174`) |
 | `compose` | `e2e/compose/` | obraz `frontend` z prawdziwymi usługami profilu `full-shop` (`E2E_BASE_URL`, domyślnie adres sklepu z compose); serwer Vite nie startuje |
+| `k8s` | `e2e/k8s/` | sklep w lokalnym Kubernetesie pod `https://shop.localhost` (`E2E_K8S_URL`); serwer Vite nie startuje |
 
 Testy uruchamia się w kontenerze z obrazem Playwright (przeglądarki są w obrazie, `node_modules` z macOS nie działają w Linuksie, więc kontener robi własne `npm ci`). Z katalogu głównego repozytorium:
 
@@ -104,6 +106,15 @@ for f in frontend/e2e/compose/*.spec.ts; do
       && cd /work && npm ci --no-audit --no-fund && npx playwright test e2e/compose/$(basename $f) --project=compose --output /out/compose-$(basename $f .spec.ts)"
 done
 ```
+
+Projekt `k8s` wymaga sklepu uruchomionego w klastrze (`deploy/k8s/README.md`) i urzędu certyfikacji mkcert zaufanego w systemie (`mkcert -install`). Uruchamia się go na laptopie, nie w kontenerze (z katalogu `frontend/`): `npm run test:e2e:k8s`. `npm run test:e2e` go nie uruchamia (tylko `mocked` i `compose`), więc bez klastra nie ma błędów z tego projektu. Testy logują się 3 razy, a limit 5 logowań na minutę liczy się dla całego laptopa (wszystkie żądania przez Ingress mają jeden adres klienta) — razem z `bash postman/run.sh k8s` przed testami trzeba wyzerować oba liczniki: Gateway w Redisie i Auth w pamięci procesu (restart Auth, tak jak w pętli `compose`):
+
+```bash
+kubectl --context rancher-desktop -n shop exec deploy/redis-gateway -- sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli FLUSHALL'
+kubectl --context rancher-desktop -n shop rollout restart deploy/auth-service && kubectl --context rancher-desktop -n shop rollout status deploy/auth-service
+```
+
+`catalog.spec.ts` wymaga listy produktów (`GET /api/v1/products` → 200 i karty produktów). Przy samej warstwie `platform` (bez Product, część 7b etapu 7) uruchamia się go ze zmienną `E2E_K8S_PLATFORM_ONLY=1`: wtedy test oczekuje 503 `SERVICE_UNAVAILABLE` i komunikatu „Usługa jest chwilowo niedostępna…” z kodem zgłoszenia, np. `E2E_K8S_PLATFORM_ONLY=1 npm run test:e2e:k8s`.
 
 Pliki projektu `compose`:
 

@@ -1,3 +1,4 @@
+import { hostname } from 'node:os';
 import { jest } from '@jest/globals';
 import { consulKvRawPath } from '../routes';
 import { buildConfig, KV_DEFAULTS, parseKvConfig } from './app-config';
@@ -75,6 +76,32 @@ describe('configuration', () => {
     const config = await loadConfig(BASE_ENV, logger);
     expect(config.jwt).toEqual(KV_DEFAULTS.jwt);
     expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn.mock.calls[0][0]).toEqual({
+      status: 404,
+      key: 'config/auth-service/data',
+      reason: 'Consul KV responded with 404',
+    });
+  });
+
+  it('reads KV with CONSUL_HTTP_TOKEN in X-Consul-Token; a 403 (ACL) is one warning without the token', async () => {
+    const token = '6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b';
+    const fetchSpy = mockFetch(new Response('Permission denied', { status: 403 }));
+    const config = await loadConfig({ ...BASE_ENV, CONSUL_HTTP_TOKEN: token }, logger);
+    expect(fetchSpy.mock.calls[0][1]?.headers).toEqual({ 'X-Consul-Token': token });
+    expect(config.jwt).toEqual(KV_DEFAULTS.jwt);
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn.mock.calls[0][0]).toEqual({
+      status: 403,
+      key: 'config/auth-service/data',
+      reason: 'Consul KV responded with 403 (ACL: CONSUL_HTTP_TOKEN missing or without permission)',
+    });
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain(token);
+  });
+
+  it('reads KV without X-Consul-Token when CONSUL_HTTP_TOKEN is empty (Docker Compose)', async () => {
+    const fetchSpy = mockFetch(new Response(KV_YAML));
+    await loadConfig({ ...BASE_ENV, CONSUL_HTTP_TOKEN: '' }, logger);
+    expect(fetchSpy.mock.calls[0][1]?.headers).toBeUndefined();
   });
 
   it('does not call Consul when CONSUL_ENABLED=false', async () => {
@@ -92,6 +119,40 @@ describe('configuration', () => {
     expect(config.consul).toEqual({ enabled: true, host: 'consul', port: 8500, serviceAddress: '' });
     expect(config.instanceId).toMatch(/^auth-service-/);
   });
+
+  it('takes INSTANCE_ID when set, otherwise <service>-<hostname> (also for an empty value)', () => {
+    expect(buildConfig({ ...BASE_ENV, INSTANCE_ID: 'auth-service-5c8b-xyz34' }, KV_DEFAULTS).instanceId).toBe(
+      'auth-service-5c8b-xyz34',
+    );
+    expect(buildConfig(BASE_ENV, KV_DEFAULTS).instanceId).toBe(`auth-service-${hostname()}`);
+    expect(buildConfig({ ...BASE_ENV, INSTANCE_ID: '' }, KV_DEFAULTS).instanceId).toBe(`auth-service-${hostname()}`);
+    expect(buildConfig({ ...BASE_ENV, INSTANCE_ID: '  ' }, KV_DEFAULTS).instanceId).toBe(`auth-service-${hostname()}`);
+  });
+
+  it('trims INSTANCE_ID and stops the startup on characters outside [A-Za-z0-9._-] or over 128, without the value', () => {
+    expect(buildConfig({ ...BASE_ENV, INSTANCE_ID: ' auth-service_1.a ' }, KV_DEFAULTS).instanceId).toBe('auth-service_1.a');
+    expect(buildConfig({ ...BASE_ENV, INSTANCE_ID: 'a'.repeat(128) }, KV_DEFAULTS).instanceId).toBe('a'.repeat(128));
+    for (const value of ['a'.repeat(129), 'auth\r\nX-Evil: 1', 'auth/1', 'auth 1', 'usługa']) {
+      expect(() => buildConfig({ ...BASE_ENV, INSTANCE_ID: value }, KV_DEFAULTS)).toThrow('Invalid INSTANCE_ID');
+    }
+    expect(() => buildConfig({ ...BASE_ENV, INSTANCE_ID: 'secret value' }, KV_DEFAULTS)).not.toThrow(/secret/);
+  });
+
+  it('takes CONSUL_HTTP_TOKEN as it is; empty or unset means no token', () => {
+    const token = (value: string | undefined) => buildConfig({ ...BASE_ENV, CONSUL_HTTP_TOKEN: value }, KV_DEFAULTS).consul.token;
+    expect(token('6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b')).toBe('6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b');
+    expect(token('')).toBeUndefined();
+    expect(token(undefined)).toBeUndefined();
+  });
+
+  it.each(['   ', ' 6f1c2b3a-secret', '6f1c2b3a-secret\n', 'secret with space', 'sécret-ü'])(
+    'stops the startup for CONSUL_HTTP_TOKEN %j, naming the variable without the value',
+    (value) => {
+      // An Error object compares the whole message, so no value can be appended to it.
+      const invalid = new Error('Invalid CONSUL_HTTP_TOKEN, expected visible ASCII characters without whitespace');
+      expect(() => buildConfig({ ...BASE_ENV, CONSUL_HTTP_TOKEN: value }, KV_DEFAULTS)).toThrow(invalid);
+    },
+  );
 
   it('fails without a required DB variable', () => {
     expect(() => buildConfig({ ...BASE_ENV, DB_PASSWORD: '' }, KV_DEFAULTS)).toThrow('DB_PASSWORD');

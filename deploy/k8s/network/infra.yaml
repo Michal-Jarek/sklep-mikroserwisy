@@ -1,0 +1,288 @@
+# Infrastructure: who may connect to Consul (the server and the proxy consul-guard), the databases, RabbitMQ and
+# Mailpit, and where Consul, consul-guard and the Jobs of the infra layer may connect. One NetworkPolicy per pod, named like the pod label app.kubernetes.io/name.
+# The other side of every connection (egress of the caller) is in the policy of the caller.
+# Outgoing DNS: dns.yaml. Everything else is blocked by default-deny.yaml.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: consul
+  namespace: shop
+  labels:
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: network
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: consul}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # Only the proxy and the seed Job reach the server (Service consul-server); the services go through consul-guard.
+    - from:
+        # consul-guard -> consul 8500: the allowed calls of all services (Service consul).
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: consul-guard}
+        # Job consul-kv-seed -> consul 8500: KV and ACL with the management token.
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: consul-kv-seed}
+      ports: [{protocol: TCP, port: 8500}]
+  egress:
+    # consul -> every service on its port: HTTP health check on the pod address. consul-guard allows only a plain GET
+    # of the registering pod's own /health/ready or /health/live, without following redirects (Z23, Z27).
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: api-gateway}
+      ports: [{protocol: TCP, port: 8080}]
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: auth-service}
+      ports: [{protocol: TCP, port: 8081}]
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: user-service}
+      ports: [{protocol: TCP, port: 8082}]
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: product-service}
+      ports: [{protocol: TCP, port: 8083}]
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: inventory-service}
+      ports: [{protocol: TCP, port: 8084}]
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: cart-service}
+      ports: [{protocol: TCP, port: 8085}]
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: order-service}
+      ports: [{protocol: TCP, port: 8086}]
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: notification-service}
+      ports: [{protocol: TCP, port: 8087}]
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: review-service}
+      ports: [{protocol: TCP, port: 8088}]
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: shipping-service}
+      ports: [{protocol: TCP, port: 8089}]
+---
+# consul-guard (Service consul): every pod of the shop -> 8500 (registration, service discovery, KV config);
+# consul-guard -> consul 8500 (the server, Service consul-server).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: consul-guard
+  namespace: shop
+  labels:
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: network
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: consul-guard}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/part-of: shop}
+      ports: [{protocol: TCP, port: 8500}]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: consul}
+      ports: [{protocol: TCP, port: 8500}]
+---
+# Job consul-kv-seed -> consul 8500 (Service consul-server): writes config/<service>/data and the ACL policy
+# (management token).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: consul-kv-seed
+  namespace: shop
+  labels:
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: network
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: consul-kv-seed}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: consul}
+      ports: [{protocol: TCP, port: 8500}]
+---
+# postgres: only the services with a database in PostgreSQL and their migration Jobs. No egress.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres
+  namespace: shop
+  labels:
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: network
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: postgres}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        # Services -> postgres 5432: auth_db, user_db, product_db, inventory_db, order_db, shipping_db.
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: auth-service}
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: user-service}
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: product-service}
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: inventory-service}
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: order-service}
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: shipping-service}
+        # Migration Jobs -> postgres 5432 (order-migrate and shipping-migrate prepared for stage 8).
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: auth-migrate}
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: user-migrate}
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: product-migrate}
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: order-migrate}
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: shipping-migrate}
+      ports: [{protocol: TCP, port: 5432}]
+---
+# mongo: Review (review_db) and Notification (notification_db) -> mongo 27017. No egress.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mongo
+  namespace: shop
+  labels:
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: network
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: mongo}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: review-service}
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: notification-service}
+      ports: [{protocol: TCP, port: 27017}]
+---
+# redis-gateway: only api-gateway -> 6379 (login rate limit). No egress.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-gateway
+  namespace: shop
+  labels:
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: network
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: redis-gateway}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: api-gateway}
+      ports: [{protocol: TCP, port: 6379}]
+---
+# redis-cart: only cart-service -> 6379 (carts). No egress.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-cart
+  namespace: shop
+  labels:
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: network
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: redis-cart}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: cart-service}
+      ports: [{protocol: TCP, port: 6379}]
+---
+# rabbitmq: event senders and receivers -> 5672 (AMQP); Job rabbitmq-setup -> 15672 (HTTP API). No egress.
+# The management UI (15672) only through kubectl port-forward (node traffic).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rabbitmq
+  namespace: shop
+  labels:
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: network
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: rabbitmq}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        # Senders: auth-service (user.registered), order-service (order.*), shipping-service (shipment.*).
+        # Receivers: notification-service, inventory-service, order-service, shipping-service.
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: auth-service}
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: notification-service}
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: inventory-service}
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: order-service}
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: shipping-service}
+      ports: [{protocol: TCP, port: 5672}]
+    - from:
+        # Job rabbitmq-setup -> rabbitmq 15672: imports definitions.json and the service accounts.
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: rabbitmq-setup}
+      ports: [{protocol: TCP, port: 15672}]
+---
+# Job rabbitmq-setup -> rabbitmq 15672 (HTTP API of rabbitmqadmin).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rabbitmq-setup
+  namespace: shop
+  labels:
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: network
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: rabbitmq-setup}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: rabbitmq}
+      ports: [{protocol: TCP, port: 15672}]
+---
+# mailpit: only notification-service -> 1025 (SMTP, welcome e-mails). No egress.
+# The web UI (8025) only through kubectl port-forward (node traffic).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mailpit
+  namespace: shop
+  labels:
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: network
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: mailpit}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: notification-service}
+      ports: [{protocol: TCP, port: 1025}]

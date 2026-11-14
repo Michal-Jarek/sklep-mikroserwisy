@@ -1,0 +1,154 @@
+# consul-guard: allow-list proxy in front of the Consul HTTP API (stage 7 Z23/Z25/Z27, decision M2 -> C).
+# Whoever registers a service in Consul also defines its HTTP health check, and the check is run by the Consul
+# server, which reaches every service. The Service consul (the address of all services: CONSUL_HOST=consul,
+# CONSUL_URL=http://consul:8500, 1:1 with compose) therefore points here; the guard passes only the calls the
+# services make (KV read, healthy instances, own entry, registration of the calling pod with one plain GET check
+# on its own /health/*, deregistration of its own entry) to the Service consul-server and answers 403 otherwise.
+# The script comes from ConfigMap consul-guard (deploy/k8s/up.sh, file infra/consul-guard.py; a changed script
+# restarts the pods). Public image, standard library only. Not registered in Consul itself.
+apiVersion: v1
+kind: Service
+metadata:
+  name: consul
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: consul-guard
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: infra
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: consul-guard
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: infra
+  ports:
+    - {name: http, port: 8500, targetPort: http}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: consul-guard
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: consul-guard
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: infra
+spec:
+  # Two replicas and a PodDisruptionBudget: every service depends on this path to Consul.
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: consul-guard
+      app.kubernetes.io/part-of: shop
+      app.kubernetes.io/component: infra
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: consul-guard
+        app.kubernetes.io/part-of: shop
+        app.kubernetes.io/component: infra
+    spec:
+      automountServiceAccountToken: false
+      # No <SERVICE>_PORT=tcp://... variables from the other Services of the namespace (convention, see README).
+      enableServiceLinks: false
+      # preStop (5 s) + up to 10 s for requests already started after SIGTERM.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        # No user in python:3.12-slim needs to exist for a numeric uid.
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      # Z12: with NetworkPolicy active, a new pod cannot connect for ~1-2 s. Wait until consul-server:8500 answers
+      # (every 0.5 s, at most 30 s, then exit 1 and the pod restarts).
+      initContainers:
+        - name: wait-for-network
+          image: python:3.12-slim
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - -I
+            - -c
+            - |
+              import socket, sys, time
+              start = time.monotonic()
+              while True:
+                  try:
+                      socket.create_connection(("consul-server", 8500), 1).close()
+                      print(f"consul-server:8500 reachable after {time.monotonic() - start:.1f} s")
+                      break
+                  except OSError as exc:
+                      if time.monotonic() - start > 30:
+                          print(f"consul-server:8500 not reachable after 30 s: {exc}", file=sys.stderr)
+                          sys.exit(1)
+                      time.sleep(0.5)
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {cpu: 100m, memory: 64Mi}
+      containers:
+        - name: consul-guard
+          image: python:3.12-slim
+          imagePullPolicy: IfNotPresent
+          # -I: no PYTHON* variables, user site or script directory in sys.path; -B: no __pycache__ (read-only file
+          # system; PYTHONDONTWRITEBYTECODE would be ignored because of -I).
+          command: ["python", "-I", "-B", "/app/consul-guard.py"]
+          ports:
+            - {name: http, containerPort: 8500}
+          env:
+            - {name: CONSUL_UPSTREAM, value: "consul-server:8500"}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            # The guard writes nothing (checked without /tmp).
+            readOnlyRootFilesystem: true
+          resources:
+            requests: {cpu: 25m, memory: 32Mi}
+            limits: {cpu: 200m, memory: 96Mi}
+          startupProbe:
+            httpGet: {path: /guard/live, port: http}
+            periodSeconds: 2
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: {path: /guard/live, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          # Ready only when the Consul server has a leader (the guard waits at most 2 s for it).
+          readinessProbe:
+            httpGet: {path: /guard/ready, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 3
+          lifecycle:
+            # The Service endpoints are removed while the pod still answers; then SIGTERM.
+            preStop:
+              sleep: {seconds: 5}
+          volumeMounts:
+            - {name: script, mountPath: /app, readOnly: true}
+      volumes:
+        - name: script
+          configMap:
+            name: consul-guard
+            defaultMode: 0444
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: consul-guard
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: consul-guard
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: infra
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: consul-guard
+      app.kubernetes.io/part-of: shop
+      app.kubernetes.io/component: infra

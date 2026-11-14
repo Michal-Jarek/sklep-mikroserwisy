@@ -57,6 +57,21 @@ function isRetryable(error: unknown): boolean {
   return !(error instanceof UserServiceStatusError) || error.status >= 500;
 }
 
+// No connection to the instance (the same codes as in the Gateway): the instance is evicted (D13).
+const CONNECTION_ERROR_CODES = new Set(['ECONNREFUSED', 'EHOSTUNREACH', 'ECONNRESET', 'UND_ERR_CONNECT_TIMEOUT']);
+
+/** fetch rejected because the instance could not be reached (error.cause.code). */
+function isConnectionError(error: unknown): boolean {
+  const cause: unknown = error instanceof Error ? error.cause : undefined;
+  return (
+    cause !== null &&
+    typeof cause === 'object' &&
+    'code' in cause &&
+    typeof cause.code === 'string' &&
+    CONNECTION_ERROR_CODES.has(cause.code)
+  );
+}
+
 function unavailable(): AppException {
   return new AppException(503, 'SERVICE_UNAVAILABLE', 'User Service is unavailable, try again later');
 }
@@ -65,6 +80,8 @@ function unavailable(): AppException {
  * Creates the user profile in User Service (POST /users) during registration.
  * Instance from Consul, 2 s per attempt, one retry with the same id (POST /users is idempotent by id),
  * circuit breaker around the whole call. Every failure becomes 503 SERVICE_UNAVAILABLE.
+ * An instance without a connection is evicted and the retry goes to the next instance from Consul
+ * (the same address when there is no other one).
  */
 @Injectable()
 export class UserClient implements OnModuleDestroy {
@@ -104,14 +121,26 @@ export class UserClient implements OnModuleDestroy {
 
   private async postWithRetry(baseUrl: string, profile: UserProfile, requestId: string): Promise<void> {
     try {
-      await this.post(baseUrl, profile, requestId);
+      await this.postOrEvict(baseUrl, profile, requestId);
     } catch (error) {
       if (!isRetryable(error)) {
         throw error;
       }
       this.logger.warn({ targetService: USER_SERVICE, reason: describeError(error) }, 'User Service call failed, retrying once');
       await delay(RETRY_DELAY_MS);
+      const retryUrl = isConnectionError(error) ? ((await this.discovery.getInstance(USER_SERVICE)) ?? baseUrl) : baseUrl;
+      await this.postOrEvict(retryUrl, profile, requestId);
+    }
+  }
+
+  private async postOrEvict(baseUrl: string, profile: UserProfile, requestId: string): Promise<void> {
+    try {
       await this.post(baseUrl, profile, requestId);
+    } catch (error) {
+      if (isConnectionError(error)) {
+        this.discovery.evict(USER_SERVICE, baseUrl);
+      }
+      throw error;
     }
   }
 

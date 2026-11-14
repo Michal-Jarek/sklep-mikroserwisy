@@ -1051,7 +1051,7 @@ Zasada: [D18](decisions.md#d18--dokumentacja-api).
 - Ścieżki domyślne biblioteki: FastAPI — `/docs` (Swagger UI), `/redoc`, `/openapi.json`; springdoc — `/swagger-ui.html`, `/v3/api-docs`; NestJS — ścieżka podana w kodzie (`SwaggerModule.setup`).
 - Gateway ich nie przepuszcza (przekazuje tylko `/api/v1/<zasób>/…`), a usługa w compose nie ma portu na laptopie. Tak ma zostać: dokumentacja pokazuje też endpointy wewnętrzne.
 - **Pokaz z VS Code:** usługa uruchomiona na laptopie (sekcja 1) → http://127.0.0.1:8088/docs (port usługi; przykład z sekcji 2: http://127.0.0.1:8090/docs).
-- **Pokaz w k8s** (etap 7): `kubectl -n shop port-forward svc/review-service 8088:8088`, potem http://127.0.0.1:8088/docs.
+- **Pokaz w k8s** (etap 7): `kubectl --context rancher-desktop -n shop port-forward svc/review-service 18088:8088`, potem http://127.0.0.1:18088/docs (port 18088, żeby nie zderzyć się z usługą uruchomioną z VS Code na 8088; pozostałe usługi: [deploy/k8s/README.md, „Swagger usług zespołu”](../deploy/k8s/README.md#swagger-usług-zespołu-tylko-port-forward)).
 - Żeby w Swagger UI dało się wywołać endpoint wymagający logowania, usługa deklaruje `X-User-Id` i `X-User-Roles` jako parametry nagłówka (FastAPI: `Header()` w zależności, która je czyta — jak `identity` w przykładzie z sekcji 2) — wtedy formularz „Try it out” ma na nie pola.
 
 ## 10. Walidacja wejścia

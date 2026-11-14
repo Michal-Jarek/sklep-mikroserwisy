@@ -573,12 +573,96 @@ describe('proxy (HTTP flow on a real server)', () => {
       expect(received.map((item) => item.method)).toEqual(['HEAD']);
     });
 
-    it.each(['POST', 'PUT', 'PATCH', 'DELETE'])('%s: no connection -> 502 and evict, without a retry', async (method) => {
+    it.each(['POST', 'PUT', 'PATCH', 'DELETE'])('%s: connection refused -> evict and one retry on another instance with the same body (Z11)', async (method) => {
       discovery.reset([refused, healthy]);
-      expectError(await gw(method, '/cart/items', { body: '{}' }), 502, 'BAD_GATEWAY', 'Service is not reachable');
-      expect(discovery.getInstance).toHaveBeenCalledTimes(1);
+      const payload = '{"refreshed":true,"text":"zażółć"}';
+      const result = await gw(method, '/cart/items', { headers: { 'content-type': 'application/json; charset=utf-8' }, body: payload });
+      expect(result.status).toBe(200);
+      expect(received).toHaveLength(1);
+      expect(received[0].method).toBe(method);
+      expect(received[0].body.toString('utf8')).toBe(payload);
+      expect(received[0].headers['content-type']).toBe('application/json; charset=utf-8');
+      expect(received[0].headers['content-length']).toBe(String(Buffer.byteLength(payload)));
       expect(discovery.evict).toHaveBeenCalledWith('cart-service', refused);
+      expect(discovery.getInstance).toHaveBeenCalledTimes(2);
+    });
+
+    it('POST: no connection to two instances -> 502 after exactly one retry, both evicted (Z11)', async () => {
+      discovery.reset([refused, refused2]);
+      expectError(await gw('POST', '/cart/items', { body: '{}' }), 502, 'BAD_GATEWAY', 'Service is not reachable');
+      expect(discovery.getInstance).toHaveBeenCalledTimes(2);
+      expect(discovery.evict.mock.calls.map(([, instance]) => instance.id)).toEqual([refused.id, refused2.id]);
       expect(received).toHaveLength(0);
+    });
+
+    it.each(['EHOSTUNREACH', 'UND_ERR_CONNECT_TIMEOUT'])('POST: no connection (%s) -> evict and one retry on another instance with the same body (Z11)', async (code) => {
+      // These codes cannot be produced reliably on a local machine: the first attempt is simulated, the retry is real.
+      // attempt() is private: reached through a narrower view of the service.
+      const upstream = app.get<UpstreamService, { attempt: () => Promise<ForwardResult & { code?: string }> }>(UpstreamService);
+      const attempt = jest
+        .spyOn(upstream, 'attempt')
+        .mockResolvedValueOnce({ kind: 'unreachable', upstream: `127.0.0.1:${refused.port}`, code });
+      try {
+        discovery.reset([refused, healthy]);
+        const payload = '{"retried":true,"text":"zażółć"}';
+        const result = await gw('POST', '/cart/items', { headers: { 'content-type': 'application/json' }, body: payload });
+        expect(result.status).toBe(200);
+        expect(attempt).toHaveBeenCalledTimes(2);
+        expect(received).toHaveLength(1);
+        expect(received[0].method).toBe('POST');
+        expect(received[0].body.toString('utf8')).toBe(payload);
+        expect(discovery.evict).toHaveBeenCalledWith('cart-service', refused);
+        expect(discovery.getInstance).toHaveBeenCalledTimes(2);
+      } finally {
+        attempt.mockRestore();
+      }
+    });
+
+    it('POST: no connection and no other instance -> 502 (Z11)', async () => {
+      discovery.reset([refused]);
+      expectError(await gw('POST', '/cart/items', { body: '{}' }), 502, 'BAD_GATEWAY', 'Service is not reachable');
+      expect(discovery.getInstance).toHaveBeenCalledTimes(2);
+      expect(discovery.evict).toHaveBeenCalledTimes(1);
+      expect(received).toHaveLength(0);
+    });
+
+    it('POST: no response within proxy.timeoutSeconds -> 504 without a retry (Z11)', async () => {
+      discovery.reset([healthy, healthy]);
+      const result = await gw('POST', '/cart/items', { headers: { 'x-test-delay-ms': '4000' }, body: '{"once":true}' });
+      expectError(result, 504, 'GATEWAY_TIMEOUT', 'Service did not respond in time');
+      expect(received.map((item) => item.body.toString('utf8'))).toEqual(['{"once":true}']);
+      expect(discovery.getInstance).toHaveBeenCalledTimes(1);
+      expect(discovery.evict).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['closed (FIN)', 'destroy'],
+      ['reset (RST, ECONNRESET)', 'resetAndDestroy'],
+    ] as const)('POST: connection %s after the request was sent -> 502 without a retry (Z11)', async (_name, close) => {
+      // A service that reads the whole request and drops the connection without an answer.
+      const dropped: Buffer[] = [];
+      const dropping = createServer((req) => {
+        const chunks: Buffer[] = [];
+        req.on('data', (chunk: Buffer) => chunks.push(chunk));
+        req.on('end', () => {
+          dropped.push(Buffer.concat(chunks));
+          req.socket[close]();
+        });
+      });
+      await new Promise<void>((resolve) => dropping.listen(0, '127.0.0.1', resolve));
+      try {
+        const droppingInstance = { id: 'svc-dropping', address: '127.0.0.1', port: (dropping.address() as AddressInfo).port };
+        discovery.reset([droppingInstance, healthy]);
+        const result = await gw('POST', '/cart/items', { body: '{"once":true}' });
+        expect(result.status).toBe(502);
+        expect(errorBody(result).error).toBe('BAD_GATEWAY');
+        expect(dropped.map((body) => body.toString('utf8'))).toEqual(['{"once":true}']);
+        expect(discovery.getInstance).toHaveBeenCalledTimes(1);
+        expect(received).toHaveLength(0);
+      } finally {
+        dropping.closeAllConnections();
+        await new Promise<void>((resolve) => dropping.close(() => resolve()));
+      }
     });
 
     it('no response within proxy.timeoutSeconds -> 504 without a retry', async () => {

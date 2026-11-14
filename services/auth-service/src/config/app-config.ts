@@ -27,6 +27,8 @@ export interface AppConfig {
     port: number;
     // Address registered in Consul; empty means "first non-loopback IPv4 of the container".
     serviceAddress: string;
+    // ACL token sent as X-Consul-Token in every Consul call (Kubernetes); undefined = no header (Docker Compose).
+    token?: string;
   };
   db: {
     host: string;
@@ -83,6 +85,42 @@ function portNumber(env: Env, name: string, fallback: number): number {
   const value = Number(raw);
   if (!Number.isInteger(value) || value < 1 || value > 65535) {
     throw new Error(`Invalid port in ${name}`);
+  }
+  return value;
+}
+
+// Visible ASCII without whitespace: the value goes into the X-Consul-Token header.
+const CONSUL_TOKEN_PATTERN = /^[\x21-\x7e]+$/;
+
+/**
+ * CONSUL_HTTP_TOKEN: empty or unset means no token. Whitespace or other characters a header cannot carry stop the
+ * startup; the message names the variable, never the value.
+ */
+function consulToken(env: Env): string | undefined {
+  const value = env.CONSUL_HTTP_TOKEN;
+  if (!value) {
+    return undefined;
+  }
+  if (!CONSUL_TOKEN_PATTERN.test(value)) {
+    throw new Error('Invalid CONSUL_HTTP_TOKEN, expected visible ASCII characters without whitespace');
+  }
+  return value;
+}
+
+// Safe in HTTP headers, Consul service IDs and URL paths.
+const INSTANCE_ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
+
+/**
+ * INSTANCE_ID: trimmed; empty or unset means <service>-<hostname>. Other characters stop the startup; the message
+ * names the variable, not the value.
+ */
+function instanceId(env: Env): string {
+  const value = env.INSTANCE_ID?.trim();
+  if (!value) {
+    return `${SERVICE_NAME}-${hostname()}`;
+  }
+  if (!INSTANCE_ID_PATTERN.test(value)) {
+    throw new Error('Invalid INSTANCE_ID, expected 1-128 characters: letters, digits, ".", "_" or "-"');
   }
   return value;
 }
@@ -149,13 +187,15 @@ export function buildConfig(env: Env, kv: KvConfig): AppConfig {
   }
   return {
     port: portNumber(env, 'PORT', 8081),
-    instanceId: `${SERVICE_NAME}-${hostname()}`,
+    // Kubernetes sets INSTANCE_ID to the pod name (which already starts with the service name), like the team services.
+    instanceId: instanceId(env),
     logLevel: logLevel || kv.logLevel,
     consul: {
       enabled: env.CONSUL_ENABLED !== 'false',
       host: env.CONSUL_HOST || '127.0.0.1',
       port: portNumber(env, 'CONSUL_PORT', 8500),
       serviceAddress: env.SERVICE_ADDRESS ?? '',
+      token: consulToken(env),
     },
     db: {
       host: required(env, 'DB_HOST'),

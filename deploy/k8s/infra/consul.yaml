@@ -1,0 +1,168 @@
+# Consul: one server (pod consul-0) with ACL. Configuration of the services in KV (Job consul-kv-seed),
+# registration of the services and their health checks. Requests without a token get the policy
+# anonymous-shop (consul-acl-setup.sh); the management token is only in Secret consul-secret.
+# One server, because the services call the agent API (/v1/agent/...) through one name: several replicas
+# behind the ClusterIP would mean repeated registrations. Consul is not registered in itself, so no preStop.
+# The services do not reach this server directly: the Service consul is the allow-list proxy consul-guard
+# (consul-guard.yaml), which forwards to the Service consul-server below. Directly here only consul-guard, the Job
+# consul-kv-seed (management token) and kubectl port-forward svc/consul-server (UI). Whoever registers a service
+# defines its HTTP check, and this server runs it against every service: consul-guard allows only a plain GET of
+# the caller's own /health/*, and consul-server.hcl (discard_check_output) keeps no response body of a check.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: consul
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: consul
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: infra
+spec:
+  # Immutable: changing it needs the StatefulSet recreated (bash deploy/k8s/down.sh && bash deploy/k8s/up.sh all,
+  # the volume stays).
+  serviceName: consul-server
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: consul
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: consul
+        app.kubernetes.io/part-of: shop
+        app.kubernetes.io/component: infra
+    spec:
+      automountServiceAccountToken: false
+      # Without it Kubernetes adds <SERVICE>_PORT=tcp://... for every Service (e.g. CONSUL_PORT).
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        # User consul of the image (uid 100, gid 1000); fsGroup makes the volume writable for it.
+        # OnRootMismatch: permissions are changed only on a new volume, not on every mount.
+        runAsNonRoot: true
+        runAsUser: 100
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: consul
+          image: hashicorp/consul:1.21
+          imagePullPolicy: IfNotPresent
+          # As in deploy/compose.yaml. The image entrypoint adds -data-dir=/consul/data and
+          # -config-dir=/consul/config (acl.hcl from Secret consul-secret, consul-server.hcl from ConfigMap
+          # consul-server-config).
+          args: ["agent", "-server", "-bootstrap-expect=1", "-ui", "-node=consul", "-bind=127.0.0.1", "-client=0.0.0.0"]
+          env:
+            # Disables su-exec in the image entrypoint, which fails without root.
+            - name: CONSUL_DISABLE_PERM_MGMT
+              value: "true"
+            # No update check at checkpoint-api.hashicorp.com: the namespace has no egress to the internet
+            # (NetworkPolicy), every start would log an error.
+            - name: CHECKPOINT_DISABLE
+              value: "1"
+          ports:
+            - name: http
+              containerPort: 8500
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          # Like the healthcheck in compose: ready once a leader is elected (an address, not an empty string).
+          # /v1/status/leader needs no ACL token.
+          startupProbe:
+            exec:
+              command: ["sh", "-c", "curl -fsS http://127.0.0.1:8500/v1/status/leader | grep -q '[0-9]'"]
+            periodSeconds: 2
+            timeoutSeconds: 3
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "curl -fsS http://127.0.0.1:8500/v1/status/leader | grep -q '[0-9]'"]
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "curl -fsS http://127.0.0.1:8500/v1/status/leader | grep -q '[0-9]'"]
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            - name: data
+              mountPath: /consul/data
+            - name: config
+              mountPath: /consul/config
+              readOnly: true
+            # The management token alone, for commands in the pod without printing it:
+            #   consul kv put -token-file=/consul/token/CONSUL_HTTP_TOKEN ...   (deploy/k8s/README.md)
+            # Not in the environment: consul and curl in this pod work without a token (anonymous-shop).
+            - name: token
+              mountPath: /consul/token
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # One directory, two sources: the ACL (tokens, Secret) and the plain settings (ConfigMap, deploy/k8s/up.sh).
+        - name: config
+          projected:
+            defaultMode: 0440
+            sources:
+              - secret:
+                  name: consul-secret
+                  items:
+                    - key: acl.hcl
+                      path: acl.hcl
+              - configMap:
+                  name: consul-server-config
+                  items:
+                    - key: consul-server.hcl
+                      path: consul-server.hcl
+        - name: token
+          secret:
+            secretName: consul-secret
+            items:
+              - key: CONSUL_HTTP_TOKEN
+                path: CONSUL_HTTP_TOKEN
+            defaultMode: 0440
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: consul
+          app.kubernetes.io/part-of: shop
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 1Gi
+---
+# The server itself: consul-guard, Job consul-kv-seed, port-forward of the UI. The services use the Service consul.
+apiVersion: v1
+kind: Service
+metadata:
+  name: consul-server
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: consul
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: infra
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: consul
+  ports:
+    - name: http
+      port: 8500
+      targetPort: http

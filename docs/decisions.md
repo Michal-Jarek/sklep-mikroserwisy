@@ -9,7 +9,7 @@ Ten dokument zbiera zasady wiążące każdą usługę sklepu (D1–D20): co obo
 | D | Zasada w jednym zdaniu | Kogo dotyczy |
 |---|---|---|
 | [D1](#d1--identyfikatory) | Identyfikator encji to UUID zapisany tekstem, małymi literami; niepoprawny UUID → 400 `VALIDATION_ERROR`. | wszystkie usługi |
-| [D2](#d2--wyłącznik-i-ponowienia) | Wywołanie innej usługi: timeout 2 s, wyłącznik (≥ 10 wywołań, ≥ 50 % awarii → 30 s), awaria to tylko brak połączenia, timeout, 5xx, 408, 429; ponowienia tylko `GET`/`HEAD`, najwyżej 2. | usługi, które wołają inne (np. Auth, Cart, Order, Review) |
+| [D2](#d2--wyłącznik-i-ponowienia) | Wywołanie innej usługi: timeout 2 s, wyłącznik (≥ 10 wywołań, ≥ 50 % awarii → 30 s), awaria to tylko brak połączenia, timeout, 5xx, 408, 429; ponowienia po błędzie usługi tylko `GET`/`HEAD`, najwyżej 2; przełączenie na inną instancję, gdy połączenie nie powstało — każda metoda. | usługi, które wołają inne (np. Auth, Cart, Order, Review) |
 | [D3](#d3--kwoty) | Kwota to tekst z dwoma miejscami po kropce (`"19.99"`) razem z `currency`, nigdy liczba JSON. | Product, Cart, Order, Shipping, zdarzenia |
 | [D4](#d4--lekki-odczyt-produktu) | `GET /products/{id}` z rolą `SERVICE` nie woła Review ani Inventory, czyta bazę z pominięciem cache i zwraca co najmniej `id`, `name`, `price`, `currency`. | Product (wołają go Cart i Order) |
 | [D5](#d5--budżet-czasu) | Gateway czeka 10 s; usługa odpowiada w < 9 s, a przy kilku wywołaniach po kolei ma wspólny termin 8 s. | wszystkie usługi, zwłaszcza Cart i Order |
@@ -47,6 +47,7 @@ Ten dokument zbiera zasady wiążące każdą usługę sklepu (D1–D20): co obo
 - **Otwarcie:** co najmniej **10 wywołań** w oknie (ostatnie 10 wywołań albo ostatnie 60 s) i **≥ 50 % awarii** → wyłącznik otwarty na **30 s**. W tym czasie od razu fallback z tabeli połączeń w dokumencie architektury, bez wywołania; gdy wynik jest niezbędny — **503 `SERVICE_UNAVAILABLE`**. Po 30 s przechodzi **jedno** wywołanie próbne: sukces zamyka wyłącznik, awaria otwiera go na kolejne 30 s.
 - Wyłącznik nie trzyma blokady (lock) przez czas wywołania.
 - **Ponowienia** tylko dla `GET` i `HEAD`, najwyżej **2**, z rosnącym odstępem (np. 200 ms, potem 400 ms), tylko po braku połączenia, timeoucie, 502, 503, 504. Wyjątek: idempotentny `POST /users` z tym samym `id` (D8).
+- **Przełączenie na inną instancję, gdy połączenie nie powstało** (odmowa połączenia, brak trasy, przekroczony czas łączenia) — dozwolone dla **każdej** metody: usługa nie dostała żądania, więc nie wykona go dwa razy. Po wysłaniu żądania (zerwane połączenie, timeout odpowiedzi, 5xx) obowiązuje punkt wyżej (tylko `GET`/`HEAD`). W Pythonie to `httpx.ConnectError` i `httpx.ConnectTimeout` (nie `ReadTimeout`). Gateway robi tak od etapu 7; usługa zespołu może, ale nie musi.
 - Ustawienia bibliotek:
   - Java — Resilience4j: `COUNT_BASED`, okno 10, próg 50 %, otwarcie 30 s, 1 wywołanie w stanie półotwartym, wyjątki dla odpowiedzi 4xx poza 408 i 429 w `ignoreExceptions`.
   - Node.js — opossum (jak Auth). Auth (opossum) otwiera wyłącznik przy ponad połowie awarii, a nie przy co najmniej połowie — różnica bez znaczenia.
@@ -137,7 +138,7 @@ Ten dokument zbiera zasady wiążące każdą usługę sklepu (D1–D20): co obo
 | 500 | `INTERNAL_ERROR` | nieoczekiwany błąd; bez stack trace w odpowiedzi (szczegóły tylko w logu) |
 | 503 | `SERVICE_UNAVAILABLE` | niedostępna zależność, otwarty wyłącznik (D2), usługa niegotowa |
 
-502 i 504 zwraca Gateway, a gdy Gateway nie odpowiada — nginx frontendu. `message` jest dla programisty (język dowolny), bez danych osobowych. Kody domenowe zapisuje się `UPPER_SNAKE`.
+502 i 504 zwraca Gateway, a gdy Gateway nie odpowiada — nginx frontendu. Wyjątek w Kubernetesie: gdy żadna replika Gateway nie jest gotowa, Traefik odpowiada na `/api` zwykłym tekstem 503 („no available server”), a gdy proces Gateway kończy się nagle (awaria bez `preStop`), pojedyncze żądania w toku dostają od Traefika 502 („Bad Gateway”) — oba bez treści w tym formacie i bez `requestId`; frontend pokazuje wtedy komunikat po samym kodzie statusu (szczegóły: [deploy/k8s/README.md, „Wyjątki”](../deploy/k8s/README.md#wyjątki)). `message` jest dla programisty (język dowolny), bez danych osobowych. Kody domenowe zapisuje się `UPPER_SNAKE`.
 
 ### Rejestr kodów domenowych
 

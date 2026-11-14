@@ -15,5 +15,6 @@ Metody dostawy i przesyłki, bez integracji z kurierem.
 - kod usługi i testy,
 - `Dockerfile`,
 - `.env.example` (nazwy zmiennych bez wartości),
-- `k8s/` z manifestami Kubernetes tej usługi,
 - `postman/` z kolekcją Postman tej usługi.
+
+Manifestów Kubernetes nie dodaje się w folderze usługi: manifesty wszystkich usług są w [`deploy/k8s/`](../../deploy/k8s/README.md) i pisze je Michał na podstawie wpisu usługi w `deploy/compose.yaml`.

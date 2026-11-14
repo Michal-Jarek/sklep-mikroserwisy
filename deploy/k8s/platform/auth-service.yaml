@@ -1,0 +1,182 @@
+# Auth Service: accounts, login, tokens, JWKS. Variables 1:1 with deploy/compose.yaml plus CONSUL_HTTP_TOKEN (own
+# Consul token, Z9); passwords and the Consul token from Secret auth-service-secret, the JWT private key from Secret
+# auth-jwt-secret as a file (deploy/k8s/secrets.sh).
+# Registers itself in Consul with the pod IP (SERVICE_ADDRESS); the Gateway sends /api/v1/auth/** to the
+# instances from Consul and reads the JWKS through this Service (AUTH_JWKS_ORIGIN, stage 7 decision 8).
+# The schema comes from Job auth-migrate (auth-migrate.yaml), which deploy/k8s/up.sh runs first.
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-service
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: auth-service
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: platform
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: auth-service
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: platform
+  ports:
+    - {name: http, port: 8081, targetPort: http}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-service
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: auth-service
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: auth-service
+      app.kubernetes.io/part-of: shop
+      app.kubernetes.io/component: platform
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: auth-service
+        app.kubernetes.io/part-of: shop
+        app.kubernetes.io/component: platform
+    spec:
+      automountServiceAccountToken: false
+      # No <SERVICE>_PORT=tcp://... variables from the other Services of the namespace (convention, see README).
+      enableServiceLinks: false
+      # preStop (10 s) + deregistration from Consul and closing the server on SIGTERM (decision 11).
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        # USER 1000:1000 of the image (node); fsGroup 1000 = group of the key file (mode 0440).
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        # NetworkPolicy (stage 7 Z12): kube-router covers the IP of a new pod with a delay of ~1-2 s, so without this
+        # wait the service could skip the Consul KV read at startup. TCP to consul:8500 every 0.5 s, at most 30 s
+        # (then exit 1 and the pod restarts). Same image as the service, no secrets.
+        - name: wait-for-network
+          image: auth-service:dev
+          imagePullPolicy: Never
+          command:
+            - node
+            - -e
+            - |
+              const net = require('node:net');
+              const [host, port] = process.argv.slice(1);
+              const start = Date.now();
+              const attempt = () => {
+                const socket = net.connect({ host, port: Number(port), timeout: 1000 });
+                socket.once('connect', () => {
+                  console.log(`${host}:${port} reachable after ${Date.now() - start} ms`);
+                  socket.destroy();
+                });
+                const retry = () => {
+                  socket.destroy();
+                  if (Date.now() - start >= 30000) {
+                    console.error(`${host}:${port} not reachable within 30 s`);
+                    process.exit(1);
+                  }
+                  setTimeout(attempt, 500);
+                };
+                socket.once('error', retry);
+                socket.once('timeout', retry);
+              };
+              attempt();
+            - consul
+            - "8500"
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {cpu: 100m, memory: 64Mi}
+      containers:
+        - name: auth-service
+          image: auth-service:dev
+          imagePullPolicy: Never
+          ports:
+            - {name: http, containerPort: 8081}
+          env:
+            - {name: PORT, value: "8081"}
+            - {name: CONSUL_HOST, value: consul}
+            - {name: CONSUL_PORT, value: "8500"}
+            # Own Consul ACL token: the only one that may register the name auth-service (anonymous requests may
+            # only read it; deploy/k8s/infra/consul-acl-setup.sh).
+            - name: CONSUL_HTTP_TOKEN
+              valueFrom: {secretKeyRef: {name: auth-service-secret, key: CONSUL_HTTP_TOKEN}}
+            # Address registered in Consul (decision 5).
+            - name: SERVICE_ADDRESS
+              valueFrom: {fieldRef: {fieldPath: status.podIP}}
+            # Instance id = pod name (already starts with auth-service): Consul ID, X-Instance-Id, logs.
+            - name: INSTANCE_ID
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            - {name: DB_HOST, value: postgres}
+            - {name: DB_PORT, value: "5432"}
+            - {name: DB_NAME, value: auth_db}
+            - {name: DB_USER, value: auth_service}
+            - name: DB_PASSWORD
+              valueFrom: {secretKeyRef: {name: auth-service-secret, key: DB_PASSWORD}}
+            - {name: JWT_PRIVATE_KEY_FILE, value: /run/secrets/jwt-private.pem}
+            # First admin account, created at startup when it does not exist yet. ADMIN_EMAIL from deploy/.env, default
+            # admin@sklep.local like deploy/compose.yaml (secrets.sh).
+            - name: ADMIN_EMAIL
+              valueFrom: {secretKeyRef: {name: auth-service-secret, key: ADMIN_EMAIL}}
+            - name: ADMIN_PASSWORD
+              valueFrom: {secretKeyRef: {name: auth-service-secret, key: ADMIN_PASSWORD}}
+            # Registration creates the profile in User Service (deploy/k8s/platform/user-service.yaml).
+            - {name: USER_SERVICE_ENABLED, value: "true"}
+            # Publishing events (outbox relay); Auth starts and registers users without RabbitMQ.
+            - {name: RABBITMQ_HOST, value: rabbitmq}
+            - {name: RABBITMQ_PORT, value: "5672"}
+            - {name: RABBITMQ_USER, value: auth-service}
+            - name: RABBITMQ_PASSWORD
+              valueFrom: {secretKeyRef: {name: auth-service-secret, key: RABBITMQ_PASSWORD}}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            # Checked with docker run --read-only: start, registration (bcrypt, Prisma) and JWKS write nothing.
+            readOnlyRootFilesystem: true
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            # 1 CPU for bcrypt (cost 12) at login and registration.
+            limits: {cpu: 1000m, memory: 320Mi}
+          startupProbe:
+            httpGet: {path: /health/live, port: http}
+            periodSeconds: 2
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: {path: /health/live, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          # Database answers SELECT 1.
+          readinessProbe:
+            httpGet: {path: /health/ready, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 3
+          lifecycle:
+            # Others keep the instance list from Consul for up to 10 s: serve while they switch over.
+            preStop:
+              sleep: {seconds: 10}
+          volumeMounts:
+            - {name: jwt-key, mountPath: /run/secrets, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: jwt-key
+          secret:
+            secretName: auth-jwt-secret
+            items:
+              - {key: jwt-private.pem, path: jwt-private.pem}
+            defaultMode: 0440
+        - name: tmp
+          emptyDir: {sizeLimit: 16Mi}

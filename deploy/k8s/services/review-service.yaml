@@ -1,0 +1,139 @@
+# Review Service (owner: Aleksandra): product reviews in review_db (MongoDB). Variables 1:1 with
+# deploy/compose.yaml; MONGODB_URL contains the password, so it comes from Secret review-service-secret
+# (deploy/k8s/secrets.sh). The service creates its indexes at start and exits when MongoDB does not answer
+# (the pod restarts until it does), hence the 120 s startupProbe. It registers in Consul once at start
+# with the pod IP (SERVICE_ADDRESS).
+apiVersion: v1
+kind: Service
+metadata:
+  name: review-service
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: review-service
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: service
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: review-service
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: service
+  ports:
+    - {name: http, port: 8088, targetPort: http}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: review-service
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: review-service
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: review-service
+      app.kubernetes.io/part-of: shop
+      app.kubernetes.io/component: service
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: review-service
+        app.kubernetes.io/part-of: shop
+        app.kubernetes.io/component: service
+    spec:
+      automountServiceAccountToken: false
+      # No <SERVICE>_PORT=tcp://... variables from the other Services of the namespace (convention, see README).
+      enableServiceLinks: false
+      # preStop (10 s) + deregistration from Consul and closing the server on SIGTERM (decision 11).
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        # USER 10001 of the image (no group in the Dockerfile; the application files are world-readable).
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      # Z12/Z13: with NetworkPolicy active, a new pod cannot connect for ~1-2 s (kube-router adds its IP to the
+      # rule sets with a delay). Wait here until consul:8500 answers (every 0.5 s, at most 30 s, then exit 1 and
+      # the pod restarts), so the service reads Consul KV and registers on its first try.
+      initContainers:
+        - name: wait-for-network
+          image: review-service:dev
+          imagePullPolicy: Never
+          command:
+            - python
+            - -c
+            - |
+              import socket, sys, time
+              start = time.monotonic()
+              while True:
+                  try:
+                      socket.create_connection(("consul", 8500), 1).close()
+                      print(f"consul:8500 reachable after {time.monotonic() - start:.1f} s")
+                      break
+                  except OSError as exc:
+                      if time.monotonic() - start > 30:
+                          print(f"consul:8500 not reachable after 30 s: {exc}", file=sys.stderr)
+                          sys.exit(1)
+                      time.sleep(0.5)
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {cpu: 100m, memory: 64Mi}
+      containers:
+        - name: review-service
+          image: review-service:dev
+          imagePullPolicy: Never
+          ports:
+            - {name: http, containerPort: 8088}
+          env:
+            - {name: SERVICE_PORT, value: "8088"}
+            - {name: CONSUL_HOST, value: consul}
+            - {name: CONSUL_PORT, value: "8500"}
+            # Address registered in Consul (decision 5). No INSTANCE_ID: the code builds the ID as
+            # "review-service-" + instance id, so the pod name would give a doubled prefix; the hostname
+            # (= pod name) it uses by default is already unique.
+            - name: SERVICE_ADDRESS
+              valueFrom: {fieldRef: {fieldPath: status.podIP}}
+            - name: MONGODB_URL
+              valueFrom: {secretKeyRef: {name: review-service-secret, key: MONGODB_URL}}
+            - {name: MONGODB_DATABASE, value: review_db}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            # The image sets PYTHONDONTWRITEBYTECODE; uvicorn writes nothing outside /tmp.
+            readOnlyRootFilesystem: true
+          resources:
+            requests: {cpu: 25m, memory: 96Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          # Up to 120 s: the HTTP server starts only after the indexes are created in MongoDB.
+          startupProbe:
+            httpGet: {path: /health/live, port: http}
+            periodSeconds: 2
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: {path: /health/live, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          # MongoDB ping (server selection timeout 3 s in the code).
+          readinessProbe:
+            httpGet: {path: /health/ready, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 3
+          lifecycle:
+            # Others keep the instance list from Consul for up to 10 s: serve while they switch over.
+            preStop:
+              sleep: {seconds: 10}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 16Mi}

@@ -80,7 +80,8 @@ async def list_categories(cat: CatalogDep, who: Caller):
 async def create_product(data: ProductInput, cat: CatalogDep, who: Admin):
     product = await run_in_threadpool(cat.create, data)
     # A new product has no reviews and no stock yet (stock is set in Inventory).
-    return {**product, "rating": {"average": None, "count": 0}, "availability": None}
+    return {**product, "rating": {"average": None, "count": 0},
+            "availability": {"available": 0, "inStock": False}}
 
 
 @router.put("/products/{product_id}", response_model=ProductDetail, tags=["products"])

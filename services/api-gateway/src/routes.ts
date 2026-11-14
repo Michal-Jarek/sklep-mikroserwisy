@@ -22,7 +22,8 @@ export const PATHS = {
 // Public API prefix: /api/v1/<resource>/... is proxied to the service without the prefix.
 export const GATEWAY_PREFIX = '/api/v1';
 
-// Public keys of Auth Service for access token verification (called on an auth-service instance from Consul).
+// Public keys of Auth Service for access token verification (called on AUTH_JWKS_ORIGIN when it is set,
+// otherwise on an auth-service instance from Consul).
 export const AUTH_JWKS_PATH = '/.well-known/jwks.json';
 
 // Consul HTTP API of the local agent.

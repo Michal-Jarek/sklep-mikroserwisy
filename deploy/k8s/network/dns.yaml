@@ -1,0 +1,22 @@
+# Every pod in shop -> CoreDNS of k3s (kube-system, label k8s-app: kube-dns), port 53 UDP and TCP:
+# names like consul, postgres or auth-service.shop.svc.cluster.local. Namespace and pod in one element (AND).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: shop
+  labels:
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: network
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}

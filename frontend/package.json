@@ -16,7 +16,8 @@
     "typecheck": "tsc -b",
     "lint": "eslint .",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test --project=mocked --project=compose",
+    "test:e2e:k8s": "playwright test --project=k8s"
   },
   "dependencies": {
     "@hookform/resolvers": "6.0.2",

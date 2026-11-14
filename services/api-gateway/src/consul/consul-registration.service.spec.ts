@@ -6,18 +6,26 @@ import { ConsulRegistration } from './consul-registration.service';
 import { LoopbackAddressError } from './service-address';
 
 const ENV = { CONSUL_HOST: 'consul', REDIS_PASSWORD: 'test-redis' };
+const TOKEN = '6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b';
 
 interface Call {
   url: string;
   method: string;
   body?: string;
+  // Value of the X-Consul-Token header.
+  token?: string;
 }
 
 /** Fake Consul agent: answers by method and path, records the calls. */
 function fakeConsul(answer: (call: Call) => Response | Error): Call[] {
   const calls: Call[] = [];
   jest.spyOn(global, 'fetch').mockImplementation((input, init) => {
-    const call = { url: input as string, method: init?.method ?? 'GET', body: init?.body as string | undefined };
+    const call = {
+      url: input as string,
+      method: init?.method ?? 'GET',
+      body: init?.body as string | undefined,
+      token: (init?.headers as Record<string, string> | undefined)?.['X-Consul-Token'],
+    };
     calls.push(call);
     const result = answer(call);
     return result instanceof Error ? Promise.reject(result) : Promise.resolve(result);
@@ -164,6 +172,53 @@ describe('ConsulRegistration', () => {
     expect(registrations(calls)).toHaveLength(1);
     expect(logger.info).toHaveBeenCalledWith('Consul is reachable again');
     await registration.onApplicationShutdown();
+  });
+
+  it('sends CONSUL_HTTP_TOKEN in X-Consul-Token on the check, the registration and the deregistration', async () => {
+    const calls = fakeConsul(notRegistered);
+    const { registration, config } = createRegistration({ ...ENV, CONSUL_HTTP_TOKEN: TOKEN });
+
+    await registration.start(() => Promise.resolve(true));
+    await registration.onApplicationShutdown();
+
+    expect(calls.map(({ url, method, token }) => ({ url, method, token }))).toEqual([
+      { url: `http://consul:8500${consulServicePath(config.instanceId)}`, method: 'GET', token: TOKEN },
+      { url: `http://consul:8500${CONSUL_REGISTER_PATH}`, method: 'PUT', token: TOKEN },
+      { url: `http://consul:8500${consulDeregisterPath(config.instanceId)}`, method: 'PUT', token: TOKEN },
+    ]);
+  });
+
+  it('sends no X-Consul-Token without CONSUL_HTTP_TOKEN (Docker Compose)', async () => {
+    const calls = fakeConsul(notRegistered);
+    const { registration } = createRegistration();
+
+    await registration.start(() => Promise.resolve(true));
+    await registration.onApplicationShutdown();
+
+    expect(calls).toHaveLength(3);
+    expect(calls.filter((call) => call.token !== undefined)).toEqual([]);
+  });
+
+  it('a 403 from Consul (ACL) is one warning naming CONSUL_HTTP_TOKEN, never its value', async () => {
+    // Consul answers 403 when the token may not register the name (e.g. no token for a reserved name).
+    fakeConsul((call) => new Response('Permission denied', { status: call.method === 'GET' ? 404 : 403 }));
+    const { registration, logger } = createRegistration({ ...ENV, CONSUL_HTTP_TOKEN: TOKEN });
+
+    await registration.start(() => Promise.resolve(true));
+    await registration.ensureRegistered();
+    await registration.onApplicationShutdown();
+
+    expect(logger.warn.mock.calls).toEqual([
+      [
+        { reason: 'Consul registration responded with 403 (ACL: CONSUL_HTTP_TOKEN missing or without permission)' },
+        'Consul is not reachable, will retry the registration',
+      ],
+      [
+        { reason: 'Consul deregistration responded with 403 (ACL: CONSUL_HTTP_TOKEN missing or without permission)' },
+        'Deregistration from Consul failed',
+      ],
+    ]);
+    expect(JSON.stringify([logger.warn.mock.calls, logger.info.mock.calls])).not.toContain(TOKEN);
   });
 
   it('deregisters on shutdown', async () => {

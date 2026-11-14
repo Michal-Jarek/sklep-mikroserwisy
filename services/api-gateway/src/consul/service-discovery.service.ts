@@ -2,7 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { InjectPinoLogger, PinoLogger } from 'nestjs-pino';
 import { APP_CONFIG, type AppConfig } from '../config/app-config';
 import { consulHealthyInstancesPath } from '../routes';
-import { consulFetch, describeError } from './consul-http';
+import { consulFetch, consulStatusError, describeError } from './consul-http';
 
 // How long the list of healthy instances of one service is reused (also after a failed refresh).
 export const DISCOVERY_CACHE_MS = 10_000;
@@ -26,19 +26,29 @@ interface CacheEntry {
   next: number;
 }
 
-/** Turns the /v1/health/service response into instances sorted by id; entries without id, address or port are skipped. */
-export function parseHealthyInstances(body: unknown): Instance[] {
+/**
+ * Turns the /v1/health/service response into instances sorted by id; entries without id, address or port are skipped.
+ * Only entries named exactly serviceName are kept: Consul matches the name in the path without case, while ACL compares
+ * it exactly, so "AUTH-SERVICE" registered without a token would otherwise get the traffic of "auth-service".
+ */
+export function parseHealthyInstances(body: unknown, serviceName: string): Instance[] {
   if (!Array.isArray(body)) {
     throw new Error('Unexpected response from Consul health API');
   }
   const instances: Instance[] = [];
   for (const entry of body as unknown[]) {
-    const item = entry as { Service?: { ID?: unknown; Address?: unknown; Port?: unknown }; Node?: { Address?: unknown } } | null;
-    const id = item?.Service?.ID;
-    const serviceAddress = item?.Service?.Address;
+    const item = entry as {
+      Service?: { ID?: unknown; Service?: unknown; Address?: unknown; Port?: unknown };
+      Node?: { Address?: unknown };
+    } | null;
+    if (item?.Service?.Service !== serviceName) {
+      continue;
+    }
+    const id = item.Service.ID;
+    const serviceAddress = item.Service.Address;
     // Consul uses the node address when the service was registered without one.
-    const address = typeof serviceAddress === 'string' && serviceAddress ? serviceAddress : item?.Node?.Address;
-    const port = item?.Service?.Port;
+    const address = typeof serviceAddress === 'string' && serviceAddress ? serviceAddress : item.Node?.Address;
+    const port = item.Service.Port;
     if (typeof id === 'string' && id && typeof address === 'string' && address && typeof port === 'number' && port > 0) {
       instances.push({ id, address, port });
     }
@@ -107,9 +117,9 @@ export class ServiceDiscovery {
     try {
       const response = await consulFetch(this.config.consul, consulHealthyInstancesPath(serviceName));
       if (!response.ok) {
-        throw new Error(`Consul responded with ${response.status}`);
+        throw consulStatusError('Consul', response.status);
       }
-      entry.instances = parseHealthyInstances(await response.json());
+      entry.instances = parseHealthyInstances(await response.json(), serviceName);
       if (entry.instances.length === 0) {
         cacheMs = DISCOVERY_EMPTY_CACHE_MS;
       }

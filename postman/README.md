@@ -1,6 +1,6 @@
 # Postman: scenariusz zakupu i pokazy
 
-Kolekcja `shop-purchase` sprawdza sklep tak, jak używa go przeglądarka: przez wejście `http://127.0.0.1:8090/api/v1` (nginx frontendu → API Gateway → usługi). Przechodzi rejestrację, e-mail powitalny w Mailpit, logowanie, katalog, stronę produktu, stany magazynowe (ADMIN), koszyk i odmowy dostępu. Uruchamia ją newman w kontenerze, a wynik trafia do raportu JSON bez haseł i tokenów.
+Kolekcja `shop-purchase` sprawdza sklep tak, jak używa go przeglądarka: przez wejście `http://127.0.0.1:8090/api/v1` (nginx frontendu → API Gateway → usługi), a w Kubernetes przez `https://shop.localhost/api/v1` (Ingress → API Gateway → usługi, sekcja „Środowisko `k8s`”). Przechodzi rejestrację, e-mail powitalny w Mailpit, logowanie, katalog, stronę produktu, stany magazynowe (ADMIN), koszyk i odmowy dostępu. Uruchamia ją newman w kontenerze, a wynik trafia do raportu JSON bez haseł i tokenów.
 
 Do tego dwa skrypty pokazowe: load balancing (`lb-demo.sh`) i odporność (`resilience-demo.sh`) — sekcja „Pokazy”.
 
@@ -36,9 +36,41 @@ Skrypt:
 
 Kontener z `--network host` widzi porty całego stosu na `127.0.0.1`, także bazy danych, Redis, RabbitMQ i Consul, a także adresy kontenerów w sieciach compose (usługi bezpośrednio, z pominięciem Gateway) — uruchamiaj w nim tylko kolekcje z tego repozytorium.
 
-Jedyne dostępne środowisko to `compose`. Środowisko `k8s` powstanie w etapie 7b.
+Drugie środowisko, `k8s`, opisuje sekcja „Środowisko `k8s`”.
 
 Jeden przebieg trwa kilka sekund i loguje się dwa razy (admin i nowy klient). Limit wejścia to 5 logowań i 10 rejestracji na minutę z jednego adresu, wspólny z przeglądarką na tym samym laptopie, więc najwyżej 2 przebiegi na minutę.
+
+## Środowisko `k8s`
+
+Ten sam scenariusz przeciw sklepowi w przestrzeni `shop` klastra Rancher Desktop.
+
+Wymagania:
+- klaster uruchomiony według [deploy/k8s/README.md](../deploy/k8s/README.md) (`bash deploy/k8s/up.sh all`), kontekst `kubectl` o nazwie `rancher-desktop`;
+- `kubectl` (instaluje go Rancher Desktop) i `mkcert` po `mkcert -install` — ten sam urząd certyfikacji podpisał certyfikat `shop.localhost`;
+- `deploy/.env` jak dla compose (skrypt czyta z niego `ADMIN_PASSWORD`; to samo hasło trafia do klastra przez `deploy/k8s/secrets.sh`);
+- wolne porty `18025` i `18500` na `127.0.0.1`.
+
+```bash
+bash postman/run.sh k8s            # scenariusz
+bash postman/run.sh k8s --strict   # każde pominięte sprawdzenie = błąd
+```
+
+Różnice wobec `compose`:
+1. Adres sklepu to `https://shop.localhost/api/v1`. Publiczny certyfikat urzędu mkcert (`$(mkcert -CAROOT)/rootCA.pem`) jest montowany do kontenera tylko do odczytu i wskazany w `NODE_EXTRA_CA_CERTS`, więc połączenie TLS jest sprawdzane, a nie pomijane. Kontener działa w sieci hosta, jak w compose; w maszynie wirtualnej Rancher Desktop `shop.localhost` wskazuje `127.0.0.1`, gdzie odpowiada Traefik.
+2. Mailpit i Consul nie mają wejścia z zewnątrz. Skrypt uruchamia w tle `kubectl --context rancher-desktop -n shop port-forward svc/mailpit 18025:8025` i `svc/consul-server 18500:8500` (serwer Consula; usługa `consul` to pośrednik `consul-guard`, który odrzuca zapytania o katalog), czeka (najwyżej 15 s), aż oba nasłuchują — gdy `kubectl` zakończy się wcześniej (np. brak usługi), przerywa od razu z kodem 2 i ostatnią linią komunikatu `kubectl` — i zamyka je przy każdym zakończeniu, także po Ctrl+C i `kill`. Kontener dochodzi do nich przez `host.docker.internal:18025` i `host.docker.internal:18500` (`127.0.0.1` w sieci hosta kontenera to maszyna wirtualna, nie laptop). Porty różnią się od compose (`8025`, `8500`), więc oba środowiska mogą działać naraz.
+3. Sondy folderu `00 setup` czytają katalog usług Consula bez tokenu: w klastrze Consul ma ACL, ale anonimowy token może czytać usługi i węzły.
+4. Raport: `postman/reports/<yyyymmddThhmmssZ>-k8s-shop-purchase.json`, pole `environment` = `k8s`.
+
+Limit wejścia: w klastrze wszystkie żądania z laptopa (scenariusz, przeglądarka, testy E2E) przychodzą z jednego adresu, więc 5 logowań i 10 rejestracji na minutę obejmuje je wszystkie razem. Po `hint: rate limit of the shop entrance reached` odczekaj 60 s. Limit logowań liczą dwa miejsca: Gateway w Redisie (`redis-gateway`) i Auth w pamięci procesu. W środowisku testowym zeruje się oba — `FLUSHALL` w Redis Gateway i restart Auth (nowy pod = pusty licznik):
+```bash
+kubectl --context rancher-desktop -n shop exec deploy/redis-gateway -- sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli FLUSHALL'
+kubectl --context rancher-desktop -n shop rollout restart deploy/auth-service && kubectl --context rancher-desktop -n shop rollout status deploy/auth-service
+```
+Samo `FLUSHALL` nie wystarczy: po nim Auth dalej odpowiada 429 do końca swojego okna 60 s.
+
+Czego oczekiwać:
+- **Tylko warstwa `platform`** (Gateway, Auth, User, frontend — część 7b etapu 7): `RESULT: FAILED`, kod 1. Przechodzą sprawdzenia platformy: S03, S10, S20–S22, S30, S31, S50, S51, S70, S72, S73, S90, S91. Nie przechodzą sprawdzenia usług, których jeszcze nie ma w klastrze — Gateway odpowiada na nie 503 `SERVICE_UNAVAILABLE`: S01, S02 (Inventory, Review), S11, S12, S40–S48 (Product), S23 (bez Notification nie ma e-maila powitalnego), S60–S67, S71 (Cart). To nie jest pominięcie: braku usługi scenariusz nie ukrywa.
+- **Pełny klaster** (`up.sh all`, od części 7c): wynik jak w compose — 0 nieudanych sprawdzeń, te same pominięcia (sekcja „Pominięcia i `--strict`”).
 
 ## Wynik
 
@@ -58,16 +90,16 @@ RESULT: PASSED — assertions 114, failed 0, skipped checks 8; report: postman/r
 |---|---|
 | `0` | wszystkie sprawdzenia zaliczone, żadne żądanie nie zakończyło się błędem połączenia (z `--strict` także 0 pominięć) |
 | `1` | co najmniej jedno sprawdzenie nie przeszło, błąd żądania albo błąd skryptu kolekcji; z `--strict` także pominięcie |
-| `2` | błąd przygotowania: zły argument, brak `deploy/.env` albo `ADMIN_PASSWORD`, nieobsługiwana składnia wartości w `deploy/.env`, brak Dockera, kontener nie wystartował (`docker run failed (<kod>)`), nie działa wejście sklepu, błąd newman, plik raportu o tej samej nazwie już istnieje (drugi przebieg w tej samej sekundzie); raport nie powstaje |
-| `2`, `130` albo `143` | przebieg przerwany (Ctrl+C albo `kill`): raport ani linia `RESULT:` nie powstają; kod 2 z komunikatem `interrupted (SIGINT), no report written`, gdy sygnał obsłuży kontener, 130 (Ctrl+C) albo 143 (TERM), gdy wcześniej zakończy się sam skrypt |
+| `2` | błąd przygotowania: zły argument, brak `deploy/.env` albo `ADMIN_PASSWORD`, nieobsługiwana składnia wartości w `deploy/.env`, brak Dockera, w `k8s` brak `kubectl`, kontekstu `rancher-desktop`, `mkcert` albo certyfikatu urzędu mkcert, zajęty port `18025`/`18500` albo nieudany `port-forward`, kontener nie wystartował (`docker run failed (<kod>)`), nie działa wejście sklepu, błąd newman, plik raportu o tej samej nazwie już istnieje (drugi przebieg w tej samej sekundzie); raport nie powstaje |
+| `130` albo `143` | przebieg przerwany (Ctrl+C albo `kill`): skrypt przekazuje sygnał kontenerowi (komunikat `interrupted (SIGTERM), no report written` albo `(SIGINT)`), zamyka `port-forward` i kończy się kodem 130 (Ctrl+C) albo 143 (TERM); raport ani linia `RESULT:` nie powstają |
 
 ### Raport JSON
 
-Raport leży w `postman/reports/<yyyymmddThhmmssZ>-compose-shop-purchase.json` (katalog jest w `.gitignore`). Najnowszy: `ls -t postman/reports/*-shop-purchase.json | head -1`.
+Raport leży w `postman/reports/<yyyymmddThhmmssZ>-<środowisko>-shop-purchase.json` (katalog jest w `.gitignore`). Najnowszy: `ls -t postman/reports/*-shop-purchase.json | head -1`.
 
 | Pole | Treść |
 |---|---|
-| `collection`, `environment` | `shop-purchase`, `compose` |
+| `collection`, `environment` | `shop-purchase`, `compose` albo `k8s` |
 | `runId` | identyfikator przebiegu `<yyyymmddhhmmss UTC>-<4 cyfry hex>` |
 | `customerEmail` | konto klienta założone w tym przebiegu: `scenario-<runId>@sklep.local` (rejestracja jako `Scenario-<runId>@sklep.local`, Auth zapisuje adres małymi literami) |
 | `startedAt`, `durationMs` | początek (UTC) i czas trwania |
@@ -167,7 +199,7 @@ Po teście przełącz się z powrotem na `develop` i powtórz polecenie z punktu
 2. W środowisku `compose` wpisz `adminPassword` (zmienna typu `secret`, w pliku pusta) — wartość `ADMIN_PASSWORD` z `deploy/.env` — tylko w kolumnie bieżącej wartości (Current value), nigdy w wartości początkowej (Initial value). Nie zapisuj jej w pliku środowiska w repozytorium.
 3. Wybierz środowisko `compose` i uruchom kolekcję w Collection Runner (całą, w kolejności folderów).
 
-Zmienne środowiska: `baseUrl` (`http://127.0.0.1:8090/api/v1`), `mailpitUrl` (`http://127.0.0.1:8025`), `consulUrl` (`http://127.0.0.1:8500`), `adminEmail`, `adminPassword`. W aplikacji kolekcja sama tworzy nowy e-mail klienta przy każdym uruchomieniu; pominięcia zapisuje w zmiennej środowiska `skipped`. Po uruchomieniu w aplikacji tokeny i hasło klienta testowego zostają w bieżących wartościach zmiennych kolekcji — nie eksportuj ani nie udostępniaj kolekcji i środowiska z bieżącymi wartościami.
+Zmienne środowiska: `baseUrl` (`http://127.0.0.1:8090/api/v1`), `mailpitUrl` (`http://127.0.0.1:8025`), `consulUrl` (`http://127.0.0.1:8500`), `adminEmail`, `adminPassword`. Środowisko `k8s` jest przygotowane dla kontenera (`host.docker.internal`); w aplikacji Postman na laptopie uruchom oba `port-forward` z sekcji „Środowisko `k8s`” ręcznie i w bieżących wartościach wpisz `mailpitUrl` = `http://127.0.0.1:18025`, `consulUrl` = `http://127.0.0.1:18500`. W aplikacji kolekcja sama tworzy nowy e-mail klienta przy każdym uruchomieniu; pominięcia zapisuje w zmiennej środowiska `skipped`. Po uruchomieniu w aplikacji tokeny i hasło klienta testowego zostają w bieżących wartościach zmiennych kolekcji — nie eksportuj ani nie udostępniaj kolekcji i środowiska z bieżącymi wartościami.
 
 Hasło admina w aplikacji Postman:
 - wartość początkowa (Initial value) trafia do eksportu i do danych konta Postman, bieżąca (Current value) zostaje na komputerze — dlatego hasło tylko w bieżącej wartości;
@@ -192,7 +224,7 @@ postman/
   runner/collection.test.mjs
                          testy kolekcji shop-purchase: tylko 4 stałe powody pominięć, dokładnie 41 identyfikatorów [S<nn>]
   collections/           kolekcje Postman (v2.1)
-  environments/          środowisko compose
+  environments/          środowiska compose i k8s
   reports/               raporty JSON (poza gitem)
 ```
 
@@ -310,6 +342,10 @@ curl -s 'http://127.0.0.1:8500/v1/health/service/product-service?passing=true' |
 |---|---|
 | `hint: rate limit of the shop entrance reached, wait 60 s and run again`, sprawdzenia logowania z 429 | limit 5 logowań / 10 rejestracji na minutę z jednego adresu (wspólny z przeglądarką) — odczekaj 60 s i uruchom ponownie |
 | `shop entrance http://127.0.0.1:8090/api/v1 is not reachable (no answer from the API Gateway)`, kod 2 | nie działa frontend (nginx) albo API Gateway — uruchom stos: `docker compose -f deploy/compose.yaml --profile full-shop up -d --wait` |
+| `shop entrance https://shop.localhost/api/v1 is not reachable …`, kod 2 | nie działa Ingress albo API Gateway w klastrze (`kubectl --context rancher-desktop -n shop get pods`) albo certyfikat `shop-tls` nie pochodzi z urzędu mkcert na tym laptopie — `bash deploy/k8s/up.sh platform` (deploy/k8s/README.md) |
+| `kubectl context rancher-desktop not found …`, `mkcert not found …`, `mkcert CA certificate … not found …`, kod 2 | brak klastra albo mkcert — wymagania w sekcji „Środowisko `k8s`” |
+| `port 18025 on 127.0.0.1 is already in use …` (albo `18500`), kod 2 | port zajmuje inny proces, np. `port-forward` uruchomiony ręcznie — `pgrep -fl port-forward`, zakończ go i uruchom ponownie |
+| `port-forward of svc/<usługa> to 127.0.0.1:<port> failed: …`, kod 2 | w przestrzeni `shop` nie działa Mailpit albo Consul — `bash deploy/k8s/up.sh infra` |
 | `env file …/deploy/.env not found, run deploy/create-secrets.sh`, kod 2 | brak haseł — `bash deploy/create-secrets.sh` |
 | `unsupported .env syntax for ADMIN_PASSWORD …`, kod 2 | w `deploy/.env` po wartości jest komentarz albo inny tekst, albo brak zamykającego cudzysłowu — zostaw w linii samo `ADMIN_PASSWORD=<wartość>` (cudzysłowy wokół wartości i końce linii CRLF są obsługiwane) |
 | `docker run failed (<kod>)`, kod 2 | kontener scenariusza nie wystartował (kod 125–127: np. błąd demona Dockera albo montowania katalogu) — sprawdź `docker info` i uruchom ponownie |

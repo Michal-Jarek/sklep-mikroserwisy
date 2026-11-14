@@ -1,5 +1,6 @@
 import { jest } from '@jest/globals';
 import type { PinoLogger } from 'nestjs-pino';
+import { buildAppConfig } from '../config/app-config';
 import type { Instance, ServiceDiscovery } from '../consul/service-discovery.service';
 import { AUTH_JWKS_PATH } from '../routes';
 import {
@@ -12,6 +13,8 @@ import {
 } from './jwks-provider.service';
 
 const AUTH: Instance = { id: 'auth-service-1', address: '10.0.0.9', port: 8081 };
+// Kubernetes Service of Auth (AUTH_JWKS_ORIGIN, stage 7 decision 8).
+const ORIGIN = 'http://auth-service.shop.svc.cluster.local:8081';
 // Waiting for a kid that is never published joins the request in progress.
 const NEVER_PUBLISHED = 'never-published';
 
@@ -25,7 +28,7 @@ function jwks(...keys: unknown[]): Response {
 
 type Answer = () => Response | Error | Promise<Response>;
 
-function setup(initial: Answer, instance: Instance | null = AUTH) {
+function setup(initial: Answer, instance: Instance | null = AUTH, authJwksOrigin?: string) {
   let answer = initial;
   const fetchSpy = jest.spyOn(global, 'fetch').mockImplementation(() => {
     const result = answer();
@@ -33,7 +36,8 @@ function setup(initial: Answer, instance: Instance | null = AUTH) {
   });
   const discovery = { getInstance: jest.fn(() => Promise.resolve(instance)), evict: jest.fn() };
   const logger = { info: jest.fn(), warn: jest.fn() };
-  const provider = new JwksProvider(discovery as unknown as ServiceDiscovery, logger as unknown as PinoLogger);
+  const config = buildAppConfig({ REDIS_PASSWORD: 'test-redis', AUTH_JWKS_ORIGIN: authJwksOrigin });
+  const provider = new JwksProvider(config, discovery as unknown as ServiceDiscovery, logger as unknown as PinoLogger);
   return { provider, fetchSpy, discovery, logger, set: (next: Answer) => (answer = next) };
 }
 
@@ -96,7 +100,7 @@ describe('JwksProvider', () => {
     expect(url).toBe(`http://10.0.0.9:8081${AUTH_JWKS_PATH}`);
     expect(init?.signal).toBeInstanceOf(AbortSignal);
     expect(JWKS_TIMEOUT_MS).toBe(2000);
-    expect(logger.info).toHaveBeenCalledWith({ keys: 1 }, 'JWKS keys loaded from Auth Service');
+    expect(logger.info).toHaveBeenCalledWith({ keys: 1, source: 'consul' }, 'JWKS keys loaded from Auth Service');
     expect(logger.warn).not.toHaveBeenCalled();
   });
 
@@ -156,7 +160,7 @@ describe('JwksProvider', () => {
     }
     expect(logger.warn).toHaveBeenCalledTimes(1);
     expect(logger.warn).toHaveBeenCalledWith(
-      { reason: 'fetch failed' },
+      { reason: 'fetch failed', source: 'consul' },
       'JWKS refresh from Auth Service failed, keeping the current keys',
     );
     expect(discovery.evict).toHaveBeenCalledWith(AUTH_SERVICE, AUTH);
@@ -165,7 +169,7 @@ describe('JwksProvider', () => {
     now += JWKS_MIN_INTERVAL_MS;
     await provider.keysFor(NEVER_PUBLISHED);
     expect(logger.info).toHaveBeenCalledTimes(2);
-    expect(logger.info).toHaveBeenLastCalledWith({ keys: 1 }, 'JWKS keys loaded from Auth Service');
+    expect(logger.info).toHaveBeenLastCalledWith({ keys: 1, source: 'consul' }, 'JWKS keys loaded from Auth Service');
 
     set(() => new TypeError('fetch failed'));
     now += JWKS_MIN_INTERVAL_MS;
@@ -184,7 +188,7 @@ describe('JwksProvider', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalledTimes(1);
     expect(logger.warn).toHaveBeenCalledWith(
-      { reason: 'No healthy instance of auth-service' },
+      { reason: 'No healthy instance of auth-service', source: 'consul' },
       'No JWKS keys from Auth Service, routes that need a login answer 503',
     );
   });
@@ -207,10 +211,75 @@ describe('JwksProvider', () => {
 
     expect(logger.warn).toHaveBeenCalledTimes(1);
     expect(logger.warn).toHaveBeenCalledWith(
-      { reason: 'Auth Service responded with 503' },
+      { reason: 'Auth Service responded with 503', source: 'consul' },
       'JWKS refresh from Auth Service failed, keeping the current keys',
     );
     expect(discovery.evict).not.toHaveBeenCalled();
+  });
+
+  describe('with AUTH_JWKS_ORIGIN (Kubernetes Service)', () => {
+    it('fetches the keys from the origin, never asks Consul, logs source "origin"', async () => {
+      const { provider, fetchSpy, discovery, logger } = setup(() => jwks(rsa('k1')), AUTH, ORIGIN);
+
+      provider.onApplicationBootstrap();
+      expect(await kids(provider, 'k1')).toEqual(['k1']);
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchSpy.mock.calls[0];
+      expect(url).toBe(`${ORIGIN}${AUTH_JWKS_PATH}`);
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      expect(discovery.getInstance).not.toHaveBeenCalled();
+      expect(logger.info).toHaveBeenCalledWith({ keys: 1, source: 'origin' }, 'JWKS keys loaded from Auth Service');
+    });
+
+    it('an empty variable keeps the previous behaviour: an auth-service instance from Consul, source "consul"', async () => {
+      const { provider, fetchSpy, discovery, logger } = setup(() => jwks(rsa('k1')), AUTH, '');
+      expect(await kids(provider, 'k1')).toEqual(['k1']);
+      expect(discovery.getInstance).toHaveBeenCalledWith(AUTH_SERVICE);
+      expect(fetchSpy.mock.calls[0][0]).toBe(`http://10.0.0.9:8081${AUTH_JWKS_PATH}`);
+      expect(logger.info).toHaveBeenCalledWith({ keys: 1, source: 'consul' }, 'JWKS keys loaded from Auth Service');
+    });
+
+    it('a trailing slash in the variable does not double the slash of the JWKS path', async () => {
+      const { provider, fetchSpy } = setup(() => jwks(rsa('k1')), AUTH, `${ORIGIN}/`);
+      await kids(provider, 'k1');
+      expect(fetchSpy.mock.calls[0][0]).toBe(`${ORIGIN}/.well-known/jwks.json`);
+    });
+
+    it('works without any auth-service instance in Consul', async () => {
+      const { provider, discovery } = setup(() => jwks(rsa('k1')), null, ORIGIN);
+      expect(await kids(provider, 'k1')).toEqual(['k1']);
+      expect(discovery.getInstance).not.toHaveBeenCalled();
+    });
+
+    it('no answer from the origin: keys kept, no eviction, no Consul, one warning with source "origin"', async () => {
+      const { provider, discovery, logger, set } = setup(() => jwks(rsa('k1')), AUTH, ORIGIN);
+      await kids(provider, 'k1');
+
+      set(() => new TypeError('fetch failed'));
+      now += JWKS_MIN_INTERVAL_MS;
+      expect(await kids(provider, 'k2')).toEqual(['k1']);
+      now += JWKS_MIN_INTERVAL_MS;
+      expect(await kids(provider, 'k2')).toEqual(['k1']);
+
+      expect(discovery.evict).not.toHaveBeenCalled();
+      expect(discovery.getInstance).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(logger.warn).toHaveBeenCalledWith(
+        { reason: 'fetch failed', source: 'origin' },
+        'JWKS refresh from Auth Service failed, keeping the current keys',
+      );
+    });
+
+    it('origin down at startup: null keys (routes that need a login answer 503), no eviction', async () => {
+      const { provider, discovery, logger } = setup(() => new TypeError('fetch failed'), AUTH, ORIGIN);
+      expect(await provider.keysFor('k1')).toBeNull();
+      expect(discovery.evict).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(
+        { reason: 'fetch failed', source: 'origin' },
+        'No JWKS keys from Auth Service, routes that need a login answer 503',
+      );
+    });
   });
 
   it('10 concurrent callers with an unknown kid share one request', async () => {
