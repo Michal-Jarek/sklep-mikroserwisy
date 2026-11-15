@@ -28,11 +28,12 @@ describe('gateway configuration (KV document)', () => {
     expect(config.proxy).toEqual({ timeoutSeconds: 10 });
     expect(config.routes.size).toBe(11);
     expect(config.routes.get('categories')).toBe('product-service');
-    expect(config.access).toHaveLength(16);
+    expect(config.access).toHaveLength(17);
     expect(config.access[0]).toEqual({ methods: 'ANY', pattern: ['auth', '**'], access: 'public' });
-    expect(config.access[5]).toEqual({ methods: ['GET', 'HEAD'], pattern: ['users', 'me', '**'], access: 'authenticated' });
-    expect(config.access[13]).toEqual({ methods: ['GET', 'HEAD'], pattern: ['inventory', '*'], access: 'public' });
-    expect(config.access[15]).toEqual({ methods: ['PATCH'], pattern: ['shipments', '*', 'status'], access: 'ADMIN' });
+    expect(config.access[5]).toEqual({ methods: 'ANY', pattern: ['shipments', 'cancel'], access: 'blocked' });
+    expect(config.access[6]).toEqual({ methods: ['GET', 'HEAD'], pattern: ['users', 'me', '**'], access: 'authenticated' });
+    expect(config.access[14]).toEqual({ methods: ['GET', 'HEAD'], pattern: ['inventory', '*'], access: 'public' });
+    expect(config.access[16]).toEqual({ methods: ['PATCH'], pattern: ['shipments', '*', 'status'], access: 'ADMIN' });
     expect(config.rateLimit).toEqual({
       global: { max: 300, timeWindowSeconds: 60 },
       routes: [

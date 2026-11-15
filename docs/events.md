@@ -15,7 +15,7 @@ Jak usługi sklepu publikują i odbierają zdarzenia: exchange, koperta, cztery 
 9. [Jak sprawdzić](#jak-sprawdzić)
 10. [Co zostaje w DLQ](#co-zostaje-w-dlq)
 11. [Zmiana kontraktu](#zmiana-kontraktu)
-12. [Otwarte kwestie kontraktu v1](#otwarte-kwestie-kontraktu-v1)
+12. [Ustalenia kontraktu v1](#ustalenia-kontraktu-v1)
 
 ## Przegląd
 
@@ -51,11 +51,11 @@ Każde zdarzenie ma tę samą kopertę (wersja 1). Treść wiadomości to JSON w
 
 | Pole | Znaczenie |
 |---|---|
-| `eventId` | UUID v4 małymi literami, nowy dla każdego zdarzenia. Odbiorca rozpoznaje po nim duplikaty. |
+| `eventId` | UUID v4 małymi literami, nowy dla każdego zdarzenia. Odbiorca rozpoznaje po nim duplikaty. Inna wartość niż UUID → odbiorca od razu odrzuca zdarzenie do DLQ. |
 | `type` | Typ zdarzenia = klucz routingu. |
 | `version` | Wersja kontraktu danego typu, liczba całkowita od 1 (osobno dla każdego typu). |
 | `occurredAt` | Chwila zdarzenia, ISO 8601 w UTC z milisekundami i `Z`. |
-| `requestId` | `X-Request-Id` żądania HTTP, które wywołało zdarzenie. Praca w tle bez żądania: nowy UUID. |
+| `requestId` | `X-Request-Id` żądania HTTP, które wywołało zdarzenie. Praca w tle bez żądania: nowy UUID. Ta sama reguła co dla `X-Request-Id` w Gateway: `^[A-Za-z0-9._-]{1,64}$`. |
 | `payload` | Dane zdarzenia, różne dla każdego typu (niżej). |
 
 Kolejność pól w JSON nie ma znaczenia (Auth przechowuje kopertę w kolumnie `jsonb`, więc w panelu pola bywają w innej kolejności niż w przykładach) — odbiorca parsuje JSON, a nie porównuje tekstu.
@@ -135,7 +135,7 @@ Nadawca: **Order**, po opłaceniu zamówienia. Odbiorcy: Notification, Shipping.
 
 ### `order.cancelled`
 
-Nadawca: **Order**, po anulowaniu zamówienia. Odbiorcy: Notification, Inventory, Shipping.
+Nadawca: **Order**, po anulowaniu zamówienia — także zamówienia `NEW` (nieopłaconego, bez wcześniejszego `order.created`). Order wysyła dokładnie jedno `order.cancelled` na zamówienie. Odbiorcy: Notification, Inventory, Shipping.
 
 ```json
 {
@@ -158,12 +158,15 @@ Nadawca wysyła zawsze wszystkie trzy pola: `orderId`, `userId` i `items` (każd
 
 Zasady anulowania:
 
-- Order anuluje zamówienie **tylko przed wysyłką** — dopóki przesyłka nie ma statusu `SHIPPED`. Wysłanego zamówienia nie da się anulować.
+- Order anuluje zamówienie **tylko przed wysyłką** — dopóki przesyłka nie ma statusu `SHIPPED`. Wysłanego zamówienia nie da się anulować. O tym, czy paczka już wyszła, rozstrzyga Shipping: Order przed anulowaniem woła wewnętrzny `POST /shipments/cancel` (REST, tylko rola `SERVICE`; [frontend-api.md](frontend-api.md#poza-frontendem)) i dopiero po `200` zapisuje `CANCELLED` i `order.cancelled`. Shipping anuluje przesyłkę i nadaje paczkę pod tą samą blokadą wiersza, więc anulowanie i `SHIPPED` się nie mijają.
+- Shipping po `POST /shipments/cancel` publikuje `shipment.status_changed` z `newStatus: CANCELLED` (dla przesyłki `PREPARING`). Order, który dostanie to zdarzenie dla zamówienia `NEW`/`PAID`, sam zapisuje `CANCELLED` i `order.cancelled` (gdy po odpowiedzi Shipping nie zdążył tego zrobić). `order.cancelled` dla przesyłki już nadanej (albo `SHIPPED` dla zamówienia `CANCELLED`) odbiorca kończy `ack` bez zmian i logiem `error` („niespójność anulowania”).
 - Dla Inventory `order.cancelled` oznacza **zwolnienie rezerwacji** zamówienia `orderId`: `reserved −= n` dla każdej pozycji rezerwacji, rezerwacja przestaje być aktywna. Ilości bierze z własnej rezerwacji (po `orderId`), tak samo jak przy wydaniu towaru; `items` służy pozostałym odbiorcom (np. treść e-maila w Notification). Zwalnia tylko rezerwację aktywną — rezerwacja już wydana (po `SHIPPED`) albo zwolniona zostaje bez zmian, a zdarzenie kończy się `ack`.
 
 ### `shipment.status_changed`
 
-Nadawca: **Shipping**, przy każdej zmianie statusu przesyłki. Odbiorcy: Notification, Inventory, Order.
+Nadawca: **Shipping**, przy utworzeniu przesyłki (`oldStatus: null`, `newStatus: PREPARING` albo `CANCELLED`, `trackingNumber: null`) i przy każdej zmianie jej statusu. Odbiorcy: Notification, Inventory, Order.
+
+Przesyłka powstaje od razu jako `CANCELLED` (zdarzenie `oldStatus: null` → `newStatus: CANCELLED`), gdy zamówienie anulowano, zanim Shipping przetworzył jego `order.created`: `POST /shipments/cancel` zapisał wtedy zaślepkę „anulowana” bez przesyłki, a późne `order.created` uzupełnia ją (nowe `shipmentId`, `userId`, metoda, koszt, waluta) i w tej samej transakcji zapisuje do outboxu **jedno** takie zdarzenie i wpis w historii (decyzja Michała Z10, etap 8). Order traktuje je jak każde `CANCELLED` (zamówienie `NEW`/`PAID` → `CANCELLED` i jedno `order.cancelled`; już `CANCELLED` → bez zmian), Inventory i Notification je pomijają. Gdy `order.created` dotrze przed anulowaniem, zdarzenia są dwa: `null → PREPARING`, potem `PREPARING → CANCELLED`.
 
 ```json
 {
@@ -183,7 +186,7 @@ Nadawca: **Shipping**, przy każdej zmianie statusu przesyłki. Odbiorcy: Notifi
 }
 ```
 
-Statusy: `PREPARING`, `SHIPPED`, `IN_TRANSIT`, `DELIVERED`, `CANCELLED`. Reakcje odbiorców:
+Statusy: `PREPARING`, `SHIPPED`, `IN_TRANSIT`, `DELIVERED`, `CANCELLED`. `trackingNumber` jest `null` do nadania paczki (`PREPARING`, a także `CANCELLED` przed nadaniem); od `SHIPPED` jest tekstem. Reakcje odbiorców:
 
 | Odbiorca | Reaguje na | Co robi |
 |---|---|---|
@@ -193,7 +196,7 @@ Statusy: `PREPARING`, `SHIPPED`, `IN_TRANSIT`, `DELIVERED`, `CANCELLED`. Reakcje
 
 Po wydaniu (`SHIPPED`) zamówienia nie można już anulować (sekcja [`order.cancelled`](#ordercancelled)).
 
-Kontrakty `order.created`, `order.cancelled` i `shipment.status_changed` to propozycja v1 platformy. Właściciele Order i Shipping mogą je zmienić **przed pierwszą implementacją**, w porozumieniu z odbiorcami (zmiana w tym dokumencie). Później tylko przez nową `version`. Sprawy jeszcze nieustalone: sekcja [Otwarte kwestie kontraktu v1](#otwarte-kwestie-kontraktu-v1).
+Kontrakty `order.created`, `order.cancelled` i `shipment.status_changed` są zaimplementowane (Order i Shipping, etap 8): zmiana pola `payload` tylko przez nową `version`. Doprecyzowania przyjęte przy implementacji: sekcja [Ustalenia kontraktu v1](#ustalenia-kontraktu-v1).
 
 ### Pola, których używają odbiorcy
 
@@ -225,6 +228,7 @@ Odbiorca odrzuca zdarzenie bez wymaganego pola od razu do DLQ (punkt 5 w [Jak od
   - odbiorca trzy razy padnie w trakcie przetwarzania (3 dostawy bez `ack`) — broker przenosi ją sam.
 - `shop.dlx` to exchange `direct`, wewnętrzny (nikt do niego nie publikuje, korzysta z niego tylko broker).
 - `<usługa>.dlq` nie ma polityki ani odbiorcy. Wiadomości leżą tam, dopóki ktoś ich nie obejrzy i nie usunie (sekcja [Co zostaje w DLQ](#co-zostaje-w-dlq)).
+- `delivery-limit: 2` liczy **każdą** dostawę bez `ack`, także przerwaną restartem odbiorcy albo brokera w trakcie ponowień w procesie. Trzy przerwane dostawy jednego zdarzenia (np. trzy restarty odbiorcy w trakcie jego przetwarzania) wystarczą, żeby broker przeniósł je do DLQ (`x-first-death-reason: delivery_limit`), choć przyczyna była chwilowa. Wiadomości z `x-death` o powodzie `delivery_limit` w `<usługa>.dlq` przegląda się i ponawia ręcznie (sekcja [Co zostaje w DLQ](#co-zostaje-w-dlq); decyzja Michała z przeglądu PR #18).
 
 Ustawienia ponowień są w polityce, nie w argumentach kolejki — odbiorca nie musi ich znać, otwiera kolejkę bez deklarowania (pasywnie).
 
@@ -290,6 +294,12 @@ Zasady nadawcy:
 **Zalecany wzorzec — [outbox](patterns.md#7-outbox) (tak działa Auth).** W tej samej transakcji co zmiana danych usługa zapisuje kopertę zdarzenia do tabeli `outbox_events` w swojej bazie. Osobna pętla w usłudze (przekaźnik) co kilka sekund pobiera niewysłane wiersze, publikuje je z potwierdzeniem i oznacza jako wysłane; przy błędzie ponawia później. Dzięki temu zdarzenie nie ginie, gdy RabbitMQ nie działa albo usługa się restartuje, a odpowiedź HTTP nie czeka na brokera. Ten sam wiersz może jednak zostać wysłany dwa razy (np. potwierdzenie zaginęło po drodze) — dlatego odbiorcy rozpoznają duplikaty po `eventId`.
 
 **Minimum bez outboxu:** publikacja zaraz po commicie, a przy błędzie ostrzeżenie w logu (`warn`, z `eventId` i `type`). Zdarzenie może wtedy przepaść, jeśli RabbitMQ nie działa.
+
+**Przekaźnik outboxu w usłudze, która też odbiera zdarzenia (Order, Shipping):**
+- osobne zadanie w tle z **osobnym połączeniem** `connect_robust` (nazwa połączenia `<INSTANCE_ID>-relay`): błąd przekaźnika nigdy nie przerywa odbiorcy i odwrotnie;
+- kanał z potwierdzeniami (`publisher_confirms=True`), publikacja z `mandatory=True` i limitem 2 s;
+- wiersze pobiera **dzierżawą**: krótka transakcja w wątku (`asyncio.to_thread`) zaznacza paczkę wierszy jako zajęte do określonej chwili (kolumna typu `locked_until`, `FOR UPDATE SKIP LOCKED`) i od razu się kończy; publikacja idzie bez otwartej transakcji i bez trzymanego połączenia z bazą, a potwierdzony wiersz jest usuwany. Kilka instancji nie wysyła tego samego wiersza naraz; wiersz po awarii wraca do wysyłki po końcu dzierżawy (dostarczenie „co najmniej raz” — odbiorcy rozpoznają duplikaty po `eventId`);
+- błąd bazy albo brokera → log `warning` z klasą wyjątku, pauza 2–5 s i dalej; wiadomość odrzucona przez brokera (`mandatory`, brak trasy) zostaje w outboxie z logiem `error`.
 
 Publikacja jednego zdarzenia w Pythonie (aio-pika 9.5.4, połączenie jak w przykładzie odbiorcy niżej):
 
@@ -364,7 +374,7 @@ Zasady odbiorcy:
 2. `prefetch = 10`. Potwierdzanie ręczne: `ack` dopiero po przetworzeniu i zapisaniu skutku.
 3. Idempotencja: przetworzone `eventId` zapisuje w swojej bazie, **w tej samej transakcji co skutek** zdarzenia, w kolumnie (polu) z **unikalnym indeksem**. Duplikat → `ack` bez działania. Ten sam `eventId` może przyjść dwa razy równocześnie (np. nadawca wysłał kopię, a dwie instancje odbiorcy dostały po jednej): obie przejdą sprawdzenie „czy już był”, a druga przy zapisie dostanie **naruszenie unikalności**. To duplikat, nie błąd: wycofać transakcję i `ack` — bez ponowień i bez DLQ. Usługa bez wspólnej transakcji dla skutku i `eventId` (Notification: e-mail przez SMTP, baza MongoDB) — niżej, [Idempotencja w Notification](#idempotencja-w-notification). W kodzie usługi sprawdzenie duplikatu i zapis `eventId` są w `handle_event`, w transakcji ze skutkiem; naruszenie unikalności (np. `IntegrityError`) łapie się tam — wycofanie transakcji i `return` bez wyjątku (wyjątek oznaczałby ponowienia i DLQ). Zbiór `processed_event_ids` z przykładu zastępuje w usłudze ta tabela.
 4. Błąd przetwarzania (np. baza albo inna usługa chwilowo niedostępna): do 3 prób w procesie (odstęp 5 s, potem 30 s — razem dłużej niż otwarty [wyłącznik awaryjny](decisions.md#d2--wyłącznik-i-ponowienia) (30 s) i typowy restart zależności; decyzja Michała 2026-11-09), potem `nack(requeue=False)` → wiadomość trafia do `<usługa>.dlq`. **Nigdy `requeue=True`** (sekcja [Czego nie robić](#czego-nie-robić)). Odstęp ma **losowy dodatek do +50 %** (5–7,5 s, potem 30–45 s): gdy kilka zdarzeń nie uda się w tej samej chwili (np. seria zamówień przy awarii User), bez rozrzutu wszystkie wracają jednocześnie, a wyłącznik w stanie półotwartym przepuszcza tylko jedno wywołanie próbne — reszta trafiłaby do DLQ, choć usługa już działa (przegląd PR #12: 9 z 10 e-maili w DLQ). **Trwała odmowa innej usługi** — odpowiedź 4xx poza 404, 408 i 429 albo 2xx niezgodna z kontraktem — to nie błąd chwilowy: od razu `nack(requeue=False)` z logiem `error`, bez ponowień (ponowienie dostanie tę samą odpowiedź). 404 (obiekt nieznany) obsługuje się według sekcji [Kolejność zdarzeń](#kolejność-zdarzeń-nie-jest-gwarantowana); 408 i 429 są chwilowe (ponowienia jak wyżej).
-5. Niepoprawny JSON, brak wymaganych pól, pola koperty złego typu (`eventId`, `type`, `occurredAt`, `requestId` muszą być tekstem, `version` liczbą całkowitą, `payload` obiektem), `type` inny niż klucz routingu dostawy albo nieznana `version` → od razu `nack(requeue=False)`, bo ponowienie nic nie zmieni. Uprawnienia brokera dotyczą klucza routingu, nie treści — tylko klucz mówi, kto mógł wysłać zdarzenie. Przykład: konto Shipping może publikować tylko z kluczem `shipment.status_changed`; gdyby odbiorca wierzył polu `type` z treści, Shipping mógłby podsunąć Inventory „anulowanie zamówienia”.
+5. Niepoprawny JSON, brak wymaganych pól, pola koperty złego typu (`eventId`, `type`, `occurredAt`, `requestId` muszą być tekstem, `version` liczbą całkowitą, `payload` obiektem), `eventId` niebędący UUID, `type` inny niż klucz routingu dostawy albo nieznana `version` → od razu `nack(requeue=False)`, bo ponowienie nic nie zmieni. **Każdy** wyjątek przy odczycie koperty (także nieprzewidziany) kończy się `nack(requeue=False)` — żadna wiadomość nie zostaje bez `ack` albo `nack`. `requestId` niepasujący do `^[A-Za-z0-9._-]{1,64}$` nie odrzuca zdarzenia: odbiorca przetwarza je dalej z nowym UUID w logach i w wywołaniach innych usług (`X-Request-Id`). Uprawnienia brokera dotyczą klucza routingu, nie treści — tylko klucz mówi, kto mógł wysłać zdarzenie. Przykład: konto Shipping może publikować tylko z kluczem `shipment.status_changed`; gdyby odbiorca wierzył polu `type` z treści, Shipping mógłby podsunąć Inventory „anulowanie zamówienia”.
 6. Nieznany `type` albo przypadek, którego usługa nie obsługuje (np. Inventory i status inny niż `SHIPPED`) → `ack` bez działania.
 7. Gdy proces padnie w trakcie (brak `ack`), broker odda wiadomość innej instancji. Po 3 takich dostawach wiadomość trafia do DLQ (`x-first-death-reason: delivery_limit`).
 8. [Logi](decisions.md#d16--logi) z `eventId`, `type`, `requestId` (i `userId`), bez danych osobowych z `payload` (e-mail, adres).
@@ -390,7 +400,7 @@ Zalecana pierwsza kolejność (e-mail, potem zapis z unikalnym indeksem na `even
 
 ### Przykład w Pythonie (aio-pika)
 
-Pełny, samodzielny plik (Python 3.12, `aio-pika==9.5.4`). Realizuje punkty 1–8, co 15 s sprawdza, czy kolejka jeszcze istnieje, i ponawia pierwsze połączenie, gdy RabbitMQ jeszcze nie działa (log `RabbitMQ unavailable, retrying`, odstęp rośnie od 1 s do 30 s; po zerwaniu działającego połączenia wznawia je `connect_robust`). Do własnej usługi kopiuje się go i zmienia `SERVICE`, `QUEUE`, `HANDLED` (obsługiwane typy, wersje i wymagane pola) oraz treść `handle_event`. Zbiór `processed_event_ids` w pamięci jest tylko na potrzeby przykładu — usługa trzyma `eventId` w bazie.
+Pełny, samodzielny plik (Python 3.12, `aio-pika==9.5.4`). Realizuje punkty 1–8, co 15 s sprawdza, czy kolejka jeszcze istnieje (wariant A — koniec zadania, niżej [dwa warianty](#utrata-kolejki-dwa-warianty-odbiorcy)), i ponawia pierwsze połączenie, gdy RabbitMQ jeszcze nie działa (log `RabbitMQ unavailable, retrying`, odstęp rośnie od 1 s do 30 s; po zerwaniu działającego połączenia wznawia je `connect_robust`). Do własnej usługi kopiuje się go i zmienia `SERVICE`, `QUEUE`, `HANDLED` (obsługiwane typy, wersje i wymagane pola) oraz treść `handle_event`. Zbiór `processed_event_ids` w pamięci jest tylko na potrzeby przykładu — usługa trzyma `eventId` w bazie.
 
 ```python
 # example_consumer.py: consumer of shop.events with retries and DLQ (docs/events.md)
@@ -404,13 +414,17 @@ import asyncio
 import json
 import os
 import random
+import re
 import socket
+import uuid
 from datetime import datetime, timezone
 
 import aio_pika
 from aio_pika.abc import AbstractIncomingMessage, AbstractRobustConnection
 
 SERVICE = "notification-service"
+# Connection name in the RabbitMQ panel: the ID of this instance (in Kubernetes the pod name).
+INSTANCE_ID = os.environ.get("INSTANCE_ID") or f"{SERVICE}-{socket.gethostname()}"
 QUEUE = "notification.q"  # the queue of your service: <service>.q
 PREFETCH = 10
 # Seconds before attempt 2 and before attempt 3: together longer than an open circuit breaker (30 s)
@@ -420,11 +434,13 @@ RETRY_DELAYS = (5, 30)
 # together (a half-open circuit breaker lets only one call through).
 RETRY_SPREAD = 0.5
 # Seconds between checks that the queue still exists. A deleted queue cancels the consumer on the
-# broker side without any error in the client; the check ends the task instead (log + 503).
+# broker side without any error in the client; the check ends the task instead (log + 503, variant A).
 QUEUE_CHECK_SECONDS = 15
 MAX_CONNECT_DELAY = 30  # seconds, the longest pause between attempts of the first connection
 ENVELOPE_FIELDS = ("eventId", "type", "version", "occurredAt", "requestId", "payload")
 TEXT_FIELDS = ("eventId", "type", "occurredAt", "requestId")
+# The same rule as X-Request-Id in the Gateway; another value is replaced with a new UUID.
+REQUEST_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
 # Event types handled by this service: supported version and required payload fields.
 HANDLED = {
     "user.registered": (1, ("userId", "email", "firstName")),
@@ -471,6 +487,12 @@ def parse_event(body: bytes, routing_key: str | None) -> dict:
         raise InvalidEvent("missing envelope fields")
     if not all(isinstance(event[field], str) for field in TEXT_FIELDS):
         raise InvalidEvent("envelope fields of a wrong type")
+    try:
+        uuid.UUID(event["eventId"])
+    except ValueError:
+        raise InvalidEvent("eventId is not a UUID") from None
+    if not REQUEST_ID.fullmatch(event["requestId"]):
+        event["requestId"] = str(uuid.uuid4())  # logs and calls use a new id, the event is still processed
     if type(event["version"]) is not int:  # bool is not accepted either
         raise InvalidEvent("version is not an integer")
     if not isinstance(event["payload"], dict):
@@ -552,7 +574,9 @@ async def connect() -> AbstractRobustConnection:
                 port=int(os.environ.get("RABBITMQ_PORT", "5672")),
                 login=os.environ["RABBITMQ_USER"],
                 password=os.environ["RABBITMQ_PASSWORD"],
-                client_properties={"connection_name": f"{SERVICE}-{socket.gethostname()}"},
+                # Connection name in the RabbitMQ panel. aio-pika 9.5 / aiormq 6.8 read only the key "name"
+                # (and send it to the broker as connection_name); any other key is dropped.
+                client_properties={"name": INSTANCE_ID},
             )
         except (OSError, aio_pika.exceptions.AMQPConnectionError) as exc:
             # Only the exception class: never the connection settings with the password.
@@ -617,9 +641,64 @@ curl -s -w ' %{http_code}\n' -H 'Content-Type: application/json' \
 
 Wynik: `201`, a przykład wypisuje linię `"msg": "Event handled"` z `eventId`, `type`, `requestId` i `userId`. Zatrzymanie: Ctrl+C. Wiadomości odebrane przed Ctrl+C są potwierdzone i znikają z kolejki.
 
+#### Utrata kolejki: dwa warianty odbiorcy
+
+Usunięta kolejka (np. czysty start RabbitMQ bez wolumenu, ręczne usunięcie w panelu) anuluje konsumenta po stronie brokera, a klient tego nie zgłasza. Dlatego odbiorca co 15 s sprawdza kolejkę pasywnie (`channel.get_queue(name, ensure=True)`). Dozwolone są dwa warianty reakcji (decyzja Michała z przeglądu PR #18):
+
+| Wariant | Gdy kolejki nie ma | `/health/ready` | Kto używa |
+|---|---|---|---|
+| **A — koniec zadania** | sprawdzenie rzuca `ChannelNotFoundEntity`, zadanie odbiorcy się kończy, log `error` | `503`, dopóki usługa nie zostanie zrestartowana | przykład wyżej, Notification |
+| **B — ponowne połączenie** | log `warning`, zamknięcie połączenia i nowa próba co 5 s, aż kolejka wróci (po `rabbitmq-setup` odbiór rusza sam w ciągu kilku sekund) | bez zmian (`200`); `503` tylko, gdy zadanie zakończy się błędem programu | Inventory, Order, Shipping |
+
+W obu wariantach inne błędy połączenia w trakcie sprawdzenia (przerwa w pracy brokera) są pomijane — połączenie wznawia `connect_robust`, a sprawdzenie w czasie przerwy czeka na wznowienie, nie kończy odbiorcy. Wariant B zamiast pętli `while True` z `raise` w `main()` przykładu (sprawdzone na RabbitMQ 4.3 i aio-pika 9.5.4: usunięta kolejka wykryta po ≤ 15 s, odbiór wraca kilka sekund po jej odtworzeniu; restart brokera — odbiór i publikacja wracają kilka sekund po starcie):
+
+```python
+# Fragment: variant B of main() from example_consumer.py - reconnect while the queue is missing.
+RECONNECT_DELAY = 5  # seconds
+
+
+async def watch_queue(channel) -> None:
+    """Ends with ChannelNotFoundEntity when the queue is gone; other errors: connect_robust reconnects."""
+    while True:
+        await asyncio.sleep(QUEUE_CHECK_SECONDS)
+        try:
+            await channel.get_queue(QUEUE, ensure=True)
+        except aio_pika.exceptions.ChannelNotFoundEntity:
+            raise
+        except (aio_pika.exceptions.AMQPError, ConnectionError, RuntimeError, asyncio.TimeoutError):
+            pass  # a broker outage: checked again next time
+
+
+async def main() -> None:
+    while True:  # the service may start before the broker and before its queue exists
+        try:
+            connection = await aio_pika.connect_robust(
+                host=os.environ["RABBITMQ_HOST"],
+                port=int(os.environ.get("RABBITMQ_PORT", "5672")),
+                login=os.environ["RABBITMQ_USER"],
+                password=os.environ["RABBITMQ_PASSWORD"],
+                client_properties={"name": INSTANCE_ID},
+            )
+            async with connection:
+                channel = await connection.channel()
+                await channel.set_qos(prefetch_count=PREFETCH)
+                queue = await channel.get_queue(QUEUE, ensure=True)
+                await queue.consume(on_message)
+                log("info", "Consumer started", queue=QUEUE)
+                await watch_queue(channel)
+        except aio_pika.exceptions.ChannelNotFoundEntity:
+            log("warning", "Queue missing, reconnecting", queue=QUEUE, retryIn=RECONNECT_DELAY)
+        except (OSError, aio_pika.exceptions.AMQPError) as exc:
+            # Only the exception class: never the connection settings with the password.
+            log("warning", "RabbitMQ unavailable, retrying", reason=type(exc).__name__, retryIn=RECONNECT_DELAY)
+        await asyncio.sleep(RECONNECT_DELAY)
+```
+
+Nazwa połączenia (`client_properties={"name": …}`) to w usłudze jej `INSTANCE_ID` (w Kubernetesie nazwa poda), widoczna w panelu (**Connections**) i w `rabbitmqctl list_connections name client_properties` jako `connection_name`.
+
 #### Odbiorca w usłudze FastAPI
 
-Odbiorca działa jako zadanie w tle uruchamiane w `lifespan` (`asyncio.create_task(main())`) i anulowane przy zamykaniu (`task.cancel()`). `/health/ready` zwraca `503` **tylko wtedy, gdy to zadanie się zakończyło** (`task.done()`) — to znaczy błąd w kodzie, brak dostępu do kolejki albo kolejka usunięta w trakcie pracy (wykrywa ją sprawdzenie co 15 s w `main()`); bez tego martwy odbiorca byłby niewidoczny, a zdarzenia leżałyby w kolejce. Przyczynę końca zadania zapisuje w logu `add_done_callback` — wyjątku zadania w tle nikt inny nie odbiera, więc bez niego usługa przestaje odbierać zdarzenia bez śladu (przegląd PR #12). Po zakończeniu zadania odbiorca nie wraca sam: trzeba usunąć przyczynę i zrestartować usługę. Przerwa w połączeniu z RabbitMQ **nie** zmienia gotowości: odbiorca sam wznawia połączenie, a REST usługi działa dalej (awaria brokera nie może blokować głównej operacji usługi). Pozostałe sprawdzenia `/health/ready` (np. baza) zostają bez zmian (zob. [D15](decisions.md#d15--zdrowie-usługi)). Złe hasło albo konto (`ProbableAuthenticationError`, podklasa `AMQPConnectionError`) odbiorca ponawia bez końca — `/health/ready` zostaje `200`, a przyczyna jest tylko w logu `RabbitMQ unavailable, retrying` (pole `reason`). Brak zmiennej `RABBITMQ_*` (`KeyError`) kończy zadanie → `503`.
+Odbiorca działa jako zadanie w tle uruchamiane w `lifespan` (`asyncio.create_task(main())`) i anulowane przy zamykaniu (`task.cancel()`). `/health/ready` zwraca `503` **tylko wtedy, gdy to zadanie się zakończyło** (`task.done()`) — to znaczy błąd w kodzie, brak dostępu do kolejki albo (wariant A) kolejka usunięta w trakcie pracy (wykrywa ją sprawdzenie co 15 s w `main()`); bez tego martwy odbiorca byłby niewidoczny, a zdarzenia leżałyby w kolejce. Przyczynę końca zadania zapisuje w logu `add_done_callback` — wyjątku zadania w tle nikt inny nie odbiera, więc bez niego usługa przestaje odbierać zdarzenia bez śladu (przegląd PR #12). Po zakończeniu zadania odbiorca nie wraca sam: trzeba usunąć przyczynę i zrestartować usługę. Przerwa w połączeniu z RabbitMQ **nie** zmienia gotowości: odbiorca sam wznawia połączenie, a REST usługi działa dalej (awaria brokera nie może blokować głównej operacji usługi). Pozostałe sprawdzenia `/health/ready` (np. baza) zostają bez zmian (zob. [D15](decisions.md#d15--zdrowie-usługi)). Złe hasło albo konto (`ProbableAuthenticationError`, podklasa `AMQPConnectionError`) odbiorca ponawia bez końca — `/health/ready` zostaje `200`, a przyczyna jest tylko w logu `RabbitMQ unavailable, retrying` (pole `reason`). Brak zmiennej `RABBITMQ_*` (`KeyError`) kończy zadanie → `503`.
 
 ```python
 # Fragment: the consumer of example_consumer.py as a background task of a FastAPI service.
@@ -729,6 +808,9 @@ Z katalogu głównego repo. `rabbitmqctl` nie potrzebuje hasła; `rabbitmqadmin`
 # queues: messages, consumers
 docker compose -f deploy/compose.yaml exec rabbitmq rabbitmqctl list_queues name messages consumers
 
+# connections: connection_name in client_properties = INSTANCE_ID of the service (Order, Shipping: also <id>-relay)
+docker compose -f deploy/compose.yaml exec rabbitmq rabbitmqctl list_connections user name client_properties
+
 # bindings (lines with an empty source belong to the default exchange)
 docker compose -f deploy/compose.yaml exec rabbitmq rabbitmqctl list_bindings source_name routing_key destination_name
 
@@ -772,23 +854,24 @@ Wiadomość w DLQ ma niezmienioną treść i właściwości (`message_id` = `eve
 
 Obejrzenie: panel (strona `<usługa>.dlq` → **Get messages** z **Nack message requeue true**) albo `rabbitmqadmin get messages … --ack-mode ack_requeue_true` z poprzedniej sekcji. Logi odbiorcy z tym samym `eventId` pokazują przyczynę błędu.
 
-Wiadomości nie wygasają i nie wracają same do `<usługa>.q`. Ponowne wysłanie z DLQ nie jest na razie zautomatyzowane. Po usunięciu przyczyny można wysłać zdarzenie ponownie z panelu (**Publish message** na `shop.events`, ta sama koperta — odbiorca rozpozna duplikat po `eventId`, jeśli zdarzenie zostało jednak przetworzone), a obejrzane wiadomości usunąć z DLQ przez **Purge Messages**. Uwaga: **Purge** usuwa z `<usługa>.dlq` wszystkie wiadomości, także te, których nikt jeszcze nie obejrzał ani nie wysłał ponownie — przed Purge trzeba obejrzeć całą zawartość DLQ (liczba `Ready` na stronie kolejki).
+Wiadomości nie wygasają i nie wracają same do `<usługa>.q`. Ponowne wysłanie z DLQ nie jest na razie zautomatyzowane. Wiadomość z powodem `delivery_limit` zwykle nie jest błędna — przerwały ją restarty odbiorcy albo brokera (sekcja [Kolejki, wiązania i DLQ](#kolejki-wiązania-i-dlq)): przegląda się ją i ponawia ręcznie, jak niżej. Po usunięciu przyczyny można wysłać zdarzenie ponownie z panelu (**Publish message** na `shop.events`, ta sama koperta — odbiorca rozpozna duplikat po `eventId`, jeśli zdarzenie zostało jednak przetworzone), a obejrzane wiadomości usunąć z DLQ przez **Purge Messages**. Uwaga: **Purge** usuwa z `<usługa>.dlq` wszystkie wiadomości, także te, których nikt jeszcze nie obejrzał ani nie wysłał ponownie — przed Purge trzeba obejrzeć całą zawartość DLQ (liczba `Ready` na stronie kolejki).
 
 ## Zmiana kontraktu
 
 Nazwy exchange i kolejek, wiązania, koperta i pola zdarzeń oraz wzorzec odbiorcy to kontrakt między usługami. Zmiana wymaga zgody nadawcy, odbiorców i architekta projektu i trafia najpierw do tego dokumentu (zob. [D9](decisions.md#d9--własność-kodu-pr-i-dokumenty)). Zmiana `payload` po pierwszej implementacji = nowa `version` zdarzenia (odbiorca odrzuca nieznaną wersję do DLQ, więc nadawca zaczyna ją wysyłać dopiero, gdy odbiorcy ją obsługują).
 
-## Otwarte kwestie kontraktu v1
-
-Do ustalenia przez właścicieli Order i Shipping z Michałem — przed pierwszą implementacją tych usług. Do czasu decyzji obowiązuje to, co jest w tym dokumencie.
-
-| Kwestia | Stan dziś |
-|---|---|
-| Czy Shipping publikuje `shipment.status_changed` już przy utworzeniu przesyłki (pierwszy status, `oldStatus: null`)? | nieustalone; przykład pokazuje tylko zmianę `PREPARING` → `SHIPPED` |
-| Czy `trackingNumber` może być `null` przed nadaniem paczki (`PREPARING`)? | nieustalone; w przykładzie zawsze tekst |
-| Czy Order wysyła `order.cancelled` dla zamówienia nieopłaconego (dla którego nie było `order.created`)? | nieustalone; `order.created` wychodzi dopiero po opłaceniu |
+## Ustalenia kontraktu v1
 
 Ustalone (decyzje Michała 2026-11-09):
 - odbiorca ponawia przetwarzanie 3 razy z odstępem 5 s, potem 30 s (punkt 4 zasad odbiorcy), zanim odda wiadomość do `<usługa>.dlq`;
 - pole kraju w `shippingAddress` zdarzenia `order.created` to `countryCode` (jak w adresach User Service);
 - połączenie z RabbitMQ **nie** wchodzi do `/health/ready` usług z REST: odbiorca sam wznawia połączenie, a `/health/ready` = `503` tylko, gdy zadanie odbiorcy się zakończyło (sekcja [Odbiorca w usłudze FastAPI](#odbiorca-w-usłudze-fastapi)).
+
+Ustalone przy implementacji Order i Shipping (decyzje Michała 2026-11-14, etap 8):
+- Shipping publikuje `shipment.status_changed` **już przy utworzeniu przesyłki**: `oldStatus: null`, `newStatus: PREPARING`, `trackingNumber: null`;
+- pierwszym statusem przesyłki jest `PREPARING` **albo** `CANCELLED`: przy `order.created` dla zamówienia anulowanego wcześniej (zaślepka po `POST /shipments/cancel`) Shipping tworzy przesyłkę `CANCELLED` i wysyła jedno zdarzenie `oldStatus: null`, `newStatus: CANCELLED`, `trackingNumber: null` (sekcja [`shipment.status_changed`](#shipmentstatus_changed); decyzja Michała Z10, 2026-11-14);
+- `trackingNumber` jest `null` do nadania paczki (`SHIPPED`), od `SHIPPED` tekstem;
+- Order wysyła `order.cancelled` **także dla zamówienia `NEW`** (bez wcześniejszego `order.created`); Notification wysyła wtedy e-mail o anulowaniu;
+- anulowanie rozstrzyga Shipping synchronicznie (`POST /shipments/cancel`, sekcja [`order.cancelled`](#ordercancelled)), więc zamówienie `CANCELLED` z paczką `SHIPPED` nie powstaje;
+- reguły koperty dla każdego odbiorcy: `eventId` musi być UUID (inaczej DLQ od razu), `requestId` według reguły `X-Request-Id` (inaczej nowy UUID), każdy wyjątek przy odczycie koperty → `nack(requeue=False)` (punkt 5 zasad odbiorcy);
+- dwa dozwolone warianty odbiorcy przy utracie kolejki (sekcja [Utrata kolejki](#utrata-kolejki-dwa-warianty-odbiorcy)); `delivery-limit: 2` zostaje, wiadomości `delivery_limit` w DLQ ponawia się ręcznie.

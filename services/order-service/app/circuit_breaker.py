@@ -1,7 +1,7 @@
-"""Prosty circuit breaker: ostatnie 10 wyników, 50% błędów, przerwa 30 s.
+"""Small circuit breaker (D2): last 10 results, at least 50 % failures, open for 30 s.
 
-Po przerwie przechodzi tylko jedna próba (half-open). Zegar można podmienić
-w testach, więc nie trzeba czekać 30 sekund, aby sprawdzić powrót do działania.
+After the break only one probe passes (half-open). The clock can be replaced in tests, so the return to the
+closed state is checked without waiting 30 seconds. The lock covers only state changes, never the call itself.
 """
 import asyncio
 from collections import deque
@@ -10,11 +10,10 @@ from typing import Awaitable, Callable, TypeVar
 
 T = TypeVar("T")
 
+
 class CircuitOpen(Exception):
     pass
 
-class ResourceMissing(Exception):
-    """404 jest wynikiem biznesowym, nie awarią połączenia."""
 
 class CircuitBreaker:
     def __init__(self, clock: Callable[[], float] = monotonic, cooldown: float = 30):
@@ -36,11 +35,8 @@ class CircuitBreaker:
             generation = self.generation
         try:
             result = await operation()
-        except ResourceMissing:
-            await self.finish(True, is_probe, generation)
-            raise
         except BaseException:
-            # Także anulowana próba nie może na zawsze zablokować half-open.
+            # A cancelled probe must not block half-open forever either.
             await self.finish(False, is_probe, generation)
             raise
         await self.finish(True, is_probe, generation)
@@ -49,7 +45,7 @@ class CircuitBreaker:
     async def finish(self, success: bool, is_probe: bool, generation: int) -> None:
         async with self.lock:
             if generation != self.generation:
-                return  # Wynik starszego żądania nie zamknie już otwartego obwodu.
+                return  # A result of an older call does not close a circuit that opened meanwhile.
             if is_probe:
                 self.probe = False
                 self.generation += 1

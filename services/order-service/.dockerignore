@@ -1,0 +1,9 @@
+# Local secrets, environments, caches and tests never go into the image.
+**/.env
+**/.env.*
+**/.venv
+**/__pycache__
+**/.pytest_cache
+tests
+postman
+k8s

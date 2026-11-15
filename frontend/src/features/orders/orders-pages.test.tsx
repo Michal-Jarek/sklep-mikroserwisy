@@ -246,9 +246,49 @@ describe('order details', () => {
     await user.click(screen.getByRole('button', { name: 'Anuluj zamówienie' }));
     await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Tak, anuluj' }));
 
-    expect(await screen.findByText('Tego zamówienia nie można już anulować.')).toBeInTheDocument();
+    expect(await screen.findByText('Tego zamówienia nie można już anulować. Paczka mogła zostać już nadana.')).toBeInTheDocument();
     expect(await screen.findByText('Wysłana')).toBeInTheDocument();
     expect(screen.getByText('PL1234567890')).toBeInTheDocument();
+  });
+
+  it('504 after Order has cancelled: "Nie wiemy…" and the refreshed order shows "Anulowane" (CR-24)', async () => {
+    const { user } = await renderAsCustomer(`/orders/${orders.paid}`);
+    await shipmentLoaded();
+    // Order cancels, but the Gateway gives up waiting for the answer.
+    server.use(
+      http.post('*/api/v1/orders/:orderId/cancel', () => {
+        paidOrderWith('CANCELLED', 'CANCELLED');
+        return HttpResponse.json({ status: 504, error: 'GATEWAY_TIMEOUT', message: 'x', requestId: 'r-504' }, { status: 504 });
+      }),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Anuluj zamówienie' }));
+    await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Tak, anuluj' }));
+
+    expect(await screen.findByText('Nie wiemy, czy zamówienie zostało anulowane — sprawdź jego status powyżej.')).toBeInTheDocument();
+    expect(await screen.findByText('Anulowana')).toBeInTheDocument();
+    expect(screen.getAllByText('Anulowane').length).toBeGreaterThan(0);
+    expect(screen.queryByRole('button', { name: 'Anuluj zamówienie' })).not.toBeInTheDocument();
+  });
+
+  it('503 on cancel: the order is unchanged and can be cancelled again', async () => {
+    const { user } = await renderAsCustomer(`/orders/${orders.paid}`);
+    await shipmentLoaded();
+    server.use(
+      http.post('*/api/v1/orders/:orderId/cancel', () =>
+        HttpResponse.json({ status: 503, error: 'SERVICE_UNAVAILABLE', message: 'x', requestId: 'r-503' }, { status: 503 }),
+      ),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Anuluj zamówienie' }));
+    await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Tak, anuluj' }));
+
+    expect(
+      await screen.findByText('Nie udało się teraz anulować zamówienia. Zamówienie się nie zmieniło — spróbuj ponownie za chwilę.'),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText('Opłacone').length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: 'Anuluj zamówienie' })).toBeInTheDocument();
+    expect(loadState().orders.find((o) => o.id === orders.paid)?.status).toBe('PAID');
   });
 
   it('an order of somebody else → "Nie znaleziono."', async () => {

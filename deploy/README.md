@@ -50,7 +50,7 @@ bash deploy/create-secrets.sh
 ```
 Wynik przy pierwszym uruchomieniu (komunikaty skryptów są po angielsku: `created` – utworzono, `variables` – zmienne):
 ```
-deploy/.env: created (19 variables)
+deploy/.env: created (23 variables)
 deploy/secrets/jwt-*.pem: created
 Done. Start: docker compose -f deploy/compose.yaml up -d --wait
 ```
@@ -225,8 +225,8 @@ Profil `full-shop` to wszystko z `platform` oraz usługi zespołu, które mają 
 | `review-service` | `mongo` (`review_db`), Consul | działa |
 | `product-service` (+ `product-migrate`) | `postgres` (`product_db`, katalog demo z migracji), Consul | działa |
 | `notification-service` | `mongo` (`notification_db`), RabbitMQ (`notification.q`), `mailpit`, Consul | działa; e-maile w Mailpit |
-
-Order i Shipping nie mają jeszcze wpisów (dojdą przy scaleniu ich PR).
+| `order-service` | `postgres` (`order_db`), RabbitMQ (`order.q`, publikuje `order.*`), Consul; woła Cart, Product, Inventory, Shipping | działa; tabele zakłada przy starcie |
+| `shipping-service` | `postgres` (`shipping_db`), RabbitMQ (`shipping.q`, publikuje `shipment.status_changed`), Consul | działa; tabele zakłada przy starcie |
 
 Start całego sklepu:
 ```bash
@@ -236,13 +236,30 @@ Stany magazynowe 24 produktów startowych ustawia `bash postman/run.sh compose` 
 
 Usługi zespołu nie mają portów na laptopie; z zewnątrz woła się je przez Gateway (`http://localhost:8080/api/v1/users/me`, `…/cart`, `…/inventory/<id>`, `…/reviews?productId=<id>`). Jak zatrzymać usługę z compose na czas pracy z VS Code: [docs/patterns.md](../docs/patterns.md), sekcja 1.
 
-W `up`, `stop` i `down` podaje się `--profile platform`, inaczej polecenie pomija kontenery Gateway, Auth i frontendu (`stop` zostawia je uruchomione, `down` ich nie usuwa). W `ps` i `logs` profil nie jest potrzebny, ale nie szkodzi:
+W `up`, `stop` i `down` podaje się profil, z którym zestaw działa: przy całym sklepie `--profile full-shop` (obejmuje też kontenery z `platform`), przy samej platformie `--profile platform`. Bez profilu polecenie pomija kontenery tego profilu (`stop` zostawia je uruchomione, `down` ich nie usuwa, a `docker volume rm` kończy się wtedy błędem `volume is in use`). W `ps` i `logs` profil nie jest potrzebny, ale nie szkodzi:
 ```bash
-docker compose -f deploy/compose.yaml --profile platform ps
+docker compose -f deploy/compose.yaml --profile full-shop ps
 ```
 Podpowiedź `Done. Start: …` na końcu `create-secrets.sh` dotyczy samej infrastruktury; z Gateway, Auth i frontendem użyj polecenia z początku tej sekcji.
 
 Wolumen PostgreSQL utworzony przed etapem 2 nie ma bazy cieni `auth_shadow_db` (potrzebnej tylko do tworzenia migracji Auth). Dodaje ją ponowne uruchomienie skryptu baz, bez utraty danych – polecenie `exec … 01-service-databases.sh` z sekcji „Reset od zera”.
+
+### Usunięcie starych danych Inventory i Review (etap 8)
+
+Dotyczy tylko wolumenów sprzed etapu 8; najpierw start całego sklepu z nowymi obrazami (polecenie wyżej: `--profile full-shop up -d --wait --build`). Od etapu 8 Inventory trzyma dane w tabelach `stock_items` i `stock_reservations`, a Review w kolekcji `product_reviews` (identyfikatory UUID). Stare tabele `inventory_items`, `reservations` (w `inventory_db`) i kolekcja `reviews` (w `review_db`) zostają w wolumenach sprzed etapu 8 — kod usług ich nie czyta i nie usuwa. Każdy usuwa je u siebie raz. Polecenia same sprawdzają, że działa już nowy kod: stare dane znikają tylko wtedy, gdy są nowe tabele albo nowa kolekcja.
+```bash
+docker compose -f deploy/compose.yaml exec -T postgres sh -c 'PGPASSWORD="$INVENTORY_DB_PASSWORD" psql -h 127.0.0.1 -U inventory_service -d inventory_db -v ON_ERROR_STOP=1' <<'SQL'
+DO $$
+BEGIN
+  IF to_regclass('stock_items') IS NULL THEN
+    RAISE EXCEPTION 'stock_items missing: start the stage 8 Inventory first';
+  END IF;
+  DROP TABLE IF EXISTS reservations, inventory_items;
+END $$;
+SQL
+docker compose -f deploy/compose.yaml exec -T mongo sh -c 'HOME=/tmp mongosh --quiet "mongodb://review_service:$REVIEW_DB_PASSWORD@127.0.0.1:27017/review_db?authSource=review_db" --eval "db.getCollectionNames().includes(\"product_reviews\") ? db.reviews.drop() : \"product_reviews missing: start the stage 8 Review first\""'
+```
+Hasła rozwija powłoka w kontenerze (zmienne kontenerów `postgres` i `mongo`), nie trzeba ich wpisywać. Wynik: `DO` (także gdy tabel już nie było — wtedy z komunikatem `NOTICE: … does not exist, skipping`) i `true`. Gdy nowa usługa jeszcze nie wystartowała, nic nie jest usuwane: PostgreSQL odpowiada `ERROR: stock_items missing: start the stage 8 Inventory first` (kod 3), MongoDB wypisuje `product_reviews missing: start the stage 8 Review first`. Sprawdzenie: `docker compose -f deploy/compose.yaml exec -T postgres sh -c 'PGPASSWORD="$INVENTORY_DB_PASSWORD" psql -h 127.0.0.1 -U inventory_service -d inventory_db -c "\dt"'` — tylko `processed_events`, `stock_items`, `stock_reservations`. W Kubernetesie (własny klaster każdego z nas): polecenia w [k8s/README.md](k8s/README.md#usunięcie-starych-danych-inventory-i-review-etap-8).
 
 ### Pokaz load balancingu (dwie instancje Auth)
 
@@ -279,7 +296,7 @@ Wynik: `200`. Bez `-o /dev/null -w …` odpowiedź zawiera `accessToken` (token 
 
 ## Codzienna praca
 
-Jeśli uruchamiasz też Gateway i Auth (profil `platform`), dodaj `--profile platform` do każdego polecenia w tej i następnej sekcji (np. `docker compose -f deploy/compose.yaml --profile platform stop`) – inaczej kontenery Gateway i Auth zostaną pominięte.
+Do każdego polecenia w tej i następnych sekcjach dodaj profil, z którym zestaw działa: przy całym sklepie `--profile full-shop` (np. `docker compose -f deploy/compose.yaml --profile full-shop stop`), przy samej platformie `--profile platform` – inaczej kontenery tego profilu zostaną pominięte (przy `full-shop` z samym `--profile platform` dalej działają Cart, Inventory, Review, Product, Notification, Order i Shipping).
 
 Zatrzymanie (kontenery zostają, start jest szybszy):
 ```bash
@@ -291,24 +308,24 @@ docker compose -f deploy/compose.yaml down
 ```
 W obu przypadkach dane zostają: bazy w PostgreSQL i MongoDB, koszyki w Redisie koszyka, zawartość Consula oraz kolejki i wiadomości w RabbitMQ przeżywają. Redis Gateway zaczyna zawsze pusty (celowo, bez zapisu na dysk) – liczniki limitów żądań startują od zera. Mailpit też zaczyna pusty (e-maile trzyma w pamięci).
 
-Kolejki usług, które nie działają, zbierają wiadomości: `order.q` i `shipping.q` do czasu wpisów Order i Shipping, a `notification.q` przy samym profilu `platform` (każda rejestracja dodaje jedną wiadomość; pierwszy start z `full-shop` wyśle zaległe e-maile powitalne). Kolejkę czyści się w panelu: **Queues and Streams** → kolejka → **Purge Messages**.
+Kolejki usług, które nie działają, zbierają wiadomości: przy samym profilu `platform` tylko `notification.q` (każda rejestracja dodaje jedną wiadomość `user.registered`; pierwszy start z `full-shop` wyśle zaległe e-maile powitalne). `order.q`, `shipping.q` i `inventory.q` dostają tylko zdarzenia zamówień i przesyłek, a tych bez `full-shop` nie ma. Kolejkę czyści się w panelu: **Queues and Streams** → kolejka → **Purge Messages**.
 
 Ponowny start – to samo polecenie co za pierwszym razem:
 ```bash
 docker compose -f deploy/compose.yaml up -d --wait
 ```
 
-**Zmiana konfiguracji usługi w Consulu:** edytuj plik `deploy/consul/config/<usługa>.yaml`, potem uruchom `docker compose -f deploy/compose.yaml --profile platform up -d --wait` (z profilem, jeśli działają usługi z `platform`). Przy każdym `up` kontener `consul-kv-seed` wgrywa te pliki do Consula i nadpisuje to, co tam było. Usługa czyta konfigurację tylko przy starcie, więc potem zrestartuj ją, np. `docker compose -f deploy/compose.yaml --profile platform restart api-gateway`; `restart` nie czeka na gotowość – usługa działa, gdy `docker compose -f deploy/compose.yaml --profile platform ps` pokazuje przy niej `(healthy)`. Zmiana zrobiona ręcznie w UI Consula działa tylko do następnego `up`. W tych plikach nie wpisuje się haseł.
+**Zmiana konfiguracji usługi w Consulu:** edytuj plik `deploy/consul/config/<usługa>.yaml`, potem uruchom `docker compose -f deploy/compose.yaml --profile platform up -d --wait` (z profilem, jeśli działają usługi z `platform`). Przy każdym `up` kontener `consul-kv-seed` wgrywa te pliki do Consula i nadpisuje to, co tam było. Usługa czyta konfigurację tylko przy starcie, więc potem zrestartuj ją, np. `docker compose -f deploy/compose.yaml --profile platform restart api-gateway`; `restart` nie czeka na gotowość – usługa działa, gdy `docker compose -f deploy/compose.yaml --profile platform ps` pokazuje przy niej `(healthy)`. Dotyczy to także Gateway: po zmianie `deploy/consul/config/api-gateway.yaml` (trasy, reguły dostępu, limity) i `up` uruchom `docker compose -f deploy/compose.yaml --profile platform restart api-gateway` — bez tego działa stara konfiguracja, np. nowa reguła `blocked` nie obowiązuje. Zmiana zrobiona ręcznie w UI Consula działa tylko do następnego `up`. W tych plikach nie wpisuje się haseł.
 
 ## Reset od zera
 
-Z Auth (profil `platform`) oba polecenia z `--profile platform` – inaczej `auth-service` zostaje uruchomiony, a po `up` bez profilu nikt nie założy tabel w nowej, pustej bazie `auth_db` (robi to `auth-migrate`):
+Oba polecenia z profilem, z którym zestaw działa – inaczej kontenery profilu zostają uruchomione (z połączeniami do usuwanych baz), a po `up` bez profilu nikt nie założy tabel w nowych, pustych bazach (`auth-migrate`, `user-migrate`, `product-migrate`). Cały sklep:
 
 ```bash
-docker compose -f deploy/compose.yaml --profile platform down -v
-docker compose -f deploy/compose.yaml --profile platform up -d --wait
+docker compose -f deploy/compose.yaml --profile full-shop down -v
+docker compose -f deploy/compose.yaml --profile full-shop up -d --wait
 ```
-Sama infrastruktura (bez Auth i Gateway): te same polecenia bez `--profile platform`.
+Sama platforma: te same polecenia z `--profile platform`; sama infrastruktura: bez profilu. Po resecie całego sklepu stany magazynowe znowu ustawia `bash postman/run.sh compose`.
 
 `-v` usuwa też dane: **wszystkie bazy w PostgreSQL i MongoDB (z tabelami, kolekcjami i danymi), koszyki w Redisie koszyka, całą zawartość Consula i RabbitMQ (kolejki z wiadomościami, konta)**. Po `up` bazy i użytkownicy powstają od nowa, puste. Plik `deploy/.env` i klucze w `deploy/secrets/` zostają.
 
@@ -325,11 +342,11 @@ Pierwsze polecenie odtwarza kontener `postgres` z nowymi wartościami z `deploy/
 
 Hasło konta `admin` (`RABBITMQ_ADMIN_PASSWORD`) RabbitMQ ustawia tylko przy pierwszym starcie na pustych danych. Po późniejszej zmianie tej zmiennej `rabbitmq-setup` nie może się zalogować i `up` kończy się błędem `service "rabbitmq-setup" didn't complete successfully`. Rozwiązanie – czysty start samego RabbitMQ (kolejki z wiadomościami znikają, bazy i Consul zostają):
 ```bash
-docker compose -f deploy/compose.yaml --profile platform down
+docker compose -f deploy/compose.yaml --profile full-shop down
 docker volume rm sklep_rabbitmq-data
-docker compose -f deploy/compose.yaml --profile platform up -d --wait
+docker compose -f deploy/compose.yaml --profile full-shop up -d --wait
 ```
-Bez Gateway i Auth (sama infrastruktura) te same polecenia bez `--profile platform`.
+Sama platforma: te same polecenia z `--profile platform`; sama infrastruktura: bez profilu.
 
 To samo polecenie przywraca dokładny stan z repo, gdy w panelu dodano ręcznie kolejki, wiązania albo konta (`rabbitmq-setup` ich nie usuwa) albo gdy w `definitions.json` zmienił się typ lub argumenty istniejącej kolejki. Hasła kont usług (`<USŁUGA>_RABBITMQ_PASSWORD`) `rabbitmq-setup` ustawia przy każdym `up` – ich zmiana nie wymaga czystego startu. Dozwolone znaki w tych hasłach: litery, cyfry i `. _ ~ -` (hasła z `create-secrets.sh` je spełniają).
 
@@ -339,11 +356,11 @@ Konto `admin` i użytkowników baz (`review_service`, `notification_service`) Mo
 
 **Pusty wolumen** (kolekcje Review i Notification znikają, reszta danych zostaje):
 ```bash
-docker compose -f deploy/compose.yaml --profile platform down
+docker compose -f deploy/compose.yaml --profile full-shop down
 docker volume rm sklep_mongo-data
-docker compose -f deploy/compose.yaml --profile platform up -d --wait
+docker compose -f deploy/compose.yaml --profile full-shop up -d --wait
 ```
-Bez Gateway i Auth (sama infrastruktura) te same polecenia bez `--profile platform`. W logu `docker compose -f deploy/compose.yaml logs mongo` pojawiają się wtedy linie `created review_service in review_db` i `created notification_service in notification_db`.
+Sama platforma: te same polecenia z `--profile platform`; sama infrastruktura: bez profilu. W logu `docker compose -f deploy/compose.yaml logs mongo` pojawiają się wtedy linie `created review_service in review_db` i `created notification_service in notification_db`.
 
 **Ponowny skrypt bez kasowania danych** – np. po zmianie `REVIEW_DB_PASSWORD` albo `NOTIFICATION_DB_PASSWORD` w `deploy/.env`:
 ```bash
@@ -361,10 +378,11 @@ Hasła konta `admin` (`MONGO_ROOT_PASSWORD`) to nie zmienia: MongoDB ustawia je 
 
 Usunięcie wszystkich koszyków (pozostałe dane zostają):
 ```bash
-docker compose -f deploy/compose.yaml --profile platform down
+docker compose -f deploy/compose.yaml --profile full-shop down
 docker volume rm sklep_redis-cart-data
-docker compose -f deploy/compose.yaml --profile platform up -d --wait
+docker compose -f deploy/compose.yaml --profile full-shop up -d --wait
 ```
+Sama platforma: te same polecenia z `--profile platform` (Cart jest tylko w `full-shop`).
 Hasło Redisa koszyka (`REDIS_CART_PASSWORD`) nie jest zapisane w danych – po jego zmianie w `deploy/.env` wystarczy `up -d --wait` (odtwarza kontener z nowym hasłem), bez kasowania koszyków.
 
 ## Konwencje

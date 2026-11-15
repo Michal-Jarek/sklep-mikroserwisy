@@ -7,7 +7,7 @@ Wszystkie pliki tej usługi znajdują się w `services/inventory-service/`. Kole
 * Namespace: `shop`; port usługi: 8084; nazwa w Consulu, Kubernetesie i obrazie Docker: `inventory-service`; etykieta podów: `app: inventory-service`.
 * PostgreSQL z bazą `inventory_db` i osobnym użytkownikiem. Dane dostępowe pochodzą z Secret `inventory-service-secret`, klucz `DATABASE_URL`. Inne usługi nie czytają tej bazy.
 * RabbitMQ z kontem `inventory-service`, które może tylko czytać z kolejki `inventory.q`. Kolejki, `inventory.dlq` i bindingi tworzy wspólna konfiguracja (`deploy/rabbitmq/`). Połączenie opisują zmienne `RABBITMQ_HOST`, `RABBITMQ_PORT` i `RABBITMQ_USER`, a hasło `RABBITMQ_PASSWORD` pochodzi z Secret `inventory-service-secret`.
-* Consul pod `http://consul:8500`. Usługa rejestruje się jako `inventory-service` z ID `inventory-service-<hostname>` i własnym adresem IP (z VS Code `SERVICE_ADDRESS=host.docker.internal`), a health check `/health/ready` sprawdza połączenie z bazą. Co ok. 15 s usługa sprawdza, czy jej wpis istnieje z aktualnym adresem i portem, i rejestruje się ponownie, gdy go nie ma. Gdy Consul nie odpowiada, ponawia próby po 1, 2, 4, 8, 15 s. Przy zatrzymaniu wyrejestrowuje się.
+* Consul pod `http://consul:8500`. Usługa rejestruje się jako `inventory-service` z ID `INSTANCE_ID` (pełne ID, w Kubernetesie nazwa poda) albo `inventory-service-<hostname>` i własnym adresem IP (z VS Code `SERVICE_ADDRESS=host.docker.internal`), a health check `/health/ready` sprawdza połączenie z bazą. Co ok. 15 s usługa sprawdza, czy jej wpis istnieje z aktualnym adresem i portem, i rejestruje się ponownie, gdy go nie ma. Gdy Consul nie odpowiada, ponawia próby po 1, 2, 4, 8, 15 s. Przy zatrzymaniu wyrejestrowuje się.
 * Secret i konta w bazie oraz RabbitMQ są tworzone poza manifestami w `k8s/`.
 
 ## Kto woła Inventory
@@ -20,7 +20,7 @@ Kontrakty z Product, Cart i Order wymagają potwierdzenia przy implementacji tyc
 
 ## RabbitMQ
 
-Inventory odbiera z kolejki `inventory.q` zdarzenia `order.cancelled` i `shipment.status_changed`. Koperta zawiera `eventId`, `type`, `occurredAt`, `version`, `requestId` i `payload`. Po `order.cancelled` zwalniane są rezerwacje zamówienia. Po `shipment.status_changed` ze statusem `SHIPPED` towar jest wydawany, czyli maleją `quantity` i `reserved`; inne statusy nie zmieniają stanu. Usługa nie tworzy kolejek ani bindingów, tylko sprawdza kolejkę pasywnie. Błąd chwilowy jest ponawiany w procesie (po 5 s, potem po 30 s), a po trzeciej nieudanej próbie lub przy błędnej kopercie wiadomość jest odrzucana i broker przenosi ją do `inventory.dlq`. Inventory nie publikuje żadnych zdarzeń.
+Inventory odbiera z kolejki `inventory.q` zdarzenia `order.cancelled` i `shipment.status_changed`. Koperta zawiera `eventId`, `type`, `occurredAt`, `version`, `requestId` i `payload`. Po `order.cancelled` zwalniane są rezerwacje zamówienia. Po `shipment.status_changed` ze statusem `SHIPPED` towar jest wydawany, czyli maleją `quantity` i `reserved`; inne statusy nie zmieniają stanu. Usługa nie tworzy kolejek ani bindingów, tylko sprawdza kolejkę pasywnie. `eventId` i `orderId` muszą być UUID. Błąd chwilowy jest ponawiany w procesie (po 5 s, potem po 30 s, z losowym dodatkiem do +50 %), a po trzeciej nieudanej próbie lub przy błędnej kopercie wiadomość jest odrzucana i broker przenosi ją do `inventory.dlq`. Inventory nie publikuje żadnych zdarzeń.
 
 ## Tożsamość i role w tej usłudze
 

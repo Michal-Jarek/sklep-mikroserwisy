@@ -7,7 +7,7 @@
 #   CA (a public certificate) is mounted read-only for https://shop.localhost; Mailpit and Consul are reached through
 #   kubectl port-forward on 18025 and 18500, started here and stopped on exit, also after Ctrl+C or kill.
 # The admin password goes from deploy/.env to the container on stdin only: not in arguments, not in the container
-# environment, not in a file, never printed. Exit code = code of runner/run.mjs: 0 passed, 1 failed, 2 setup error
+# environment, not in a file, never printed. Exit code = code of runner/run.ts: 0 passed, 1 failed, 2 setup error
 # (a failure of docker run itself is 2 as well); 130/143 when the script itself is interrupted (INT/TERM).
 set -euo pipefail
 # Never traced (bash -x, SHELLOPTS=xtrace): the trace would print the admin password read below on stderr.
@@ -134,7 +134,7 @@ cleanup() {
     rm -rf "$tmp"
   fi
 }
-# INT/TERM: the signal goes on to the scenario (docker run passes it to the container, run.mjs ends without
+# INT/TERM: the signal goes on to the scenario (docker run passes it to the container, run.ts ends without
 # a report), then the script ends with 130/143 and the EXIT trap stops the port-forwards.
 # shellcheck disable=SC2317  # called from the INT/TERM traps
 on_signal() {
@@ -181,7 +181,7 @@ mkdir -p "$dir/reports"
 work=/opt/scenario/work
 report="$(date -u +%Y%m%dT%H%M%SZ)-$env_name-$collection.json"
 args=(
-  "$work/runner/run.mjs"
+  "$work/runner/run.ts"
   --collection "$work/collections/$collection.postman_collection.json"
   --environment "$work/environments/$env_name.postman_environment.json"
   --name "$env_name"
@@ -209,7 +209,7 @@ printf 'ADMIN_EMAIL=%s\nADMIN_PASSWORD=%s\n' "$admin_email" "$admin_password" |
 docker_pid=$!
 wait "$docker_pid" || status=$?
 docker_pid=""
-# run.mjs ends with 0, 1 or 2; a higher code comes from docker (125-127: the container did not start).
+# run.ts ends with 0, 1 or 2; a higher code comes from docker (125-127: the container did not start).
 if [ "$status" -gt 2 ]; then
   echo "docker run failed ($status)" >&2
   exit 2

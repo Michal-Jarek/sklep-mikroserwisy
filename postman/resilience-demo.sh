@@ -155,7 +155,7 @@ run_folder() {
     -v "$SCRIPT_DIR/collections:$WORK/collections:ro" \
     -v "$SCRIPT_DIR/environments:$WORK/environments:ro" \
     -v "$SCRIPT_DIR/reports:$WORK/reports" \
-    "$IMAGE" "$WORK/runner/run.mjs" \
+    "$IMAGE" "$WORK/runner/run.ts" \
     --collection "$WORK/collections/shop-resilience.postman_collection.json" \
     --environment "$WORK/environments/compose.postman_environment.json" \
     --name compose --report "$WORK/reports/$report" --folder "$1"

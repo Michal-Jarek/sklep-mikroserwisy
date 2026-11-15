@@ -101,6 +101,8 @@ git check-ignore -q .env && echo IGNORED
 
 W logu mają się pojawić `Registered in Consul` i `Consumer started` z `"queue": "notification.q"`. Usługa nie ma migracji: indeksy w MongoDB zakłada sama przy starcie.
 
+Rejestracja w Consulu: przy pierwszej udanej rejestracji procesu usługa usuwa wpisy o nazwie `notification-service` z tym samym adresem i portem, ale innym ID (np. kontener w compose zabity i utworzony od nowa na tym samym IP; log „Removed an orphaned entry from Consul”), a potem wpis z własnym ID pozostały po poprzednim procesie zatrzymanym bez wyrejestrowania (Consul zachowałby jego stary stan checku; log „Removed the Consul entry of the previous process”). Wpisów innych usług, z innym adresem albo innym portem nie rusza. Stan początkowy checku (`passing` albo `critical`) wynika z bieżącej gotowości (to samo co `/health/ready`). Błędna odpowiedź Consula przy sprzątaniu daje jedno ostrzeżenie w logu i nie blokuje rejestracji; potem usługa co 15 s sprawdza swój wpis i rejestruje się ponownie, gdy zniknie.
+
 ## Jak sprawdzić, że działa
 
 **Testy** (bez Dockera):

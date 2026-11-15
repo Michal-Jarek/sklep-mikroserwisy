@@ -21,7 +21,6 @@ Which e-mails:
 import asyncio
 import json
 import random
-import socket
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Literal
@@ -30,7 +29,7 @@ import aio_pika
 from aio_pika.abc import AbstractIncomingMessage
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
-from .config import SERVICE_NAME, Settings
+from .config import Settings
 from .logs import logger, request_id_var, user_id_var
 from .mailer import SHIPPING_METHODS, Mail, render
 from .store import Store, new_entry
@@ -302,7 +301,10 @@ class Consumer:
             port=settings.rabbitmq_port,
             login=settings.rabbitmq_user,
             password=settings.rabbitmq_password,
-            client_properties={"connection_name": f"{SERVICE_NAME}-{socket.gethostname()}"},
+            # "name", not "connection_name": aio-pika puts client_properties into the URL query and aiormq
+            # takes the connection name only from its "name" key (the broker shows it as connection_name).
+            # Z8: the instance ID (pod name in Kubernetes, notification-service-<hostname> otherwise).
+            client_properties={"name": settings.instance_id},
         ))
         async with connection:
             channel = await connection.channel()

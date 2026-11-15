@@ -11,11 +11,11 @@ class Settings(BaseSettings):
 
     service_name: str = "review-service"
     service_port: int = 8088
-    service_address: str = ""  # adres poda (w K8s z fieldRef status.podIP)
+    service_address: str = ""  # adres rejestrowany w Consulu (w K8s z fieldRef status.podIP); pusty = własny IP
     instance_id: str = ""
     log_level: str = "INFO"
 
-    mongodb_url: str = ""  # np. mongodb://review:haslo@mongodb:27017/review_db
+    mongodb_url: str = ""  # np. mongodb://review_service:<hasło>@mongo:27017/review_db
     mongodb_database: str = "review_db"
 
     # Order Service: adres z Consula; ORDER_SERVICE_URL to opcjonalny adres zapasowy (np. lokalnie)
@@ -27,18 +27,13 @@ class Settings(BaseSettings):
     consul_host: str = "consul"
     consul_port: int = 8500
 
-    # Puste jwt_jwks_url = tryb "nagłówki z Gateway" (X-User-Id / X-User-Roles).
-    jwt_jwks_url: str = ""
-    jwt_issuer: str = ""
-    jwt_audience: str = ""
-
     @property
     def effective_instance_id(self) -> str:
-        return self.instance_id or socket.gethostname()
+        """ID instancji w Consulu i w nagłówku X-Instance-Id.
 
-    @property
-    def effective_address(self) -> str:
-        return self.service_address or socket.gethostbyname(socket.gethostname())
+        INSTANCE_ID jest pełnym ID (w Kubernetesie nazwa poda, bez dopisywania przedrostka); bez niego <usługa>-<hostname>.
+        """
+        return self.instance_id or f"{self.service_name}-{socket.gethostname()}"
 
 
 @lru_cache

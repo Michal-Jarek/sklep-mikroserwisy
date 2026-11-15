@@ -1,5 +1,5 @@
 // Report of a newman run built from whitelisted fields only: no bodies, headers, cookies or environment
-// values ever reach it (postman/README.md, "Raport"). run.mjs feeds the newman events and summary; the only I/O
+// values ever reach it (postman/README.md, "Raport"). run.ts feeds the newman events and summary; the only I/O
 // here is writeReport.
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -7,24 +7,105 @@ import { dirname } from 'node:path';
 export const RATE_LIMIT_HINT = 'hint: rate limit of the shop entrance reached, wait 60 s and run again';
 
 // Environment variables with the base URLs -> target name in the report.
-const TARGET_VARIABLES = { baseUrl: 'shop', mailpitUrl: 'mailpit', consulUrl: 'consul' };
+const TARGET_VARIABLES = { baseUrl: 'shop', mailpitUrl: 'mailpit', consulUrl: 'consul' } as const;
 const RATE_LIMITED_PATH = /\/auth\/(login|register)$/;
 // JWT-like text; replaced in free-text fields as a second line of defence (assertions never compare tokens).
 const JWT_PATTERN = /eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*\.?[A-Za-z0-9_-]*/g;
 
+export type Target = (typeof TARGET_VARIABLES)[keyof typeof TARGET_VARIABLES];
+export type Origins = Map<string, Target>;
+
+/** The parts of a newman event argument this module reads (newman emits much more: headers and body are never read). */
+export interface NewmanEvent {
+  cursor?: { ref?: string };
+  item?: { name?: string };
+  request?: { method?: string; url?: unknown; headers?: unknown; body?: unknown };
+  response?: { code?: number; responseTime?: number; text(): string };
+  assertion?: unknown;
+  skipped?: boolean;
+}
+
+export interface Assertion {
+  name: string;
+  passed: boolean;
+}
+
+export interface TraceItem {
+  item: string | null;
+  target: Target | null;
+  method: string | null;
+  path: string | null;
+  status: number | null;
+  timeMs: number | null;
+  assertions: Assertion[];
+}
+
+export interface Trace {
+  origins: Origins;
+  items: TraceItem[];
+  latest: Map<string, TraceItem>;
+  names: Map<string, string | null>;
+  withoutRequest: Set<TraceItem>;
+  rateLimited: boolean;
+}
+
+export interface Skip {
+  item: string;
+  reason: string;
+  checks: string[];
+}
+
+export interface Failure {
+  item: string | null;
+  assertion: string | null;
+  message: string;
+}
+
+/** The parts of a newman run failure this module reads. */
+export interface NewmanFailure {
+  error?: { name?: string; test?: string; message?: string };
+  source?: { name?: string };
+}
+
+interface Counts {
+  total: number;
+  failed: number;
+}
+
+/** The parts of the newman summary this module reads. */
+export interface NewmanSummary {
+  run: { stats: { assertions: Counts; requests: Counts }; failures: NewmanFailure[] };
+}
+
+export interface Report {
+  collection: string;
+  environment: string;
+  runId: string;
+  customerEmail: string;
+  startedAt: string;
+  durationMs: number;
+  strict: boolean;
+  result: 'PASSED' | 'FAILED';
+  requests: Counts;
+  assertions: Counts;
+  skipped: Skip[];
+  failures: Failure[];
+  items: TraceItem[];
+}
+
 /** Map origin -> target from the environment values ({ baseUrl, mailpitUrl, consulUrl }). */
-export function targetOrigins(values) {
-  const origins = new Map();
+export function targetOrigins(values: Record<string, unknown>): Origins {
+  const origins: Origins = new Map();
   for (const [key, target] of Object.entries(TARGET_VARIABLES)) {
     if (values[key]) {
-      origins.set(new URL(values[key]).origin, target);
+      origins.set(new URL(String(values[key])).origin, target);
     }
   }
   return origins;
 }
 
 /** Target and path (no host, no query) of a request URL; postman-collection Url objects print the full URL. */
-export function urlParts(url, origins) {
+export function urlParts(url: unknown, origins: Origins): { target: Target | null; path: string | null } {
   try {
     const parsed = new URL(String(url));
     return { target: origins.get(parsed.origin) ?? null, path: parsed.pathname };
@@ -38,11 +119,11 @@ export function urlParts(url, origins) {
  * request of its item. An assertion before any request of the item (pre-request script of a skipped request)
  * gets an entry without request fields (null).
  */
-export function createTrace(origins) {
+export function createTrace(origins: Origins): Trace {
   return { origins, items: [], latest: new Map(), names: new Map(), withoutRequest: new Set(), rateLimited: false };
 }
 
-function errorCodeOf(response) {
+function errorCodeOf(response: NonNullable<NewmanEvent['response']>): unknown {
   try {
     return JSON.parse(response.text()).error ?? null;
   } catch {
@@ -50,17 +131,17 @@ function errorCodeOf(response) {
   }
 }
 
-function newEntry(trace, ref) {
-  const entry = { item: trace.names.get(ref) ?? null, target: null, method: null, path: null, status: null, timeMs: null, assertions: [] };
+function newEntry(trace: Trace, ref: string): TraceItem {
+  const entry: TraceItem = { item: trace.names.get(ref) ?? null, target: null, method: null, path: null, status: null, timeMs: null, assertions: [] };
   trace.items.push(entry);
   trace.latest.set(ref, entry);
   return entry;
 }
 
 /** Records one newman event ('beforeItem', 'request' or 'assertion'); (err, o) as emitted by newman. */
-export function traceEvent(trace, event, err, o) {
+export function traceEvent(trace: Trace, event: string, err: unknown, o: NewmanEvent | undefined): void {
   const ref = o?.cursor?.ref;
-  if (!ref) {
+  if (!o || !ref) {
     return;
   }
   if (event === 'beforeItem') {
@@ -80,7 +161,14 @@ export function traceEvent(trace, event, err, o) {
       status: o.response?.code ?? null,
       timeMs: o.response?.responseTime ?? null,
     });
-    if (entry.status === 429 && target === 'shop' && RATE_LIMITED_PATH.test(path) && errorCodeOf(o.response) === 'TOO_MANY_REQUESTS') {
+    if (
+      o.response &&
+      entry.status === 429 &&
+      target === 'shop' &&
+      path !== null &&
+      RATE_LIMITED_PATH.test(path) &&
+      errorCodeOf(o.response) === 'TOO_MANY_REQUESTS'
+    ) {
       trace.rateLimited = true;
     }
   } else if (event === 'assertion') {
@@ -94,25 +182,30 @@ export function traceEvent(trace, event, err, o) {
 }
 
 /** Value of the environment variable `skipped` (JSON written by the collection) -> [{ item, reason, checks }]. */
-export function readSkipped(value) {
+export function readSkipped(value: unknown): Skip[] {
   if (value === undefined || value === null || value === '') {
     return [];
   }
-  const parsed = JSON.parse(value);
+  const parsed: unknown = JSON.parse(String(value));
   if (!Array.isArray(parsed)) {
     throw new Error('environment variable skipped is not a JSON array');
   }
-  return parsed.map((entry) => {
-    const valid = typeof entry?.item === 'string' && typeof entry.reason === 'string' && Array.isArray(entry.checks) && entry.checks.every((check) => typeof check === 'string');
-    if (!valid) {
+  return parsed.map((entry: Partial<Record<keyof Skip, unknown>> | null) => {
+    const checks = entry?.checks;
+    if (
+      typeof entry?.item !== 'string' ||
+      typeof entry.reason !== 'string' ||
+      !Array.isArray(checks) ||
+      !checks.every((check): check is string => typeof check === 'string')
+    ) {
       throw new Error('environment variable skipped has an entry other than {item, reason, checks}');
     }
-    return { item: entry.item, reason: entry.reason, checks: [...entry.checks] };
+    return { item: entry.item, reason: entry.reason, checks: [...checks] };
   });
 }
 
 /** Removes known secret values and JWT-like text from a free-text field. */
-export function redact(text, secrets) {
+export function redact(text: unknown, secrets: readonly (string | undefined)[]): string {
   let result = String(text);
   for (const secret of secrets) {
     if (secret) {
@@ -122,7 +215,7 @@ export function redact(text, secrets) {
   return result.replace(JWT_PATTERN, '<redacted>');
 }
 
-function failureOf(failure, secrets) {
+function failureOf(failure: NewmanFailure, secrets: readonly (string | undefined)[]): Failure {
   const error = failure.error ?? {};
   return {
     item: failure.source?.name ?? null,
@@ -131,15 +224,29 @@ function failureOf(failure, secrets) {
   };
 }
 
-function uniqueChecks(skipped) {
+function uniqueChecks(skipped: Skip[]): string[] {
   return [...new Set(skipped.flatMap((entry) => entry.checks))];
+}
+
+export interface ReportInput {
+  collection: string;
+  environment: string;
+  runId: string;
+  customerEmail: string;
+  startedAt: string;
+  durationMs: number;
+  strict: boolean;
+  summary: NewmanSummary;
+  skipped: Skip[];
+  trace: Trace;
+  secrets?: readonly (string | undefined)[];
 }
 
 /**
  * The report (fields of the contract only). `summary` is the newman summary (run.stats, run.failures),
  * `skipped` from readSkipped, `trace` from createTrace/traceEvent, `secrets` = values to remove from texts.
  */
-export function buildReport({ collection, environment, runId, customerEmail, startedAt, durationMs, strict, summary, skipped, trace, secrets = [] }) {
+export function buildReport({ collection, environment, runId, customerEmail, startedAt, durationMs, strict, summary, skipped, trace, secrets = [] }: ReportInput): Report {
   const { stats } = summary.run;
   const failures = summary.run.failures.map((failure) => failureOf(failure, secrets));
   const passed = stats.assertions.failed === 0 && stats.requests.failed === 0 && failures.length === 0 && !(strict && skipped.length > 0);
@@ -164,26 +271,25 @@ export function buildReport({ collection, environment, runId, customerEmail, sta
  * Writes the report as a new file: an existing file (another run within the same second) is never overwritten.
  * Errors name the file by `shownAs` (the path for the user, e.g. postman/reports/<file>).
  */
-export async function writeReport(file, report, shownAs) {
+export async function writeReport(file: string, report: Report, shownAs: string): Promise<void> {
   try {
     await mkdir(dirname(file), { recursive: true });
     await writeFile(file, `${JSON.stringify(report, null, 2)}\n`, { flag: 'wx' });
   } catch (error) {
+    const { code, message } = error as NodeJS.ErrnoException;
     throw new Error(
-      error.code === 'EEXIST'
-        ? `report ${shownAs} already exists (another run in the same second), run again`
-        : `cannot write the report ${shownAs}: ${error.message}`,
+      code === 'EEXIST' ? `report ${shownAs} already exists (another run in the same second), run again` : `cannot write the report ${shownAs}: ${message}`,
     );
   }
 }
 
 /** Exit code of the run: 0 passed, 1 failed (also any skipped check with --strict). */
-export function exitCode(report) {
+export function exitCode(report: Report): 0 | 1 {
   return report.result === 'PASSED' ? 0 : 1;
 }
 
 /** Lines printed after the newman output: SKIPPED for each skip, hint on 429 at login/registration, RESULT last. */
-export function summaryLines(report, rateLimited, reportPath) {
+export function summaryLines(report: Report, rateLimited: boolean, reportPath: string): string[] {
   const lines = report.skipped.map((entry) => `SKIPPED: ${entry.item} — ${entry.reason} (${entry.checks.join(', ')})`);
   if (rateLimited) {
     lines.push(RATE_LIMIT_HINT);

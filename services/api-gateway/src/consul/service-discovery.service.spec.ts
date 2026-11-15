@@ -3,7 +3,13 @@ import type { PinoLogger } from 'nestjs-pino';
 import { buildAppConfig } from '../config/app-config';
 import { GatewayMetrics } from '../metrics/gateway-metrics';
 import { consulHealthyInstancesPath } from '../routes';
-import { DISCOVERY_CACHE_MS, DISCOVERY_EMPTY_CACHE_MS, parseHealthyInstances, ServiceDiscovery } from './service-discovery.service';
+import {
+  DISCOVERY_CACHE_MS,
+  DISCOVERY_EMPTY_CACHE_MS,
+  DISCOVERY_EMPTY_GRACE_MS,
+  parseHealthyInstances,
+  ServiceDiscovery,
+} from './service-discovery.service';
 
 const ENV = { CONSUL_HOST: 'consul', REDIS_PASSWORD: 'test-redis' };
 
@@ -189,6 +195,186 @@ describe('ServiceDiscovery', () => {
     expect(consul.spy).toHaveBeenCalledTimes(1);
   });
 
+  describe('Z6: empty answer after a non-empty list (Consul restarted, checks not run yet)', () => {
+    const LAST = 'Consul lists no healthy instance, using the last known list';
+    const DROPPED = 'Consul still lists no healthy instance, last known list dropped';
+    const AGAIN = 'Consul lists healthy instances again';
+
+    it('keeps the last known list, asks Consul every 2 s, warns once and informs when instances are back', async () => {
+      const consul = mockConsul(() => json(THREE));
+      const { discovery, logger, metrics } = createDiscovery();
+      await discovery.getInstance('product-service');
+
+      consul.set(() => json([]));
+      now += DISCOVERY_CACHE_MS;
+      expect(await ids(discovery, 'product-service', 3)).toEqual(['stub-2', 'stub-3', 'stub-1']);
+      expect(consul.spy).toHaveBeenCalledTimes(2);
+      expect(await instancesGauge(metrics, 'product-service')).toBe(3);
+
+      now += DISCOVERY_EMPTY_CACHE_MS - 1;
+      await discovery.getInstance('product-service');
+      expect(consul.spy).toHaveBeenCalledTimes(2);
+      now += 1;
+      expect(await discovery.getInstance('product-service')).not.toBeNull();
+      expect(consul.spy).toHaveBeenCalledTimes(3);
+      expect(logger.warn.mock.calls).toEqual([[{ targetService: 'product-service' }, LAST]]);
+
+      consul.set(() => json([entry('stub-4', '10.0.0.4')]));
+      now += DISCOVERY_EMPTY_CACHE_MS;
+      expect(await ids(discovery, 'product-service', 2)).toEqual(['stub-4', 'stub-4']);
+      expect(logger.info).toHaveBeenCalledWith({ targetService: 'product-service' }, AGAIN);
+      expect(await instancesGauge(metrics, 'product-service')).toBe(1);
+    });
+
+    it('drops the list (null -> 503) after 30 s of empty answers counted from the first one', async () => {
+      const consul = mockConsul(() => json(THREE));
+      const { discovery, logger, metrics } = createDiscovery();
+      await discovery.getInstance('product-service');
+
+      consul.set(() => json([]));
+      now += DISCOVERY_CACHE_MS;
+      const firstEmpty = now;
+      await discovery.getInstance('product-service');
+      while (now < firstEmpty + DISCOVERY_EMPTY_GRACE_MS - DISCOVERY_EMPTY_CACHE_MS) {
+        now += DISCOVERY_EMPTY_CACHE_MS;
+        expect(await discovery.getInstance('product-service')).not.toBeNull();
+      }
+      now = firstEmpty + DISCOVERY_EMPTY_GRACE_MS - 1;
+      expect(await discovery.getInstance('product-service')).not.toBeNull();
+
+      now = firstEmpty + DISCOVERY_EMPTY_GRACE_MS;
+      expect(await discovery.getInstance('product-service')).toBeNull();
+      expect(logger.warn.mock.calls.map((call) => call[1])).toEqual([LAST, DROPPED]);
+      expect(await instancesGauge(metrics, 'product-service')).toBe(0);
+
+      // Later empty answers: an ordinary empty list (2 s), no more warnings.
+      now += DISCOVERY_EMPTY_CACHE_MS;
+      expect(await discovery.getInstance('product-service')).toBeNull();
+      expect(logger.warn).toHaveBeenCalledTimes(2);
+      expect(logger.info).not.toHaveBeenCalledWith(expect.anything(), AGAIN);
+    });
+
+    it('a Consul failure does not age the list: it ends the series of empty answers', async () => {
+      const consul = mockConsul(() => json(THREE));
+      const { discovery } = createDiscovery();
+      await discovery.getInstance('product-service');
+
+      consul.set(() => json([]));
+      now += DISCOVERY_CACHE_MS;
+      await discovery.getInstance('product-service');
+
+      consul.set(() => new TypeError('fetch failed'));
+      now += DISCOVERY_EMPTY_CACHE_MS;
+      expect(await discovery.getInstance('product-service')).not.toBeNull();
+
+      consul.set(() => json([]));
+      now += DISCOVERY_CACHE_MS;
+      const secondSeries = now;
+      expect(await discovery.getInstance('product-service')).not.toBeNull();
+      // 30 s after the first empty answer, but within 30 s of the new series.
+      now = secondSeries + DISCOVERY_EMPTY_GRACE_MS - 1;
+      expect(await discovery.getInstance('product-service')).not.toBeNull();
+      now = secondSeries + DISCOVERY_EMPTY_GRACE_MS;
+      expect(await discovery.getInstance('product-service')).toBeNull();
+    });
+
+    it('at the start of the Gateway (no list in memory) an empty answer is no instance at once', async () => {
+      mockConsul(() => json([]));
+      const { discovery, logger } = createDiscovery();
+      expect(await discovery.getInstance('product-service')).toBeNull();
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+
+    it('a list emptied by evict is not kept on an empty answer (no instance at once)', async () => {
+      const consul = mockConsul(() => json([entry('cart-1', '10.0.0.9', 9000, 'cart-service')]));
+      const { discovery, logger } = createDiscovery();
+      const instance = await discovery.getInstance('cart-service');
+      discovery.evict('cart-service', instance!);
+
+      consul.set(() => json([]));
+      now += DISCOVERY_EMPTY_CACHE_MS;
+      expect(await discovery.getInstance('cart-service')).toBeNull();
+      expect(consul.spy).toHaveBeenCalledTimes(2);
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+
+    it('CR-37: info at the first non-empty answer also after evict emptied the kept list', async () => {
+      const consul = mockConsul(() => json(THREE));
+      const { discovery, logger } = createDiscovery();
+      await discovery.getInstance('product-service');
+
+      consul.set(() => json([]));
+      now += DISCOVERY_CACHE_MS;
+      await discovery.getInstance('product-service');
+      for (const id of ['stub-1', 'stub-2', 'stub-3']) {
+        discovery.evict('product-service', { id, address: '', port: 0 });
+      }
+      now += DISCOVERY_EMPTY_CACHE_MS;
+      expect(await discovery.getInstance('product-service')).toBeNull();
+
+      consul.set(() => json([entry('stub-4', '10.0.0.4')]));
+      now += DISCOVERY_EMPTY_CACHE_MS;
+      expect((await discovery.getInstance('product-service'))?.id).toBe('stub-4');
+      expect(logger.warn.mock.calls.map((call) => call[1])).toEqual([LAST]);
+      expect(logger.info.mock.calls).toEqual([[{ targetService: 'product-service' }, AGAIN]]);
+    });
+
+    it('CR-37: info at the first non-empty answer also after the 30 s limit dropped the list', async () => {
+      const consul = mockConsul(() => json(THREE));
+      const { discovery, logger } = createDiscovery();
+      await discovery.getInstance('product-service');
+
+      consul.set(() => json([]));
+      now += DISCOVERY_CACHE_MS;
+      await discovery.getInstance('product-service');
+      now += DISCOVERY_EMPTY_GRACE_MS;
+      expect(await discovery.getInstance('product-service')).toBeNull();
+
+      consul.set(() => json(THREE));
+      now += DISCOVERY_EMPTY_CACHE_MS;
+      expect(await discovery.getInstance('product-service')).not.toBeNull();
+      expect(logger.warn.mock.calls.map((call) => call[1])).toEqual([LAST, DROPPED]);
+      expect(logger.info.mock.calls).toEqual([[{ targetService: 'product-service' }, AGAIN]]);
+    });
+
+    it('CR-37: one warning for the whole mode when Consul errors interrupt the empty answers', async () => {
+      const consul = mockConsul(() => json(THREE));
+      const { discovery, logger } = createDiscovery();
+      await discovery.getInstance('product-service');
+
+      for (let i = 0; i < 3; i += 1) {
+        consul.set(() => json([]));
+        now += DISCOVERY_CACHE_MS;
+        await discovery.getInstance('product-service');
+        consul.set(() => new TypeError('fetch failed'));
+        now += DISCOVERY_EMPTY_CACHE_MS;
+        await discovery.getInstance('product-service');
+      }
+      expect(logger.warn.mock.calls.map((call) => call[1]).filter((msg) => msg === LAST)).toHaveLength(1);
+
+      consul.set(() => json(THREE));
+      now += DISCOVERY_CACHE_MS;
+      await discovery.getInstance('product-service');
+      expect(logger.info).toHaveBeenCalledWith({ targetService: 'product-service' }, AGAIN);
+    });
+
+    it('evict empties the kept list during the series -> no instance, and the next empty answer does not restore it', async () => {
+      const consul = mockConsul(() => json([entry('cart-1', '10.0.0.9', 9000, 'cart-service')]));
+      const { discovery } = createDiscovery();
+      await discovery.getInstance('cart-service');
+
+      consul.set(() => json([]));
+      now += DISCOVERY_CACHE_MS;
+      const kept = await discovery.getInstance('cart-service');
+      expect(kept?.id).toBe('cart-1');
+      discovery.evict('cart-service', kept!);
+      expect(await discovery.getInstance('cart-service')).toBeNull();
+
+      now += DISCOVERY_EMPTY_CACHE_MS;
+      expect(await discovery.getInstance('cart-service')).toBeNull();
+    });
+  });
+
   it('uses the node address when the service has none and skips incomplete entries', () => {
     expect(
       parseHealthyInstances(
@@ -323,8 +509,12 @@ describe('ServiceDiscovery', () => {
     await discovery.getInstance('product-service');
     expect(await instancesGauge(metrics, 'product-service')).toBe(1);
 
+    // Z6: an empty answer keeps the last known list (and the value) for at most 30 s, then 0.
     consul.set(() => json([]));
     now += DISCOVERY_CACHE_MS;
+    expect(await discovery.getInstance('product-service')).not.toBeNull();
+    expect(await instancesGauge(metrics, 'product-service')).toBe(1);
+    now += DISCOVERY_EMPTY_GRACE_MS;
     expect(await discovery.getInstance('product-service')).toBeNull();
     expect(await instancesGauge(metrics, 'product-service')).toBe(0);
   });

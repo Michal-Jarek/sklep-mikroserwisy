@@ -32,6 +32,8 @@ class Discovery:
         self.cache = {}
         self.refreshes = {}
         self.unreachable = {}
+        # False until the first successful registration of this process: only then stale entries are cleaned up.
+        self.registered = False
 
     async def load_settings(self, settings):
         if not self.enabled:
@@ -63,12 +65,61 @@ class Discovery:
                     sock.connect((parsed.hostname, parsed.port or 8500))
                     return sock.getsockname()[0]
             self.address = await asyncio.wait_for(asyncio.to_thread(own_address), timeout=2)
+        if not self.registered:
+            await self.remove_orphans()
+            await self.remove_previous_entry()
         response = await self.client.put(f"{self.url}/v1/agent/service/register", json={
             "ID": self.instance_id, "Name": self.service_name,
             "Address": self.address, "Port": self.port,
             "Check": {"HTTP": f"http://{self.address}:{self.port}/health/ready",
-                      "Interval": "10s", "Timeout": "2s", "DeregisterCriticalServiceAfter": "1m"}})
+                      "Interval": "10s", "Timeout": "2s", "DeregisterCriticalServiceAfter": "1m", "Status": await self.readiness()}})
         response.raise_for_status()
+        self.registered = True
+
+    async def remove_orphans(self):
+        # A container killed without deregistration and recreated gets a new ID and usually the same IP;
+        # its old entry would stay in Consul as critical until DeregisterCriticalServiceAfter.
+        # Connection errors abort the whole attempt (retried like registration); a bad answer only warns.
+        try:
+            response = await self.client.get(f"{self.url}/v1/health/service/{self.service_name}")
+            response.raise_for_status()
+            orphans = [node["Service"]["ID"] for node in response.json()
+                       if node["Service"]["Address"] == self.address and node["Service"]["Port"] == self.port
+                       and node["Service"]["ID"] != self.instance_id]
+        except (httpx.HTTPStatusError, ValueError, KeyError, TypeError) as exc:
+            report("Consul cleanup of orphaned entries failed; registering anyway", exc)
+            return
+        # A refused deregistration (e.g. 403 when Consul removed the entry meanwhile) does not stop the loop:
+        # the other orphans are still removed and the failures give one warning after it.
+        failed, reason = 0, None
+        for orphan_id in orphans:
+            response = await self.client.put(f"{self.url}/v1/agent/service/deregister/{orphan_id}")
+            if not response.is_success:
+                failed, reason = failed + 1, f"HTTP {response.status_code}"
+                continue
+            logger.info(json.dumps({"message": "Removed orphaned Consul entry", "removedId": orphan_id}))
+        if failed:
+            logger.warning(json.dumps({"message": "Consul cleanup of orphaned entries failed; registering anyway",
+                                       "reason": reason, "failed": failed}))
+
+    async def remove_previous_entry(self):
+        # An entry with our own ID left by a process killed without deregistration keeps its old check
+        # state (e.g. critical) when registered again, and Consul ignores "Status"; so it is removed first.
+        response = await self.client.get(f"{self.url}/v1/agent/service/{self.instance_id}")
+        if response.status_code == 404:
+            return
+        response.raise_for_status()
+        response = await self.client.put(f"{self.url}/v1/agent/service/deregister/{self.instance_id}")
+        response.raise_for_status()
+        logger.info(json.dumps({"message": "Removed Consul entry left by previous process", "instanceId": self.instance_id}))
+
+    async def readiness(self):
+        # Initial check state: Consul runs the first check up to one interval later.
+        try:
+            response = await self.client.get(f"http://127.0.0.1:{self.port}/health/ready")
+            return "passing" if response.status_code == 200 else "critical"
+        except httpx.HTTPError:
+            return "critical"
 
     async def try_register(self):
         try:
@@ -83,7 +134,8 @@ class Discovery:
             await asyncio.sleep(15)
             try:
                 response = await self.client.get(f"{self.url}/v1/agent/service/{self.instance_id}")
-                if response.status_code == 404:
+                # Consul was down at start: the first successful contact still registers (with cleanup).
+                if not self.registered or response.status_code == 404:
                     await self.register()
                 else:
                     response.raise_for_status()

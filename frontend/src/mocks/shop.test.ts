@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Cart, CartMutationResponse, OrderDetail, OrderSummary, Page, Review, Shipment, StockLevel } from '../api/types';
-import { mockConfig } from './db';
+import { loadState, mockConfig } from './db';
+import { mockAccessToken } from './handlers/auth';
 import { setupMockServer } from './node';
 import { SEED_IDS } from './seed';
 import { adminToken, call, customerToken } from './test-utils';
@@ -131,6 +132,68 @@ describe('orders', () => {
     const order = await placeOrder('4111111111111111');
     expect(order.status).toBe(409);
     expect(order.body.error).toBe('PRODUCT_UNAVAILABLE');
+  });
+
+  describe('Idempotency-Key (wytyczne 3.1, 3.8)', () => {
+    const KEY = '0f8e5a52-6c1d-4c8e-9b7a-3d2f1e0c9b8a';
+    const order = (cardNumber: string, key: string, body: object = {}, token = customerToken()) =>
+      call<OrderDetail & { error: string }>('POST', '/orders', {
+        token,
+        headers: { 'Idempotency-Key': key },
+        body: { shippingMethod: 'COURIER', shippingAddress: address, payment: { cardNumber }, ...body },
+      });
+
+    it('the same key and data give the same order once (also after the cart was emptied)', async () => {
+      await addToCart(P.regular, 2);
+      const first = await order('4111111111111111', KEY);
+      const again = await order('4111111111111111', KEY.toUpperCase());
+      expect([first.status, again.status]).toEqual([201, 201]);
+      expect(again.body).toEqual(first.body);
+      expect(loadState().orders.filter((o) => o.id === first.body.id)).toHaveLength(1);
+      expect((await call<StockLevel>('GET', `/inventory/${P.regular}`)).body.reserved).toBe(2);
+    });
+
+    it('the same key with another address or shipping method → 409 CONFLICT; a new key → a new order', async () => {
+      await addToCart(P.regular, 1);
+      const first = await order('4111111111111110', KEY); // PAYMENT_FAILED keeps the cart
+      expect(first.body.status).toBe('PAYMENT_FAILED');
+      const otherAddress = await order('4111111111111110', KEY, { shippingAddress: { ...address, street: 'ul. Inna 2' } });
+      const otherMethod = await order('4111111111111110', KEY, { shippingMethod: 'PICKUP' });
+      expect([otherAddress.status, otherAddress.body.error, otherMethod.status, otherMethod.body.error]).toEqual([409, 'CONFLICT', 409, 'CONFLICT']);
+      const next = await order('4111111111111111', crypto.randomUUID());
+      expect(next.status).toBe(201);
+      expect(next.body.id).not.toBe(first.body.id);
+    });
+
+    it('a key that is not a UUID → 400 VALIDATION_ERROR, nothing created', async () => {
+      await addToCart(P.regular, 1);
+      const before = loadState().orders.length;
+      const bad = await order('4111111111111111', 'not-a-uuid');
+      expect([bad.status, bad.body.error]).toEqual([400, 'VALIDATION_ERROR']);
+      expect(loadState().orders).toHaveLength(before);
+    });
+
+    it('the key belongs to the customer: another customer with the same key gets their own order', async () => {
+      const otherToken = mockAccessToken('d0000000-0000-4000-8000-0000000000aa', ['CUSTOMER']);
+      await addToCart(P.regular, 1);
+      await addToCart(P.regular, 1, otherToken);
+      const mine = await order('4111111111111111', KEY);
+      const theirs = await order('4111111111111111', KEY, {}, otherToken);
+      expect([mine.status, theirs.status]).toEqual([201, 201]);
+      expect(theirs.body.id).not.toBe(mine.body.id);
+    });
+
+    it('card ending with 503: the order is created but the answer is 503; the retry with the same key gets it', async () => {
+      await addToCart(P.regular, 1);
+      const before = loadState().orders.length;
+      const lost = await order('4111111111111503', KEY);
+      expect([lost.status, lost.body.error]).toEqual([503, 'SERVICE_UNAVAILABLE']);
+      expect(loadState().orders).toHaveLength(before + 1);
+      const retry = await order('4111111111111503', KEY);
+      expect([retry.status, retry.body.status]).toEqual([201, 'PAID']);
+      expect(retry.body.id).toBe(loadState().orders.at(-1)?.id);
+      expect(loadState().orders).toHaveLength(before + 1);
+    });
   });
 
   it('validates the order body', async () => {

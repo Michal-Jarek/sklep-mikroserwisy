@@ -141,17 +141,13 @@ spec:
             matchLabels: {app.kubernetes.io/name: order-service}
         - podSelector:
             matchLabels: {app.kubernetes.io/name: shipping-service}
-        # Migration Jobs -> postgres 5432 (order-migrate and shipping-migrate prepared for stage 8).
+        # Migration Jobs -> postgres 5432.
         - podSelector:
             matchLabels: {app.kubernetes.io/name: auth-migrate}
         - podSelector:
             matchLabels: {app.kubernetes.io/name: user-migrate}
         - podSelector:
             matchLabels: {app.kubernetes.io/name: product-migrate}
-        - podSelector:
-            matchLabels: {app.kubernetes.io/name: order-migrate}
-        - podSelector:
-            matchLabels: {app.kubernetes.io/name: shipping-migrate}
       ports: [{protocol: TCP, port: 5432}]
 ---
 # mongo: Review (review_db) and Notification (notification_db) -> mongo 27017. No egress.

@@ -43,8 +43,8 @@ def test_exception_is_logged_without_its_message():
 def test_log_level_applies_only_to_service_loggers():
     set_service_log_level("debug")
     assert logging.getLogger("app").level == logging.DEBUG
-    assert logging.getLogger("uvicorn").level == logging.DEBUG
-    assert logging.getLogger().level == logging.WARNING  # biblioteki zostają na ostrzeżeniach
+    assert logging.getLogger("uvicorn.error").level == logging.WARNING  # biblioteki zostają na ostrzeżeniach
+    assert logging.getLogger().level == logging.WARNING
     set_service_log_level("nieznany")
     assert logging.getLogger("app").level == logging.INFO
 
@@ -53,3 +53,26 @@ def test_valid_uuid_helper():
     assert valid_uuid(UUID.upper()) == UUID
     assert valid_uuid("nie-uuid") is None
     assert valid_uuid(None) is None
+
+
+def test_traceback_pasted_into_message_is_reduced_to_exception_class():
+    # tak Starlette przekazuje uvicornowi błąd startu (lifespan.startup.failed): ślad z treścią wyjątku w komunikacie
+    msg = (
+        "Traceback (most recent call last):\n"
+        '  File "/app/app/db.py", line 30, in init_engine\n'
+        "sqlalchemy.exc.ArgumentError: Could not parse SQLAlchemy URL from string 'postgresql//u:tajne@h/db'"
+    )
+    line = JsonFormatter("inventory-service").format(make_record(msg=msg))
+    assert "tajne" not in line and "\n" not in line
+    data = json.loads(line)
+    assert data["reason"] == "ArgumentError"
+
+
+def test_uvicorn_access_log_does_not_reach_the_root_logger():
+    access = logging.getLogger("uvicorn.access")
+    assert access.propagate is False and access.handlers == []
+
+
+def test_empty_exc_info_adds_no_reason():
+    line = json.loads(JsonFormatter("inventory-service").format(make_record(exc_info=(None, None, None))))
+    assert "reason" not in line and "stack" not in line

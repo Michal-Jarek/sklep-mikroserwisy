@@ -1,4 +1,4 @@
-// Unit tests of report.mjs (node --test, no network). Run in the image as in postman/README.md.
+// Unit tests of report.ts (node --test, no network). Run in the image as in postman/README.md.
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -16,7 +16,8 @@ import {
   traceEvent,
   urlParts,
   writeReport,
-} from './report.mjs';
+} from './report.ts';
+import type { NewmanFailure, Skip, Trace } from './report.ts';
 
 const ORIGINS = targetOrigins({
   baseUrl: 'http://127.0.0.1:8090/api/v1',
@@ -27,17 +28,25 @@ const PASSWORD = 'admin-password-from-stdin-0123';
 const ACCESS_TOKEN = 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJlLXZhbHVl';
 const ALL_KEYS = ['assertions', 'item', 'method', 'path', 'status', 'target', 'timeMs'];
 
-const url = (text) => ({ toString: () => text });
-const response = (code, body = '{}', headers = []) => ({ code, responseTime: 12, headers, text: () => body });
+const url = (text: string) => ({ toString: () => text });
+const response = (code: number, body = '{}', headers: { key: string; value: string }[] = []) => ({ code, responseTime: 12, headers, text: () => body });
 
-function stats({ assertions = 0, assertionsFailed = 0, requests = 0, requestsFailed = 0 } = {}) {
+function stats({ assertions = 0, assertionsFailed = 0, requests = 0, requestsFailed = 0 }: Partial<Record<'assertions' | 'assertionsFailed' | 'requests' | 'requestsFailed', number>> = {}) {
   return {
     assertions: { total: assertions, pending: 0, failed: assertionsFailed },
     requests: { total: requests, pending: 0, failed: requestsFailed },
   };
 }
 
-function report({ trace = createTrace(ORIGINS), skipped = [], failures = [], strict = false, runStats = stats() } = {}) {
+interface ReportOptions {
+  trace?: Trace;
+  skipped?: Skip[];
+  failures?: NewmanFailure[];
+  strict?: boolean;
+  runStats?: ReturnType<typeof stats>;
+}
+
+function report({ trace = createTrace(ORIGINS), skipped = [], failures = [], strict = false, runStats = stats() }: ReportOptions = {}) {
   return buildReport({
     collection: 'shop-purchase',
     environment: 'compose',
@@ -231,7 +240,7 @@ describe('result and exit code', () => {
 });
 
 describe('rate limit at the shop entrance', () => {
-  function rateLimited(path, body, origin = 'http://127.0.0.1:8090') {
+  function rateLimited(path: string, body: string, origin = 'http://127.0.0.1:8090') {
     const trace = createTrace(ORIGINS);
     traceEvent(trace, 'request', null, { cursor: { ref: 'r6' }, item: { name: 'x' }, request: { method: 'POST', url: url(`${origin}${path}`) }, response: response(429, body) });
     return trace.rateLimited;
@@ -275,7 +284,7 @@ describe('summary lines', () => {
 });
 
 describe('report file', () => {
-  async function inTempDir(test) {
+  async function inTempDir(test: (dir: string) => Promise<void>) {
     const dir = await mkdtemp(join(tmpdir(), 'report-test-'));
     try {
       await test(dir);

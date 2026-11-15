@@ -110,6 +110,16 @@ Zmienne środowiskowe (wszystkie opcjonalne, przykład nie ma sekretów):
 | `INSTANCE_ID` | `<nazwa>-<hostname>` | ID instancji w Consulu i w `X-Instance-Id` |
 | `LOG_LEVEL` | — | `debug`, `info`, `warning` albo `error`; nadpisuje `logLevel` z KV (domyślnie `info`); dotyczy logów usługi i uvicorna, nie bibliotek |
 
+### Pierwsza rejestracja procesu: wpis z tym samym ID (Z5) i osierocone wpisy (Z7)
+
+`INSTANCE_ID` jest pełnym ID instancji (w Kubernetesie nazwa poda, bez dopisywania przedrostka usługi). W compose kontener zabity bez wyrejestrowania (`docker kill`, awaria) i uruchomiony ponownie ma to samo ID i często ten sam adres. Consul (1.21) przy rejestracji istniejącego ID **zachowuje stan checku** (np. `critical` z czasu przerwy) i ignoruje pole `"Status"`, także z `?replace-existing-checks=true`; sprawdzenie „wpis jest i ma mój adres” uznałoby go za własny i usługa w ogóle by się nie zarejestrowała. Dlatego **pierwsza rejestracja procesu** (wszystkie 10 usług, decyzje Michała Z5 i Z7, etap 8):
+
+1. **Osierocone wpisy (Z7).** Nowy kontener w compose ma nowe ID (`<usługa>-<nowy hostname>`), ale często ten sam adres IP; wpis poprzedniego, zabitego kontenera zostałby w Consulu do `DeregisterCriticalServiceAfter`. Usługa pyta `GET /v1/health/service/<swoja nazwa>` (bez query — `consul-guard` je przepuszcza) i wyrejestrowuje (`PUT /v1/agent/service/deregister/<ID>`, log `info` z usuniętym ID) każdy wpis, który ma **dokładnie** tę samą nazwę usługi (`Service.Service`, z rozróżnieniem wielkości liter — Consul wyszukuje po nazwie bez niego), **ten sam** `Service.Address` **i ten sam** `Service.Port`, a **inne** `Service.ID`. Wpisu z innym adresem, innym portem albo inną nazwą nie rusza — to inna, żywa instancja. Sprzątanie nigdy nie blokuje startu: błędna odpowiedź Consula (HTTP spoza 2xx, zły JSON) → jedno `warning` i rejestracja dalej; odmowa wyrejestrowania jednego wpisu → liczy się i idzie do następnego, po pętli jedno `warning` z liczbą odmów (CR-34). Brak połączenia z Consulem (odmowa, timeout) kończy całą próbę jak nieudana rejestracja — powtarza ją następna próba. W Kubernetesie `consul-guard` przepuszcza wyrejestrowanie tylko wpisu z adresem wołającego poda, a token ACL daje zapis tylko na własną nazwę.
+2. **Wpis z własnym ID (Z5).** Gdy wpis z tym ID już jest — najpierw `PUT /v1/agent/service/deregister/<id>`, potem rejestracja; gdy go nie ma (k8s: nowy pod = nowe ID) — sama rejestracja.
+3. **Rejestracja** z `"Status"` z bieżącej gotowości (to samo sprawdzenie bazy co `/health/ready`), więc nowy wpis jest od razu `passing` albo `critical`.
+
+Kroki 1–2 tylko przy pierwszej udanej rejestracji procesu; dalsze sprawdzanie co 15 s bez zmian (wpis jest → nic; wpisu nie ma → rejestracja). Wzór: `_register_at_start` w `services/inventory-service/app/consul_registration.py` (tak samo Review, Order, Shipping; Node.js: `consul-registration.service.ts` w Gateway i Auth).
+
 ### Pliki przykładu
 
 Cztery pliki w jednym folderze. Ten sam kod był uruchomiony i sprawdzony w kontenerze (rejestracja, KV, nagłówki, tożsamość i role, logi, start bez Consula, ponowna rejestracja, zatrzymanie, dwie instancje).
@@ -795,7 +805,8 @@ Zasady: [D2](decisions.md#d2--wyłącznik-i-ponowienia) (wyłącznik i ponowieni
 Kolejność kroków przy jednym wywołaniu:
 
 1. **Termin.** Na początku obsługi żądania klienta: termin = teraz + 8 s, wspólny dla wszystkich wywołań w tym żądaniu.
-2. **Instancja z Consula.** `GET /v1/health/service/<nazwa>?passing`; lista trzymana 10 s, instancje po kolei (round robin); gdy Consul nie odpowiada — ostatnia znana lista. Brak instancji → fallback albo 503 `SERVICE_UNAVAILABLE`, bez wywołania.
+2. **Instancja z Consula.** `GET /v1/health/service/<nazwa>?passing`; lista trzymana 10 s, instancje po kolei (round robin); gdy Consul nie odpowiada — ostatnia znana lista. Gdy Consul odpowie poprawnie **pustą** listą, a w pamięci jest niepusta (np. po restarcie Consula, zanim checki znów przejdą), ostatnia lista działa dalej najwyżej 30 s od pierwszej pustej odpowiedzi w serii, a Consul jest pytany co 2 s (Gateway — decyzja Z6, Order, Review; jedno `warning` na wejście w ten tryb, `info` po powrocie niepustej listy). Bez listy w pamięci (start usługi) albo po opróżnieniu jej przez błędy połączeń → od razu „brak instancji”. Brak instancji → fallback albo 503 `SERVICE_UNAVAILABLE`, bez wywołania.
+   **Znana różnica (A7, etap 8):** w Gateway i Order błąd Consula w trakcie serii pustych odpowiedzi zaczyna liczenie 30 s od nowa, więc przy przerywanych błędach Consula ostatnia lista może działać dłużej niż 30 s (bez limitu, gdy błąd zdarza się częściej niż raz na 30 s); w Review 30 s liczy się od pierwszej pustej odpowiedzi, a błąd Consula przedłuża działanie listy najwyżej o 10 s (Z14). Dotyczy tylko jedynej instancji, którą Consul uznał za niezdrową, przy niestabilnym Consulu. Nowa usługa: reguła z Review.
 3. **Wyłącznik.** Otwarty → od razu fallback albo 503, bez wywołania.
 4. **Żądanie** z timeoutem 2 s (albo krótszym, jeśli do terminu zostało mniej) i nagłówkami: `X-User-Id` (gdy działasz w imieniu klienta), `X-User-Roles` = otrzymane role + `SERVICE` (np. `CUSTOMER,SERVICE`; praca w tle — samo `SERVICE`), `X-Request-Id` = bieżący.
 5. **Wynik** — według tabeli niżej: liczy się do wyłącznika jako awaria albo sukces.
@@ -817,6 +828,10 @@ Kolejność kroków przy jednym wywołaniu:
 | wyłącznik otwarty | — (bez wywołania) | nie | fallback albo 503 |
 
 `POST`, `PUT`, `PATCH`, `DELETE` — jedna próba. Wyjątek: `POST /users` z tym samym `id` ([D8](decisions.md#d8--profil-użytkownika-przy-rejestracji)).
+
+### Termin a prace po zapisie
+
+Termin 8 s ([D5](decisions.md#d5--budżet-czasu)) obejmuje tylko kroki, od których zależy wynik operacji. Gdy wynik jest już zapisany w bazie (np. zamówienie `PAID` razem ze zdarzeniem w outboxie), odpowiedź jest **zawsze sukcesem** (np. 201) — także gdy terminu już nie ma. Prace po zapisie, które nie zmieniają wyniku (np. czyszczenie koszyka po zakupie), idą **poza terminem**, z własnym krótkim limitem (Order: 1,5 s), bez ponowień; błąd → log `warning`, odpowiedź bez zmian. Kompensacja po przekroczeniu terminu (np. zwolnienie rezerwacji) też ma własny limit, a suma: termin + kompensacja albo prace po zapisie musi zmieścić się w limicie Gateway (10 s) — Order: 8 s + 1,5 s = 9,5 s. Bez tego klient po timeoucie ponawia zakup, który się udał (podwójne zamówienie), albo dostaje 503 za operację, która jest zapisana.
 
 Szkic nagłówków wywołania w Pythonie (tylko szkic, nie kompletny klient):
 
@@ -1003,6 +1018,7 @@ Zasada: [D6](decisions.md#d6--konwencje-deploy-i-zmienne-środowiskowe).
 - **Uprawnienia:** użytkownik `<usługa>_service` jest właścicielem swojej bazy, więc może tworzyć i zmieniać w niej tabele. Do cudzej bazy nie ma dostępu.
 - **Automatyczne tworzenie schematu** (`Base.metadata.create_all()`, `spring.jpa.hibernate.ddl-auto=create`) jest dopuszczalne tylko do pierwszego utworzenia tabel ([D6](decisions.md#d6--konwencje-deploy-i-zmienne-środowiskowe)): w jednorazowym kontenerze `<usługa>-migrate` albo przy starcie usługi, jeśli jest bezpieczne przy kilku instancjach uruchomionych naraz. `create_all` najpierw sprawdza, czy tabela istnieje, a potem ją tworzy — dwie instancje startujące równocześnie mogą obie próbować utworzyć tę samą tabelę, dlatego przy starcie usługi potrzebna jest blokada w bazie (np. `pg_advisory_lock` w PostgreSQL) albo kontener `-migrate`. **Zmiana schematu po pierwszym wdrożeniu** (nowa kolumna, indeks, zmiana typu) — tylko narzędziem migracji (Alembic, Flyway): `create_all` nie zmienia istniejących tabel, a `ddl-auto=update` zmienia je bez kontroli i bez historii.
 - **Z VS Code:** migrację uruchamia się z laptopa tymi samymi zmiennymi co usługę (sekcja 1), np. `DB_HOST=127.0.0.1 … alembic upgrade head` w folderze usługi.
+- **Adres bazy z hasłem — błąd formatu bez hasła w logu.** Gdy usługa dostaje adres połączenia z hasłem (`DATABASE_URL`, `DB_URL`), parser biblioteki przy błędzie formatu powtarza w komunikacie cały adres razem z hasłem (SQLAlchemy `ArgumentError`, a `ValueError` np. przy porcie, który nie jest liczbą), a traceback wyjątku trafia do logu startu. Taki wyjątek łapie się w miejscu tworzenia silnika i zamienia na własny, bez treści i bez łańcucha: `raise RuntimeError("DATABASE_URL has an invalid format (value not shown)") from None` (`from None` usuwa oryginalny wyjątek z tracebacku). Wzór: `init_engine` w `services/inventory-service/app/db.py`, `database_url` w `services/order-service/app/config.py`. Sprawdzenie: literówka w adresie → w logu kontenera 0 wystąpień hasła.
 - **MongoDB** nie ma schematu tabel. Indeksy (np. unikalny indeks na `eventId` odbiorcy zdarzeń) usługa zakłada przy starcie (`create_index` jest bezpieczne przy powtórzeniu i przy kilku instancjach).
 
 ## 7. Outbox
@@ -1019,6 +1035,7 @@ Outbox to zalecany sposób publikacji zdarzeń przez usługę z bazą PostgreSQL
 - **Zaległość** (ile zdarzeń czeka): `select count(*) from outbox_events where published_at is null`. Rosnąca liczba = problem z brokerem albo z przekaźnikiem.
 - **Sprzątanie:** okresowe usuwanie wierszy wysłanych dawniej niż np. 7 dni (`published_at` starsze niż próg). W Auth jeszcze go nie ma (retencja — etap 7).
 - **Duplikaty:** ten sam wiersz może zostać wysłany dwa razy (np. potwierdzenie zaginęło), dlatego odbiorcy rozpoznają duplikaty po `eventId` ([D19](decisions.md#d19--zdarzenia)).
+- **Usługa, która też odbiera zdarzenia** (Order, Shipping): przekaźnik to osobne zadanie z **osobnym połączeniem** z RabbitMQ, a baza idzie w wątku (`asyncio.to_thread`) bez transakcji otwartej w czasie publikacji — błąd przekaźnika nie przerywa odbiorcy, a wiszące zapytanie nie blokuje pętli zdarzeń ([events.md, „Jak publikować”](events.md#jak-publikować)). Zamiast `published_at` wiersz może być usuwany po potwierdzeniu (Order, Shipping).
 - **Zamykanie:** po SIGTERM przekaźnik nie bierze nowych wierszy i czeka na bieżącą publikację najwyżej kilka sekund, tak żeby cała usługa zakończyła się w < 10 s ([D17](decisions.md#d17--kontener-i-zamykanie)).
 
 ## 8. Pokaz load balancingu

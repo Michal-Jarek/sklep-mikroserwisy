@@ -19,6 +19,8 @@ export interface RequestOptions {
   body?: unknown;
   /** Cancellation by the caller (TanStack Query passes its signal). */
   signal?: AbortSignal;
+  /** Extra request headers (e.g. Idempotency-Key of POST /orders); sent again on the repeat after 401. */
+  headers?: Record<string, string>;
 }
 
 interface RawResponse {
@@ -38,7 +40,7 @@ function buildUrl(path: string, query: object | undefined): string {
 
 async function send(path: string, options: RequestOptions, token: string | null): Promise<RawResponse> {
   const requestId = crypto.randomUUID();
-  const headers = new Headers({ Accept: 'application/json', 'X-Request-Id': requestId });
+  const headers = new Headers({ ...options.headers, Accept: 'application/json', 'X-Request-Id': requestId });
   if (options.body !== undefined) headers.set('Content-Type', 'application/json');
   if (token !== null) headers.set('Authorization', `Bearer ${token}`);
 

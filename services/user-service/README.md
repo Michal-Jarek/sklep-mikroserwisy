@@ -87,6 +87,6 @@ Przykład bezpośredni przy uruchomieniu lokalnym (ID konta zastąp własnym UUI
 curl -H "X-User-Id: 11111111-1111-4111-8111-111111111111" -H "X-User-Roles: CUSTOMER" http://127.0.0.1:8082/users/me
 ```
 
-Konfiguracja `logLevel` jest czytana przy starcie z `config/user-service/data` (YAML). `LOG_LEVEL` ze środowiska lub `.env` ma pierwszeństwo. Start bez Consula jest dozwolony; rejestracja wraca w tle co 15 s.
+Konfiguracja `logLevel` jest czytana przy starcie z `config/user-service/data` (YAML). `LOG_LEVEL` ze środowiska lub `.env` ma pierwszeństwo. Start bez Consula jest dozwolony; rejestracja wraca w tle co 15 s. Przy pierwszej udanej rejestracji procesu usługa usuwa z Consula wpisy `user-service` z tym samym adresem i portem, ale innym ID (np. kontener w compose zabity i utworzony od nowa) oraz wpis z własnym ID pozostały po poprzednim procesie zatrzymanym bez wyrejestrowania (Consul zachowałby jego stary stan checku); stan początkowy checku (`passing` albo `critical`) wynika z własnego `/health/ready`. Błędna odpowiedź Consula przy tym sprzątaniu daje ostrzeżenie w logu i nie blokuje rejestracji.
 
 Przy uruchomieniu z VS Code z Consulem w Dockerze ustaw `SERVICE_ADDRESS=host.docker.internal` (D13). W kontenerze pozostaw puste — adres zostanie wykryty. ID instancji jest stabilne: nazwa usługi plus hostname; `INSTANCE_ID` pozwala je jawnie nadpisać.

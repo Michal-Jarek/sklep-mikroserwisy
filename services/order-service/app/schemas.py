@@ -18,6 +18,7 @@ class Address(BaseModel):
 
 
 class Payment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     cardNumber: Annotated[str, Field(pattern=r"^[0-9]{12,19}$", repr=False)]
 
 

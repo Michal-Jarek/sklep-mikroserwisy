@@ -1,8 +1,12 @@
 """Consumer rules of docs/events.md (D19) and the e-mails of Notification."""
 
 import asyncio
+import socket
 
 import httpx
+import pytest
+
+from app.config import Settings
 
 from .conftest import CUSTOMER, FakeMessage, envelope, order_cancelled, order_created, registered, shipment
 
@@ -155,3 +159,24 @@ def test_invalid_messages_are_rejected_without_requeue(consumer, mailer):
     for message in cases:
         assert deliver(consumer, message).result == "nack", message.body
     assert mailer.sent == []
+
+
+# ----- connection -----
+
+@pytest.mark.parametrize("instance_id", ["notification-service-7c9d8f6b5-x2k4p", ""])
+def test_connection_name_reaches_the_broker(consumer, monkeypatch, instance_id):
+    # aio-pika passes client_properties to aiormq in the URL query; aiormq reads the name only from "name".
+    # Z8: the name is the instance ID (pod name, set from INSTANCE_ID), without another service prefix.
+    consumer.settings = Settings(consul_enabled=False, instance_id=instance_id)
+    calls = []
+
+    async def connect_robust(**kwargs):
+        calls.append(kwargs)
+        raise asyncio.CancelledError  # stop run() right after the connection attempt
+
+    monkeypatch.setattr("app.consumer.aio_pika.connect_robust", connect_robust)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(consumer.run())
+    [kwargs] = calls
+    expected = instance_id or f"notification-service-{socket.gethostname()}"
+    assert kwargs["client_properties"] == {"name": expected}

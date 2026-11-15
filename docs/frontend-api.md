@@ -1,6 +1,6 @@
 # Kontrakt usług dla frontendu (v1)
 
-Ten dokument opisuje wszystkie endpointy, które woła frontend sklepu (`frontend/`): ścieżki, dostęp, dane wejściowe, odpowiedzi, błędy i przykłady JSON. Jest wiążący dla usług, które już istnieją, i dla przyszłych właścicieli usług, których jeszcze nie ma (Product, Order, Shipping) — to **propozycja v1** platformy, tak jak kontrakty zdarzeń w [events.md](events.md).
+Ten dokument opisuje wszystkie endpointy, które woła frontend sklepu (`frontend/`): ścieżki, dostęp, dane wejściowe, odpowiedzi, błędy i przykłady JSON. Jest wiążący dla wszystkich usług, które woła frontend; wszystkie istnieją i implementują ten kontrakt (Order i Shipping od etapu 8).
 
 Frontend w trybie deweloperskim działa na atrapach MSW (`frontend/src/mocks/`), które implementują dokładnie ten dokument. Test `frontend/src/api/contract.test.ts` sprawdza, że tabela [Endpointy używane przez frontend](#endpointy-używane-przez-frontend), lista wywołań klienta (`frontend/src/api/paths.ts`) i atrapy są zgodne. Typy TypeScript treści: `frontend/src/api/types.ts`.
 
@@ -28,12 +28,12 @@ Frontend w trybie deweloperskim działa na atrapach MSW (`frontend/src/mocks/`),
 | Auth | **istnieje w `develop`**, działa w Docker Compose | [README Auth](../services/auth-service/README.md#endpointy) |
 | User | **istnieje w `develop`**, działa w Docker Compose | kod `services/user-service/` |
 | Cart | **istnieje w `develop`**, działa w Docker Compose | kod `services/cart-service/` |
-| Inventory | **istnieje w `develop`**, działa w Docker Compose; `productId` jeszcze liczbą zamiast UUID ([D1](decisions.md#d1--identyfikatory)) — do poprawki | kod `services/inventory-service/` |
-| Review | **istnieje w `develop`**, działa w Docker Compose; `productId` jeszcze liczbą zamiast UUID ([D1](decisions.md#d1--identyfikatory)) — do poprawki | kod `services/review-service/` |
+| Inventory | **istnieje w `develop`**, działa w Docker Compose; identyfikatory UUID (etap 8) | ten dokument, kod `services/inventory-service/` |
+| Review | **istnieje w `develop`**, działa w Docker Compose; identyfikatory UUID (etap 8) | ten dokument, kod `services/review-service/` |
 | Product | **istnieje w `develop`** (PR #11), działa w Docker Compose; implementacja kontraktu v1 z tego dokumentu | ten dokument, kod `services/product-service/` |
 | Notification | **istnieje w `develop`** (PR #12), działa w Docker Compose | `GET /notifications/me`: kod `services/notification-service/` |
-| Order | **propozycja v1** | ten dokument; pola jak `order.created` w [events.md](events.md#ordercreated) |
-| Shipping | **propozycja v1** | ten dokument; statusy jak `shipment.status_changed` w [events.md](events.md#shipmentstatus_changed) |
+| Order | **istnieje** (PR #17, poprawki w etapie 8), działa w Docker Compose i w Kubernetesie | ten dokument, kod `services/order-service/`; pola jak `order.created` w [events.md](events.md#ordercreated) |
+| Shipping | **istnieje** (PR #17, poprawki w etapie 8), działa w Docker Compose i w Kubernetesie | ten dokument, kod `services/shipping-service/`; statusy jak `shipment.status_changed` w [events.md](events.md#shipmentstatus_changed) |
 
 ## Zasady wspólne
 
@@ -45,7 +45,7 @@ Frontend w trybie deweloperskim działa na atrapach MSW (`frontend/src/mocks/`),
 
 **Daty.** ISO 8601 w UTC, np. `"2026-11-09T08:30:12.457Z"`.
 
-**Treść żądania.** JSON z `Content-Type: application/json`. Nieznane pola → **400 `VALIDATION_ERROR`** (tak działają Auth, User i Cart; propozycje v1 tak samo; Inventory i Review — zob. [Otwarte kwestie](#otwarte-kwestie)). Pola tekstowe są przycinane (spacje na początku i końcu), długości liczone po przycięciu.
+**Treść żądania.** JSON z `Content-Type: application/json`. Nieznane pola → **400 `VALIDATION_ERROR`** (wszystkie usługi z tego dokumentu). Pola tekstowe są przycinane (spacje na początku i końcu), długości liczone po przycięciu.
 
 **Błędy.** Format [D7](decisions.md#d7--format-i-kody-błędów): `{"status", "error", "message", "requestId"}`. Frontend dobiera komunikat dla klienta po `error`, nigdy po `message`. Kody wspólne (`VALIDATION_ERROR`, `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `TOO_MANY_REQUESTS`, `SERVICE_UNAVAILABLE`…) — D7; kody domenowe — sekcja [Kody błędów domenowych](#kody-błędów-domenowych); kody samego Gateway (`BAD_GATEWAY`, `GATEWAY_TIMEOUT`, `REQUEST_TIMEOUT`…) — [README Gateway](../services/api-gateway/README.md#kody-błędów).
 
@@ -114,7 +114,7 @@ Dokładnie te endpointy woła frontend (`API_ENDPOINTS` w `frontend/src/api/path
 | `GET /shipments` | Shipping | zalogowany | 200 strona `Shipment` |
 | `PATCH /shipments/{shipmentId}/status` | Shipping | ADMIN | 200 `Shipment` |
 
-Dwa endpointy z sekcji usług nie są w tabeli, bo frontend ich nie woła: `GET /reviews/summary/{productId}` (woła Product) i `GET /shipping/methods/{code}`.
+Trzy endpointy z sekcji usług nie są w tabeli, bo frontend ich nie woła: `GET /reviews/summary/{productId}` (woła Product), `GET /shipping/methods/{code}` (woła Order) i `GET /shipments/{shipmentId}`.
 
 ## Auth
 
@@ -158,7 +158,7 @@ Bez treści; przeglądarka wysyła ciasteczko `refresh_token` sama. **200** jak 
 
 ## User
 
-**Stan:** istnieje w `develop` (PR #1), jeszcze nie w Docker Compose. Profil zakłada Auth przy rejestracji (`POST /users`, wewnętrzny, [D8](decisions.md#d8--profil-użytkownika-przy-rejestracji)). Konto administratora nie ma profilu.
+**Stan:** istnieje (PR #1), działa w Docker Compose i w Kubernetesie. Profil zakłada Auth przy rejestracji (`POST /users`, wewnętrzny, [D8](decisions.md#d8--profil-użytkownika-przy-rejestracji)). Konto administratora nie ma profilu.
 
 ### `GET /users/me` — zalogowany
 
@@ -200,7 +200,7 @@ Wejście: `{"street"` 1–200, `"city"` 1–100, `"postalCode"` 1–20, `"countr
 
 ## Cart
 
-**Stan:** istnieje w `develop` (PR #1), jeszcze nie w Docker Compose. Koszyk należy do zalogowanego klienta (`X-User-Id`). Cart pobiera nazwę i cenę z Product i dostępność z Inventory przy każdej zmianie.
+**Stan:** istnieje (PR #1), działa w Docker Compose i w Kubernetesie. Koszyk należy do zalogowanego klienta (`X-User-Id`). Cart pobiera nazwę i cenę z Product i dostępność z Inventory przy każdej zmianie.
 
 Koszyk:
 
@@ -243,7 +243,7 @@ Wejście: `{"quantity"}` 1–999 — **ustawia** ilość. **200** — koszyk + `
 
 ## Product
 
-**Stan:** propozycja v1. Właściciel usługi może ją zmienić przed pierwszą implementacją w porozumieniu z Michałem (sekcja [Zmiana kontraktu](#zmiana-kontraktu)).
+**Stan:** istnieje (micbanavio, PR #11).
 
 **Poza frontendem.** Ta sekcja opisuje tylko to, co woła frontend. Product obsługuje też lekki odczyt produktu dla Cart i Order ([D4](decisions.md#d4--lekki-odczyt-produktu)), a Review woła go przy `GET /reviews/summary/{productId}`. Endpointy wewnętrzne — [D10](decisions.md#d10--endpointy-wewnętrzne).
 
@@ -335,7 +335,7 @@ Ta sama treść co `POST` (pełna zamiana). **200** — `ProductDetail`. Błędy
 
 ## Inventory
 
-**Stan:** w PR #2 (Aleksandra), tu z identyfikatorami UUID zgodnie z D1. Endpointy rezerwacji (`/inventory/reservations/**`) są wewnętrzne (Order) i nie dotyczą frontendu.
+**Stan:** istnieje (Aleksandra), identyfikatory UUID zgodnie z D1. Endpointy rezerwacji (`/inventory/reservations/**`) są wewnętrzne (Order) i nie dotyczą frontendu.
 
 ### `GET /inventory/{productId}` — publiczny
 
@@ -353,7 +353,7 @@ Wejście: `{"quantity"}` — liczba całkowita 0–1 000 000 (stan fizyczny, z r
 
 ## Review
 
-**Stan:** w PR #2 (Aleksandra), tu z identyfikatorami UUID zgodnie z D1.
+**Stan:** istnieje (Aleksandra), identyfikatory UUID zgodnie z D1 (także `id` opinii).
 
 Opinia:
 
@@ -387,10 +387,10 @@ Woła Product, żeby zbudować pole `rating`. **200**: `{"productId", "averageRa
 
 ## Order
 
-**Stan:** propozycja v1. Pola jak w zdarzeniu `order.created` ([events.md](events.md#ordercreated)).
+**Stan:** istnieje (Piotr). Pola jak w zdarzeniu `order.created` ([events.md](events.md#ordercreated)).
 
 **Poza frontendem.** Ta sekcja opisuje tylko to, co woła frontend. Order ma też obowiązki wobec innych usług:
-- woła Cart (`GET /cart`, `DELETE /cart/{userId}`), Product (lekki odczyt, [D4](decisions.md#d4--lekki-odczyt-produktu)), Inventory (rezerwacje `/inventory/reservations/**`) i Shipping (`GET /shipping/methods/{code}`) — z nagłówkami jak w [D11](decisions.md#d11--tożsamość-i-nagłówki);
+- woła Cart (`GET /cart`, `DELETE /cart/{userId}`), Product (lekki odczyt, [D4](decisions.md#d4--lekki-odczyt-produktu)), Inventory (rezerwacje `/inventory/reservations/**`) i Shipping (`GET /shipping/methods/{code}`, przy anulowaniu `POST /shipments/cancel`) — z nagłówkami jak w [D11](decisions.md#d11--tożsamość-i-nagłówki);
 - wystawia endpoint wewnętrzny `GET /orders/purchased?userId=<uuid>&productId=<uuid>` dla Review ([D10](decisions.md#d10--endpointy-wewnętrzne); kontrakt v1, decyzja Michała 2026-11-12) → **200** `{"purchased": true|false}` — `true`, gdy klient ma zamówienie `PAID`, `SHIPPED` albo `DELIVERED` z tym produktem. Tylko rola `SERVICE` (inaczej **403 `FORBIDDEN`**), z zewnątrz zablokowany w Gateway (**404**). Identyfikator, który nie jest UUID → **400 `VALIDATION_ERROR`**. Review woła go z `X-User-Id` klienta i rolą `SERVICE` w `X-User-Roles` ([D11](decisions.md#d11--tożsamość-i-nagłówki));
 - publikuje `order.created` i `order.cancelled`, odbiera `shipment.status_changed` ([events.md](events.md#zdarzenia-w-wersji-1)).
 
@@ -432,6 +432,8 @@ Statusy zamówienia:
 
 ### `POST /orders` — zalogowany
 
+Nagłówek **`Idempotency-Key`** (opcjonalny): UUID nadany przez klienta jednemu zakupowi. Zły format → **400 `VALIDATION_ERROR`**. Ten sam klient z tym samym kluczem i tymi samymi danymi → **201** z tym samym zamówieniem (nie powstaje drugie). Ten sam klucz z innym adresem albo metodą dostawy → **409 `CONFLICT`** „Klucz zakupu został użyty z innymi danymi”. Bez nagłówka każde żądanie to nowy zakup.
+
 Wejście:
 
 | Pole | Reguła |
@@ -452,13 +454,27 @@ Wejście:
 }
 ```
 
-Pozycje zamówienia Order bierze z koszyka klienta (woła Cart), ceny z Product, koszt dostawy z Shipping. Przebieg: zapis `NEW` → rezerwacja w Inventory → płatność (atrapa) → `PAID` (koszyk wyczyszczony, zdarzenie `order.created`) albo `PAYMENT_FAILED` (rezerwacja zwolniona, koszyk bez zmian).
+Pozycje zamówienia Order bierze z koszyka klienta (woła Cart), ceny z Product, koszt dostawy z Shipping. Przebieg: zapis `NEW` → rezerwacja w Inventory → płatność (atrapa) → `PAID` (zdarzenie `order.created`, potem czyszczenie koszyka) albo `PAYMENT_FAILED` (rezerwacja zwolniona, koszyk bez zmian). Kroki do zapisu `PAID` Order wykonuje w 8 s; po przekroczeniu albo przy awarii zależności zwalnia rezerwację, usuwa `NEW` i odpowiada **503** „Zamówienie nie powstało; spróbuj ponownie”. Po zapisie `PAID` odpowiedź jest zawsze **201** — czyszczenie koszyka ma własny limit 1,5 s i jego błąd nie zmienia odpowiedzi (koszyk może wtedy chwilę zostać). Najdłuższa odpowiedź ≤ 9,5 s, poniżej limitu Gateway (10 s).
 
 **Atrapa płatności:** numer karty kończący się cyfrą `0` → odrzucenie (`PAYMENT_FAILED`), każdy inny → `PAID`. Order nie zapisuje i nie loguje numeru karty (najwyżej 4 ostatnie cyfry).
 
 **201** — `OrderDetail` ze statusem `PAID` albo `PAYMENT_FAILED` (oba to utworzone zamówienie; frontend rozróżnia po `status`).
 
-Błędy: 400 `VALIDATION_ERROR`, 401, **409 `CART_EMPTY`** — pusty koszyk, **409 `INSUFFICIENT_STOCK`** — za mało sztuk któregoś produktu (także produkt bez stanu w Inventory), **409 `PRODUCT_UNAVAILABLE`** — produktu z koszyka nie ma już w sklepie (wycofany przez ADMIN; lekki odczyt Product daje 404), frontend prosi o usunięcie go z koszyka, 503 `SERVICE_UNAVAILABLE` — Cart, Product, Inventory albo Shipping niedostępne.
+Błędy: 400 `VALIDATION_ERROR` (także zły `Idempotency-Key`), 401, **409 `CART_EMPTY`** — pusty koszyk, **409 `INSUFFICIENT_STOCK`** — za mało sztuk któregoś produktu (także produkt bez stanu w Inventory), **409 `PRODUCT_UNAVAILABLE`** — produktu z koszyka nie ma już w sklepie (wycofany przez ADMIN; lekki odczyt Product daje 404), frontend prosi o usunięcie go z koszyka, **409 `CONFLICT`** — klucz zakupu użyty z innymi danymi, 503 `SERVICE_UNAVAILABLE`:
+
+| Komunikat 503 | Kiedy | Co robi frontend |
+|---|---|---|
+| „Usługa … niedostępna”, „Zamówienie nie powstało; spróbuj ponownie” | Cart, Product, Inventory albo Shipping niedostępne, przekroczony termin; zamówienie nie powstało, rezerwacja zwolniona | może ponowić (z tym samym kluczem, jeśli dane się nie zmieniły) |
+| „Nie udało się dokończyć zakupu; ponów z tym samym kluczem” | zwolnienie rezerwacji się nie udało, albo termin minął w trakcie zapisu `NEW` (Order nie wie, czy zamówienie zostało zapisane); zamówienie `NEW` mogło zostać | ponawia **z tym samym kluczem** — Order dokończy zakup albo wycofanie |
+| „Zakup jest w toku; ponów z tym samym kluczem” | drugie żądanie z tym samym kluczem, gdy pierwsze jeszcze trwa | ponawia **z tym samym kluczem** po chwili |
+
+Inna odmowa zależności niż opisane kody domenowe (np. nieoczekiwane 4xx od Inventory) → 503 i log `error` w Order, nigdy surowy błąd zależności.
+
+**Zasady klienta dla `Idempotency-Key`** (frontend, scenariusze testowe):
+- klucz = nowy UUID (`crypto.randomUUID()`) w nagłówku każdego `POST /orders`;
+- **ten sam klucz** przy ponowieniu po 408, każdym 5xx (także 500 i 502: zamówienie mogło powstać, a ponowienie z tym samym kluczem nigdy nie tworzy drugiego), błędzie sieci albo przerwanym żądaniu — jeśli dane formularza (adres, metoda dostawy, karta) są identyczne;
+- **nowy klucz** po każdym 201 (`PAID` i `PAYMENT_FAILED`), po każdym 4xx i po zmianie danych formularza;
+- klucz tylko w pamięci strony zakupu (nie w `localStorage`).
 
 **Przesyłka powstaje asynchronicznie:** Shipping zakłada ją po zdarzeniu `order.created`, więc przez chwilę po `201` `GET /shipments?orderId=` może zwracać pustą listę („W przygotowaniu”).
 
@@ -483,15 +499,20 @@ Query: `page`, `size`. **200** — strona **własnych** zamówień (także dla A
 
 ### `POST /orders/{orderId}/cancel` — zalogowany, właściciel albo ADMIN
 
-Bez treści. Anulować można zamówienie `NEW` albo `PAID`, dopóki przesyłki nie ma albo ma status `PREPARING`. **200** — `OrderDetail` ze statusem `CANCELLED`. Po anulowaniu `PAID` Order wysyła `order.cancelled` (Inventory zwalnia rezerwację, Shipping anuluje przesyłkę `PREPARING`); czy zdarzenie wychodzi także dla `NEW`, jest otwarte ([events.md](events.md#otwarte-kwestie-kontraktu-v1)).
+Bez treści. Anulować można zamówienie `NEW` albo `PAID`, dopóki przesyłki nie ma albo ma status `PREPARING`. Przebieg: Order pyta Shipping (`POST /shipments/cancel`, wewnętrzny — niżej „Poza frontendem” w Shipping), który pod blokadą przesyłki rozstrzyga, czy paczka już wyszła; dopiero po zgodzie Shipping zamówienie dostaje `CANCELLED`. Anulowanie i nadanie paczki przez ADMIN się nie mijają: wygrywa jedno z nich. **200** — `OrderDetail` ze statusem `CANCELLED`. Order wysyła wtedy `order.cancelled` (także dla `NEW`; Inventory zwalnia rezerwację, Notification wysyła e-mail) — dokładnie jedno na zamówienie.
 
-Błędy: 400, 401, 404, **409 `ORDER_NOT_CANCELLABLE`** — inny status (np. `PAYMENT_FAILED`, `SHIPPED`, `CANCELLED`) albo przesyłka już `SHIPPED`.
+Błędy: 400, 401, 404, **409 `ORDER_NOT_CANCELLABLE`** — inny status (np. `PAYMENT_FAILED`, `SHIPPED`, `CANCELLED`) albo przesyłka już nadana (`SHIPPED` i dalej; zamówienie bez zmian), **503 `SERVICE_UNAVAILABLE`** — Shipping niedostępny (zamówienie bez zmian, można ponowić).
 
 ## Shipping
 
-**Stan:** propozycja v1. Statusy jak w zdarzeniu `shipment.status_changed` ([events.md](events.md#shipmentstatus_changed)).
+**Stan:** istnieje (Piotr). Statusy jak w zdarzeniu `shipment.status_changed` ([events.md](events.md#shipmentstatus_changed)).
 
-**Poza frontendem.** Ta sekcja opisuje tylko to, co woła frontend. Order woła `GET /shipping/methods/{code}` (koszt dostawy przy składaniu zamówienia). Shipping odbiera `order.created` i `order.cancelled` i publikuje `shipment.status_changed` ([events.md](events.md#zdarzenia-w-wersji-1)). Endpointy wewnętrzne — [D10](decisions.md#d10--endpointy-wewnętrzne).
+### Poza frontendem
+
+Ta sekcja opisuje przede wszystkim to, co woła frontend. Shipping ma też obowiązki wobec innych usług:
+- Order woła `GET /shipping/methods/{code}` (koszt dostawy przy składaniu zamówienia);
+- endpoint wewnętrzny **`POST /shipments/cancel`** dla Order ([D10](decisions.md#d10--endpointy-wewnętrzne)): tylko rola `SERVICE` (inaczej **403 `FORBIDDEN`**), z zewnątrz zablokowany w Gateway (**404**). Treść `{"orderId": "<uuid>"}`; nieznane pole albo zły UUID → **400 `VALIDATION_ERROR`**. Pod blokadą wiersza przesyłki: brak przesyłki → zapis „anulowana” (zaślepka bez przesyłki; późne `order.created` tworzy z niej przesyłkę od razu `CANCELLED` i wysyła jedno `shipment.status_changed` `null → CANCELLED`, Z10), **200**; `PREPARING` → `CANCELLED` + `shipment.status_changed`, **200**; już `CANCELLED` → **200** bez nowego zdarzenia; `SHIPPED`, `IN_TRANSIT`, `DELIVERED` → **409 `INVALID_STATUS_TRANSITION`**. Odpowiedź 200: `{"orderId", "shipmentId": "<uuid>" | null, "status": "CANCELLED"}`. `PATCH /shipments/{shipmentId}/status` bierze tę samą blokadę, więc anulowanie i nadanie są szeregowane;
+- odbiera `order.created` i `order.cancelled` i publikuje `shipment.status_changed` — także przy utworzeniu przesyłki ([events.md](events.md#zdarzenia-w-wersji-1)).
 
 Metody dostawy:
 
@@ -501,7 +522,7 @@ Metody dostawy:
 | `PARCEL_LOCKER` | Paczkomat |
 | `PICKUP` | Odbiór osobisty |
 
-Statusy przesyłki: `PREPARING` (W przygotowaniu) → `SHIPPED` (Wysłana) → `IN_TRANSIT` (W drodze) → `DELIVERED` (Dostarczona); `CANCELLED` (Anulowana) — tylko po anulowaniu zamówienia.
+Statusy przesyłki: `PREPARING` (W przygotowaniu) → `SHIPPED` (Wysłana) → `IN_TRANSIT` (W drodze) → `DELIVERED` (Dostarczona); `CANCELLED` (Anulowana) — tylko po anulowaniu zamówienia. Pierwszym statusem jest `PREPARING` albo `CANCELLED`: zamówienie anulowane, zanim Shipping założył przesyłkę, dostaje przesyłkę od razu `CANCELLED`, bez wcześniejszego `PREPARING` (`history` z jednym wpisem `CANCELLED`).
 
 `Shipment`:
 
@@ -522,7 +543,7 @@ Statusy przesyłki: `PREPARING` (W przygotowaniu) → `SHIPPED` (Wysłana) → `
 }
 ```
 
-`history` od najstarszego wpisu, ostatni = bieżący `status`. `trackingNumber` jest `null` tylko przed nadaniem paczki (`PREPARING`); od `SHIPPED` jest zawsze tekstem. To rozstrzygnięcie propozycji v1 dla REST — kwestia w [otwartych kwestiach events.md](events.md#otwarte-kwestie-kontraktu-v1) zostaje otwarta dla właściciela Shipping, a frontend działa w obu wariantach (numer od razu albo dopiero po nadaniu).
+`history` od najstarszego wpisu, ostatni = bieżący `status`. `trackingNumber` jest `null` do nadania paczki (`PREPARING`, także `CANCELLED` przed nadaniem); od `SHIPPED` jest zawsze tekstem — tak samo w REST i w zdarzeniu ([events.md](events.md#ustalenia-kontraktu-v1)).
 
 ### `GET /shipping/methods` — publiczny
 
@@ -540,9 +561,13 @@ Statusy przesyłki: `PREPARING` (W przygotowaniu) → `SHIPPED` (Wysłana) → `
 
 ### `GET /shipments` — zalogowany
 
-Query: `orderId` (UUID), `status` (status przesyłki), `page`, `size` — wszystkie opcjonalne. **200** — strona `Shipment`, najnowsze najpierw. `CUSTOMER` widzi tylko swoje przesyłki (po `X-User-Id`), `ADMIN` — wszystkie. Cudze `orderId` dla klienta → pusta lista.
+Query: `orderId` (UUID), `status` (status przesyłki), `page`, `size` — wszystkie opcjonalne. **200** — strona `Shipment`, najnowsze najpierw. `CUSTOMER` widzi tylko swoje przesyłki (po `X-User-Id`), `ADMIN` — wszystkie. Cudze `orderId` dla klienta → pusta lista. Dla zamówienia anulowanego przed utworzeniem przesyłki lista może zawierać przesyłkę `CANCELLED` bez wcześniejszego `PREPARING` (Z10), a przez chwilę po anulowaniu — pustą listę, dopóki Shipping nie przetworzy `order.created`.
 
 Błędy: 400 (zły UUID, nieznany status, złe stronicowanie), 401.
+
+### `GET /shipments/{shipmentId}` — zalogowany, właściciel albo ADMIN, frontend nie używa
+
+**200** — `Shipment`. Błędy: 400 (nie UUID), 401, **404** — brak przesyłki albo cudza (dla klienta).
 
 ### `PATCH /shipments/{shipmentId}/status` — ADMIN
 
@@ -559,32 +584,25 @@ Kody z tego dokumentu oprócz wspólnych z D7. Rejestr: [decisions.md, D7](decis
 | Auth | 401 | `INVALID_CREDENTIALS` | złe hasło albo nieznany e-mail | istnieje |
 | Auth | 409 | `EMAIL_TAKEN` | e-mail już zarejestrowany | istnieje |
 | Auth | 429 | `TOO_MANY_ATTEMPTS` | konto zablokowane na 15 min; z `Retry-After` | istnieje |
-| Inventory, Order | 409 | `INSUFFICIENT_STOCK` | za mało towaru (rezerwacja przy zamówieniu) | istnieje (Inventory) |
-| Order | 409 | `CART_EMPTY` | zamówienie z pustego koszyka | propozycja v1 |
-| Order | 409 | `PRODUCT_UNAVAILABLE` | produkt z koszyka wycofany ze sklepu | propozycja v1 |
-| Order | 409 | `ORDER_NOT_CANCELLABLE` | anulowanie po wysyłce albo w statusie innym niż `NEW`/`PAID` | propozycja v1 |
-| Shipping | 409 | `INVALID_STATUS_TRANSITION` | zmiana statusu przesyłki inna niż o jeden krok naprzód | propozycja v1 |
+| Inventory, Order | 409 | `INSUFFICIENT_STOCK` | za mało towaru (rezerwacja przy zamówieniu) | istnieje |
+| Order | 409 | `CART_EMPTY` | zamówienie z pustego koszyka | istnieje |
+| Order | 409 | `PRODUCT_UNAVAILABLE` | produkt z koszyka wycofany ze sklepu | istnieje |
+| Order | 409 | `ORDER_NOT_CANCELLABLE` | anulowanie po wysyłce albo w statusie innym niż `NEW`/`PAID` | istnieje |
+| Shipping | 409 | `INVALID_STATUS_TRANSITION` | zmiana statusu przesyłki inna niż o jeden krok naprzód; `POST /shipments/cancel` po nadaniu | istnieje |
 
 Cart (za mało sztuk) i Review (opinia drugi raz) zwracają wspólny `CONFLICT`, Review (opinia bez zakupu) — wspólny `FORBIDDEN`; frontend pokazuje dla nich komunikat zależny od miejsca.
 
 ## Zmiana kontraktu
 
-- Części oznaczone **propozycja v1** (Product, Order, Shipping) właściciel usługi może zmienić **przed pierwszą implementacją**, w porozumieniu z Michałem — zmiana trafia najpierw do tego dokumentu, razem z atrapami i typami frontendu (test kontraktu pilnuje zgodności).
-- Po pierwszej implementacji i dla usług, które już istnieją (Auth, User, Cart, Inventory, Review), zmiana ścieżki, pól JSON albo kodów odpowiedzi wymaga zgody usług i frontendu, które ją wołają ([D9](decisions.md#d9--własność-kodu-pr-i-dokumenty)), i opisu w PR (pole „Zmiana kontraktu?”).
+- Wszystkie usługi z tego dokumentu istnieją: zmiana ścieżki, pól JSON albo kodów odpowiedzi wymaga zgody usług i frontendu, które ją wołają ([D9](decisions.md#d9--własność-kodu-pr-i-dokumenty)), i opisu w PR (pole „Zmiana kontraktu?”).
 - Dodanie pola do odpowiedzi nie jest zmianą łamiącą (frontend ignoruje nieznane pola). Usunięcie albo zmiana znaczenia pola — jest.
 - Nowy kod domenowy → zgłoszenie Michałowi (rejestr w D7), bo frontend dobiera komunikat po kodzie.
 
 ## Otwarte kwestie
 
-Do ustalenia z właścicielami usług przed ich implementacją. Do czasu decyzji obowiązuje to, co jest wyżej.
+Do ustalenia z właścicielami usług. Do czasu decyzji obowiązuje to, co jest wyżej.
 
 | Kwestia | Stan dziś |
 |---|---|
 | User i Cart: 400 `BAD_REQUEST` i 500 `INTERNAL_SERVER_ERROR` zamiast `VALIDATION_ERROR` i `INTERNAL_ERROR` (D7) | do poprawki w User i Cart; frontend obsługuje oba |
-| Inventory i Review w PR #2 mają identyfikatory liczbowe | ten dokument wymaga UUID ([D1](decisions.md#d1--identyfikatory)) |
-| Review w PR #2: `reviewId` i `_id` opinii w MongoDB to ObjectId | ten dokument wymaga UUID także dla opinii ([D1](decisions.md#d1--identyfikatory)) |
-| Review w PR #2 woła Order (`GET /orders/purchased`) tylko z `X-Request-Id` | wywołanie między usługami przekazuje `X-User-Id` i dodaje rolę `SERVICE` do `X-User-Roles` ([D11](decisions.md#d11--tożsamość-i-nagłówki)) |
-| Inventory i Review w PR #2 weryfikują JWT (tryb z `JWT_JWKS_URL`) | token sprawdza tylko Gateway; usługa ufa `X-User-Id` i `X-User-Roles` ([D11](decisions.md#d11--tożsamość-i-nagłówki)) |
-| Inventory i Review w PR #2 ignorują nieznane pola w treści żądania | ten dokument wymaga **400 `VALIDATION_ERROR`** ([Zasady wspólne](#zasady-wspólne), [D7](decisions.md#d7--format-i-kody-błędów)); atrapy frontendu już tak odpowiadają |
-| `trackingNumber` przed nadaniem paczki | w REST `null` w `PREPARING`, od `SHIPPED` tekst; w zdarzeniu otwarte ([events.md](events.md#otwarte-kwestie-kontraktu-v1)) — do potwierdzenia przez właściciela Shipping |
-| Klucz idempotencji `POST /orders` (dwukrotne kliknięcie) | brak; frontend blokuje przycisk na czas wysyłania |
+

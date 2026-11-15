@@ -96,15 +96,16 @@ def reserve(db: Session, order_id: str, items: list[tuple[str, int]]) -> tuple[l
     return rows, True
 
 
-def release(db: Session, order_id: str, event_id: str | None = None) -> int:
+def release(db: Session, order_id: str, event_id: str | None = None) -> int | None:
     """Zwalnia rezerwacje ACTIVE zamówienia (idempotentnie). Zwraca liczbę zwolnionych pozycji.
 
     Gdy podano event_id, zdarzenie jest zapisywane jako przetworzone w tej samej transakcji.
+    Duplikat zdarzenia (event_id już przetworzony) daje None: nic się nie zmieniło i nie ma czego logować.
     """
     return _close_reservations(db, order_id, event_id, RELEASED, take_from_stock=False)
 
 
-def issue(db: Session, order_id: str, event_id: str | None = None) -> int:
+def issue(db: Session, order_id: str, event_id: str | None = None) -> int | None:
     """Wydanie towaru przy wysyłce: dla rezerwacji ACTIVE zmniejsza quantity i reserved o tę samą ilość.
 
     Rezerwacja dostaje status ISSUED, więc późniejsze order.cancelled jej nie zwolni.
@@ -112,10 +113,12 @@ def issue(db: Session, order_id: str, event_id: str | None = None) -> int:
     return _close_reservations(db, order_id, event_id, ISSUED, take_from_stock=True)
 
 
-def _close_reservations(db: Session, order_id: str, event_id: str | None, new_status: str, take_from_stock: bool) -> int:
+def _close_reservations(
+    db: Session, order_id: str, event_id: str | None, new_status: str, take_from_stock: bool
+) -> int | None:
     if event_id and db.get(ProcessedEvent, event_id) is not None:
         logger.info("Zdarzenie %s było już przetworzone, pomijam", event_id)
-        return 0
+        return None
 
     stmt = (
         select(Reservation)
@@ -140,5 +143,6 @@ def _close_reservations(db: Session, order_id: str, event_id: str | None, new_st
         db.commit()
     except IntegrityError:
         db.rollback()  # to samo zdarzenie przetworzone równolegle przez inną instancję
-        return 0
+        logger.info("Zdarzenie %s było już przetworzone, pomijam", event_id)
+        return None
     return len(rows)

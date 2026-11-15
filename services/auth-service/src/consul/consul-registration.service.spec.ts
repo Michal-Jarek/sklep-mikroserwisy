@@ -1,7 +1,7 @@
 import { jest } from '@jest/globals';
 import type { PinoLogger } from 'nestjs-pino';
 import { buildConfig, KV_DEFAULTS } from '../config/app-config';
-import { CONSUL_REGISTER_PATH, consulDeregisterPath, consulServicePath, PATHS } from '../routes';
+import { CONSUL_REGISTER_PATH, consulDeregisterPath, consulServiceInstancesPath, consulServicePath, PATHS } from '../routes';
 import { ConsulRegistration, resolveServiceAddress } from './consul-registration.service';
 
 const ENV = {
@@ -25,8 +25,14 @@ interface Call {
   token?: string;
 }
 
-/** Fake Consul agent: answers by method and path, records the calls. */
-function fakeConsul(answer: (call: Call) => Response | Error): Call[] {
+/**
+ * Fake Consul agent: answers by method and path, records the calls. GET /v1/health/service/<name> (the cleanup of
+ * orphaned entries at startup, Z7) is answered by `health`, by default with no entries.
+ */
+function fakeConsul(
+  answer: (call: Call) => Response | Error,
+  health: () => Response | Error = () => new Response('[]'),
+): Call[] {
   const calls: Call[] = [];
   jest.spyOn(global, 'fetch').mockImplementation((input, init) => {
     const call = {
@@ -36,10 +42,38 @@ function fakeConsul(answer: (call: Call) => Response | Error): Call[] {
       token: (init?.headers as Record<string, string> | undefined)?.['X-Consul-Token'],
     };
     calls.push(call);
-    const result = answer(call);
+    const result = call.url.includes('/v1/health/service/') ? health() : answer(call);
     return result instanceof Error ? Promise.reject(result) : Promise.resolve(result);
   });
   return calls;
+}
+
+function registrations(calls: Call[]): Call[] {
+  return calls.filter((call) => call.url.endsWith(CONSUL_REGISTER_PATH));
+}
+
+function deregistrations(calls: Call[]): Call[] {
+  return calls.filter((call) => call.url.includes('/v1/agent/service/deregister/'));
+}
+
+function healthLookups(calls: Call[]): Call[] {
+  return calls.filter((call) => call.url.includes('/v1/health/service/'));
+}
+
+/** One entry of GET /v1/health/service/<name>. */
+function healthEntry(id: string, address: string, port: number, name = 'auth-service') {
+  return { Node: { Address: '127.0.0.9' }, Service: { ID: id, Service: name, Address: address, Port: port } };
+}
+
+/** Consul with an entry of this ID (address and port given), recording the calls. */
+function consulWithEntry(entry: () => { Address: string; Port: number } | null, health?: () => Response | Error): Call[] {
+  return fakeConsul((call) => {
+    if (call.method !== 'GET') {
+      return new Response('');
+    }
+    const stored = entry();
+    return stored ? new Response(JSON.stringify(stored)) : new Response('', { status: 404 });
+  }, health);
 }
 
 function createLogger() {
@@ -80,36 +114,307 @@ describe('ConsulRegistration', () => {
     });
   });
 
-  it('registers again when Consul does not know the instance (404)', async () => {
-    let known = true;
-    const calls = fakeConsul((call) =>
-      call.method === 'GET'
-        ? new Response(JSON.stringify({ Address: '10.1.2.3', Port: 8081 }), { status: known ? 200 : 404 })
-        : new Response(''),
-    );
-    const { registration } = createRegistration(ENV);
+  it('registers without a deregistration when Consul has no entry of this ID', async () => {
+    const calls = consulWithEntry(() => null);
+    const { registration, config, logger } = createRegistration(ENV);
     await registration.start(() => Promise.resolve(true));
-    expect(calls.filter((call) => call.method === 'PUT')).toHaveLength(0);
 
-    known = false; // e.g. the entry was removed in Consul
-    await registration.ensureRegistered();
-    const registrations = calls.filter((call) => call.url.endsWith(CONSUL_REGISTER_PATH));
-    expect(registrations).toHaveLength(1);
-    expect(JSON.parse(registrations[0].body ?? '{}')).toMatchObject({ Check: { Status: 'passing' } });
+    expect(calls.map(({ method, url }) => `${method} ${url}`)).toEqual([
+      `GET http://consul:8500${consulServicePath(config.instanceId)}`,
+      `GET http://consul:8500${consulServiceInstancesPath('auth-service')}`,
+      `PUT http://consul:8500${CONSUL_REGISTER_PATH}`,
+    ]);
+    expect(logger.info).not.toHaveBeenCalledWith(expect.anything(), 'Removed the entry of the previous process from Consul');
     await registration.onApplicationShutdown();
   });
 
-  it('registers again when Consul keeps an entry with an old address', async () => {
-    // Consul restored the registration of the previous container with the same hostname.
-    const calls = fakeConsul((call) =>
-      call.method === 'GET' ? new Response(JSON.stringify({ Address: '10.9.9.9', Port: 8081 })) : new Response(''),
-    );
-    const { registration } = createRegistration(ENV);
-
+  it('removes the entry of the previous process with the same ID and address, then registers', async () => {
+    // The same container started again after docker kill: same hostname (ID) and address, check still critical.
+    const calls = consulWithEntry(() => ({ Address: '10.1.2.3', Port: 8081 }));
+    const { registration, config, logger } = createRegistration(ENV);
     await registration.start(() => Promise.resolve(true));
-    await registration.onApplicationShutdown();
 
-    expect(calls.filter((call) => call.url.endsWith(CONSUL_REGISTER_PATH))).toHaveLength(1);
+    expect(calls.map(({ method, url }) => `${method} ${url}`)).toEqual([
+      `GET http://consul:8500${consulServicePath(config.instanceId)}`,
+      `GET http://consul:8500${consulServiceInstancesPath('auth-service')}`,
+      `PUT http://consul:8500${consulDeregisterPath(config.instanceId)}`,
+      `PUT http://consul:8500${CONSUL_REGISTER_PATH}`,
+    ]);
+    expect(JSON.parse(registrations(calls)[0].body ?? '{}')).toMatchObject({ Check: { Status: 'passing' } });
+    expect(logger.info).toHaveBeenCalledWith(
+      { instanceId: config.instanceId },
+      'Removed the entry of the previous process from Consul',
+    );
+    await registration.onApplicationShutdown();
+  });
+
+  it('does not deregister or register again while Consul knows the current entry, and registers after 404', async () => {
+    let known = true;
+    const calls = consulWithEntry(() => (known ? { Address: '10.1.2.3', Port: 8081 } : null));
+    const { registration } = createRegistration(ENV);
+    await registration.start(() => Promise.resolve(true));
+    expect(deregistrations(calls)).toHaveLength(1);
+    expect(registrations(calls)).toHaveLength(1);
+
+    await registration.ensureRegistered();
+    await registration.ensureRegistered();
+    expect(registrations(calls)).toHaveLength(1);
+
+    known = false; // e.g. the entry was removed in Consul
+    await registration.ensureRegistered();
+    expect(registrations(calls)).toHaveLength(2);
+    expect(JSON.parse(registrations(calls)[1].body ?? '{}')).toMatchObject({ Check: { Status: 'passing' } });
+    expect(deregistrations(calls)).toHaveLength(1);
+    await registration.onApplicationShutdown();
+  });
+
+  it('registers again when Consul keeps an entry with an old address, deregistering only at the start', async () => {
+    // Consul restored the registration of the previous container with the same hostname.
+    const calls = consulWithEntry(() => ({ Address: '10.9.9.9', Port: 8081 }));
+    const { registration } = createRegistration(ENV);
+    await registration.start(() => Promise.resolve(true));
+    expect(deregistrations(calls)).toHaveLength(1);
+    expect(registrations(calls)).toHaveLength(1);
+
+    // The fake Consul still answers with the old address: a later check registers again, without a deregistration.
+    await registration.ensureRegistered();
+    expect(registrations(calls)).toHaveLength(2);
+    expect(deregistrations(calls)).toHaveLength(1);
+    await registration.onApplicationShutdown();
+  });
+
+  it('removes the old entry at the first successful contact when Consul was down at the start', async () => {
+    let up = false;
+    const answer = (call: Call) =>
+      call.method === 'GET' ? new Response(JSON.stringify({ Address: '10.1.2.3', Port: 8081 })) : new Response('');
+    const calls = fakeConsul((call) => (up ? answer(call) : new TypeError('fetch failed')));
+    const { registration, logger } = createRegistration(ENV);
+    await registration.start(() => Promise.resolve(true));
+    expect(registrations(calls)).toHaveLength(0);
+    expect(deregistrations(calls)).toHaveLength(0);
+
+    up = true;
+    await registration.ensureRegistered();
+    expect(deregistrations(calls)).toHaveLength(1);
+    expect(registrations(calls)).toHaveLength(1);
+    expect(calls.findIndex((call) => call.url.includes('/deregister/'))).toBeLessThan(
+      calls.findIndex((call) => call.url.endsWith(CONSUL_REGISTER_PATH)),
+    );
+    expect(logger.info).toHaveBeenCalledWith(expect.anything(), 'Removed the entry of the previous process from Consul');
+
+    await registration.ensureRegistered();
+    expect(deregistrations(calls)).toHaveLength(1);
+    expect(registrations(calls)).toHaveLength(1);
+    await registration.onApplicationShutdown();
+  });
+
+  it('does not register when removing the old entry fails, and repeats both on the next check', async () => {
+    // e.g. consul-guard refuses the deregistration (entry with another address).
+    let refuse = true;
+    const calls = fakeConsul((call) => {
+      if (call.method === 'GET') {
+        return new Response(JSON.stringify({ Address: '10.1.2.3', Port: 8081 }));
+      }
+      return new Response('', { status: refuse && call.url.includes('/deregister/') ? 403 : 200 });
+    });
+    const { registration, logger } = createRegistration(ENV);
+    await registration.start(() => Promise.resolve(true));
+    expect(registrations(calls)).toHaveLength(0);
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+
+    refuse = false;
+    await registration.ensureRegistered();
+    expect(deregistrations(calls)).toHaveLength(2);
+    expect(registrations(calls)).toHaveLength(1);
+    await registration.onApplicationShutdown();
+  });
+
+  describe('Z7: orphaned entries with the address of this instance at the first registration', () => {
+    const ORPHAN = 'Removed an orphaned entry with the address of this instance from Consul';
+    const CLEANUP_FAILED = 'Cleanup of orphaned Consul entries failed, registering anyway';
+
+    it('removes entries with the same address and port but another ID, then registers', async () => {
+      const calls = consulWithEntry(
+        () => null,
+        () => new Response(JSON.stringify([healthEntry('auth-service-old1', '10.1.2.3', 8081), healthEntry('auth-service-old2', '10.1.2.3', 8081)])),
+      );
+      const { registration, config, logger } = createRegistration(ENV);
+      await registration.start(() => Promise.resolve(true));
+
+      expect(calls.map(({ method, url }) => `${method} ${url}`)).toEqual([
+        `GET http://consul:8500${consulServicePath(config.instanceId)}`,
+        `GET http://consul:8500${consulServiceInstancesPath('auth-service')}`,
+        `PUT http://consul:8500${consulDeregisterPath('auth-service-old1')}`,
+        `PUT http://consul:8500${consulDeregisterPath('auth-service-old2')}`,
+        `PUT http://consul:8500${CONSUL_REGISTER_PATH}`,
+      ]);
+      expect(logger.info).toHaveBeenCalledWith({ instanceId: 'auth-service-old1' }, ORPHAN);
+      expect(logger.info).toHaveBeenCalledWith({ instanceId: 'auth-service-old2' }, ORPHAN);
+      expect(logger.warn).not.toHaveBeenCalled();
+      await registration.onApplicationShutdown();
+    });
+
+    it('leaves entries with another address, another port or another service name untouched', async () => {
+      const calls = consulWithEntry(
+        () => null,
+        () =>
+          new Response(
+            JSON.stringify([
+              healthEntry('auth-service-a', '10.1.2.4', 8081),
+              healthEntry('auth-service-b', '10.1.2.3', 9999),
+              healthEntry('AUTH-SERVICE-c', '10.1.2.3', 8081, 'AUTH-SERVICE'),
+              null,
+            ]),
+          ),
+      );
+      const { registration, logger } = createRegistration(ENV);
+      await registration.start(() => Promise.resolve(true));
+
+      expect(deregistrations(calls)).toHaveLength(0);
+      expect(registrations(calls)).toHaveLength(1);
+      expect(logger.warn).not.toHaveBeenCalled();
+      await registration.onApplicationShutdown();
+    });
+
+    it('its own ID in the list is not an orphan: the Z5 path removes it once and registers', async () => {
+      let ownId = '';
+      const calls = consulWithEntry(
+        () => ({ Address: '10.1.2.3', Port: 8081 }),
+        () => new Response(JSON.stringify([healthEntry(ownId, '10.1.2.3', 8081)])),
+      );
+      const { registration, config } = createRegistration(ENV);
+      ownId = config.instanceId;
+      await registration.start(() => Promise.resolve(true));
+
+      expect(deregistrations(calls).map((call) => call.url)).toEqual([
+        `http://consul:8500${consulDeregisterPath(config.instanceId)}`,
+      ]);
+      expect(registrations(calls)).toHaveLength(1);
+      await registration.onApplicationShutdown();
+    });
+
+    it.each([
+      ['an error status', () => new Response('', { status: 500 })],
+      ['a response that is not a list', () => new Response('{}')],
+      ['invalid JSON', () => new Response('not json')],
+    ])('a failed cleanup (%s) is one warning and the instance is registered anyway', async (_name, health) => {
+      const calls = consulWithEntry(() => null, health);
+      const { registration, logger } = createRegistration(ENV);
+      await registration.start(() => Promise.resolve(true));
+
+      expect(registrations(calls)).toHaveLength(1);
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(logger.warn.mock.calls[0][1]).toBe(CLEANUP_FAILED);
+      await registration.onApplicationShutdown();
+    });
+
+    it('Consul not reachable during the cleanup ends the attempt; the next one cleans up and registers', async () => {
+      let healthUp = false;
+      const calls = consulWithEntry(
+        () => null,
+        () => (healthUp ? new Response('[]') : new TypeError('fetch failed')),
+      );
+      const { registration, logger } = createRegistration(ENV);
+      await registration.start(() => Promise.resolve(true));
+      await registration.ensureRegistered();
+      expect(registrations(calls)).toHaveLength(0);
+      expect(logger.warn.mock.calls.map((call) => call[1])).toEqual(['Consul is not reachable, will retry the registration']);
+
+      healthUp = true;
+      await registration.ensureRegistered();
+      expect(healthLookups(calls)).toHaveLength(3);
+      expect(registrations(calls)).toHaveLength(1);
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      await registration.onApplicationShutdown();
+    });
+
+    it('a refused deregistration of an orphan is one warning and the instance is registered anyway', async () => {
+      const calls = fakeConsul(
+        (call) => {
+          if (call.method === 'GET') {
+            return new Response('', { status: 404 });
+          }
+          return new Response('', { status: call.url.includes('/deregister/') ? 403 : 200 });
+        },
+        () => new Response(JSON.stringify([healthEntry('auth-service-old', '10.1.2.3', 8081)])),
+      );
+      const { registration, logger } = createRegistration(ENV);
+      await registration.start(() => Promise.resolve(true));
+
+      expect(registrations(calls)).toHaveLength(1);
+      expect(logger.warn.mock.calls.map((call) => call[1])).toEqual([CLEANUP_FAILED]);
+    });
+
+    it('CR-34: two orphans, the first refused (403) -> the second is still removed, one warning after the loop', async () => {
+      const calls = fakeConsul(
+        (call) => {
+          if (call.method === 'GET') {
+            return new Response('', { status: 404 });
+          }
+          return new Response('', { status: call.url.endsWith('/auth-service-old1') ? 403 : 200 });
+        },
+        () =>
+          new Response(
+            JSON.stringify([healthEntry('auth-service-old1', '10.1.2.3', 8081), healthEntry('auth-service-old2', '10.1.2.3', 8081)]),
+          ),
+      );
+      const { registration, logger } = createRegistration(ENV);
+      await registration.start(() => Promise.resolve(true));
+
+      expect(deregistrations(calls).map((call) => call.url)).toEqual([
+        `http://consul:8500${consulDeregisterPath('auth-service-old1')}`,
+        `http://consul:8500${consulDeregisterPath('auth-service-old2')}`,
+      ]);
+      expect(logger.info).toHaveBeenCalledWith({ instanceId: 'auth-service-old2' }, ORPHAN);
+      expect(logger.info).not.toHaveBeenCalledWith({ instanceId: 'auth-service-old1' }, ORPHAN);
+      expect(logger.warn.mock.calls).toEqual([
+        [
+          { failed: 1, reason: 'Consul deregistration responded with 403 (ACL: CONSUL_HTTP_TOKEN missing or without permission)' },
+          CLEANUP_FAILED,
+        ],
+      ]);
+      expect(registrations(calls)).toHaveLength(1);
+    });
+
+    it('cleans up only at the first registration, not on the periodic checks', async () => {
+      let known = false;
+      const calls = consulWithEntry(
+        () => (known ? { Address: '10.1.2.3', Port: 8081 } : null),
+        () => new Response(JSON.stringify([healthEntry('auth-service-old', '10.1.2.3', 8081)])),
+      );
+      const { registration } = createRegistration(ENV);
+      await registration.start(() => Promise.resolve(true));
+      expect(healthLookups(calls)).toHaveLength(1);
+
+      known = true;
+      await registration.ensureRegistered();
+      known = false; // the entry disappeared: registered again, still without a cleanup
+      await registration.ensureRegistered();
+      expect(healthLookups(calls)).toHaveLength(1);
+      expect(registrations(calls)).toHaveLength(2);
+      expect(deregistrations(calls)).toHaveLength(1);
+      await registration.onApplicationShutdown();
+    });
+
+    it('cleans up at the first successful contact when Consul was down at the start', async () => {
+      let up = false;
+      const calls = fakeConsul(
+        (call) => (up ? new Response('', { status: call.method === 'GET' ? 404 : 200 }) : new TypeError('fetch failed')),
+        () => new Response(JSON.stringify([healthEntry('auth-service-old', '10.1.2.3', 8081)])),
+      );
+      const { registration } = createRegistration(ENV);
+      await registration.start(() => Promise.resolve(true));
+      expect(healthLookups(calls)).toHaveLength(0);
+
+      up = true;
+      await registration.ensureRegistered();
+      expect(healthLookups(calls)).toHaveLength(1);
+      expect(deregistrations(calls).map((call) => call.url)).toEqual([
+        `http://consul:8500${consulDeregisterPath('auth-service-old')}`,
+      ]);
+      expect(registrations(calls)).toHaveLength(1);
+      await registration.onApplicationShutdown();
+    });
   });
 
   it('logs one warning while Consul is down and registers when it is back', async () => {
@@ -152,6 +457,7 @@ describe('ConsulRegistration', () => {
 
     expect(calls.map(({ url, method, token }) => ({ url, method, token }))).toEqual([
       { url: `http://consul:8500${consulServicePath(config.instanceId)}`, method: 'GET', token: TOKEN },
+      { url: `http://consul:8500${consulServiceInstancesPath('auth-service')}`, method: 'GET', token: TOKEN },
       { url: `http://consul:8500${CONSUL_REGISTER_PATH}`, method: 'PUT', token: TOKEN },
       { url: `http://consul:8500${consulDeregisterPath(config.instanceId)}`, method: 'PUT', token: TOKEN },
     ]);
@@ -164,7 +470,7 @@ describe('ConsulRegistration', () => {
     await registration.start(() => Promise.resolve(true));
     await registration.onApplicationShutdown();
 
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(4);
     expect(calls.filter((call) => call.token !== undefined)).toEqual([]);
   });
 

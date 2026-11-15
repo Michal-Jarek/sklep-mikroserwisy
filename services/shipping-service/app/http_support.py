@@ -1,17 +1,25 @@
-"""Wspólne błędy i logowanie bez tokenów, treści żądań i danych profilu."""
-import json
+"""Shared errors and request logging without tokens, request bodies or profile data."""
 import logging
 import re
-from datetime import datetime, timezone
 from http import HTTPStatus
-from uuid import uuid4
+from uuid import UUID, uuid4
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.openapi.utils import get_openapi
 from starlette.exceptions import HTTPException
 
-logger = logging.getLogger("shop.http")
+from .logging_config import request_id_var, user_id_var
+
+logger = logging.getLogger("shipping.http")
+REQUEST_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")  # the same rule as in the Gateway
+
+
+def valid_uuid(value: str | None) -> str | None:
+    try:
+        return str(UUID(value)) if value else None
+    except ValueError:
+        return None
 
 
 def error_response(request: Request, status: int, message: str, domain_code: str | None = None) -> JSONResponse:
@@ -22,24 +30,30 @@ def error_response(request: Request, status: int, message: str, domain_code: str
     })
 
 
-def configure_http(app: FastAPI, service_name: str, instance_id: str) -> None:
+def configure_http(app: FastAPI, instance_id: str) -> None:
     @app.middleware("http")
     async def context(request: Request, call_next):
         supplied = request.headers.get("X-Request-Id", "")
-        request.state.request_id = supplied if re.fullmatch(r"[a-zA-Z0-9._-]{1,100}", supplied) else str(uuid4())
+        request.state.request_id = supplied if REQUEST_ID.fullmatch(supplied) else str(uuid4())
+        request_token = request_id_var.set(request.state.request_id)
+        # Only a valid UUID reaches the log: a request bypassing the Gateway may send any text.
+        user_token = user_id_var.set(valid_uuid(request.headers.get("X-User-Id")))
         try:
-            response = await call_next(request)
-        except Exception:
-            # Odpowiedź nie ujawnia SQL, adresów połączeń ani stosu wywołań.
-            response = error_response(request, 500, "Błąd wewnętrzny usługi")
-        response.headers["X-Request-Id"] = request.state.request_id
-        response.headers["X-Instance-Id"] = instance_id
-        logger.info(json.dumps({
-            "time": datetime.now(timezone.utc).isoformat(), "level": "info",
-            "service": service_name, "requestId": request.state.request_id,
-            "userId": request.headers.get("X-User-Id"), "method": request.method, "status": response.status_code, "message": "HTTP request",
-        }, ensure_ascii=False))
-        return response
+            try:
+                response = await call_next(request)
+            except Exception:
+                # Only the exception class in the log; the response reveals no SQL, addresses or stack.
+                logger.exception("Unhandled error", extra={"fields": {"method": request.method, "path": request.url.path}})
+                response = error_response(request, 500, "Błąd wewnętrzny usługi")
+            response.headers["X-Request-Id"] = request.state.request_id
+            response.headers["X-Instance-Id"] = instance_id
+            if not request.url.path.startswith("/health"):
+                logger.info("HTTP request", extra={"fields": {
+                    "method": request.method, "path": request.url.path, "status": response.status_code}})
+            return response
+        finally:
+            request_id_var.reset(request_token)
+            user_id_var.reset(user_token)
 
     @app.exception_handler(HTTPException)
     async def http_error(request: Request, exc: HTTPException):

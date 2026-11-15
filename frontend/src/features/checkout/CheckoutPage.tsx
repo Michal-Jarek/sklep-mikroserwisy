@@ -22,6 +22,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { checkoutSchema, NEW_ADDRESS, toOrderRequest, type CheckoutInput, type CheckoutValues } from '@/features/checkout/checkout-form';
+import { keepsKey, useIdempotencyKey } from '@/features/checkout/idempotency';
 import { shortOrderId } from '@/features/orders/order-rules';
 import { shippingMethodLabel } from '@/lib/labels';
 import { addAmounts } from '@/lib/money';
@@ -125,6 +126,8 @@ function CheckoutForm({ cart, addresses, defaults, addressesError, onRetryAddres
   // Kept here and not in the mutation: the mutation is reset after every attempt, so its variables
   // (with the card number) do not stay in the MutationCache (wytyczne 3.6: the card only in the form state).
   const [outcome, setOutcome] = useState<OrderOutcome>(null);
+  // Idempotency-Key of an attempt that may still exist on the server (wytyczne 3.8); never in localStorage.
+  const idempotencyKey = useIdempotencyKey();
   const addAddress = useAddAddress();
   const form = useForm<CheckoutInput, unknown, CheckoutValues>({
     resolver: zodResolver(checkoutSchema),
@@ -164,8 +167,10 @@ function CheckoutForm({ cart, addresses, defaults, addressesError, onRetryAddres
       }
     }
     setOutcome(null);
+    const key = await idempotencyKey.keyFor(order);
     try {
-      const created = await createOrder.mutateAsync(order);
+      const created = await createOrder.mutateAsync({ order, idempotencyKey: key });
+      idempotencyKey.settle(); // 201 (PAID or PAYMENT_FAILED) ends the purchase: the next one gets a new key
       if (created.status === 'PAID') {
         navigate(`/orders/${created.id}`, { state: { paid: true } });
         return;
@@ -173,6 +178,7 @@ function CheckoutForm({ cart, addresses, defaults, addressesError, onRetryAddres
       setOutcome({ failedOrder: created });
       form.setValue('cardNumber', '');
     } catch (error) {
+      idempotencyKey.settle(error);
       if (error instanceof ApiError && error.code === 'CART_EMPTY') navigate('/cart');
       else setOutcome({ error });
     } finally {
@@ -288,7 +294,8 @@ function CheckoutForm({ cart, addresses, defaults, addressesError, onRetryAddres
       {addAddress.isError && <ErrorAlert error={addAddress.error} title="Nie udało się zapisać adresu" />}
       {orderError !== null && (
         <div className="grid gap-2">
-          <ErrorAlert error={orderError} />
+          {/* The retry sends the same data, so it keeps the Idempotency-Key. */}
+          <ErrorAlert error={orderError} context="order" onRetry={keepsKey(orderError) ? () => void form.handleSubmit(onSubmit)() : undefined} />
           {cartError && (
             <Link to="/cart" className="underline">
               Przejdź do koszyka

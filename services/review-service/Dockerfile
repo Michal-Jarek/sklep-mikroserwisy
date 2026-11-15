@@ -17,4 +17,5 @@ USER 10001
 
 EXPOSE 8088
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8088", "--no-access-log"]
+# po SIGTERM żądania mają najwyżej 5 s, więc zatrzymanie trwa < 10 s; w kontenerze wszystkie interfejsy (Consul i Gateway łączą się z innych kontenerów)
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8088", "--no-access-log", "--timeout-graceful-shutdown", "5"]

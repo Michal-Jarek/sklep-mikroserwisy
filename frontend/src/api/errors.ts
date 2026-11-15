@@ -33,7 +33,7 @@ export class ApiError extends Error {
 }
 
 /** Where the error happened, for messages that depend on the action (decision 13). */
-export type ErrorContext = 'review' | 'cart';
+export type ErrorContext = 'review' | 'cart' | 'order' | 'cancel';
 
 const SEND_FAILED = 'Nie udało się wysłać żądania.';
 const UNAVAILABLE = 'Usługa jest chwilowo niedostępna. Spróbuj ponownie za chwilę.';
@@ -73,13 +73,37 @@ export const ERROR_MESSAGES: Readonly<Record<string, string>> = {
   INVALID_RESPONSE: UNEXPECTED,
 };
 
-const CONTEXT_MESSAGES: Record<ErrorContext, Partial<Record<number, string>>> = {
+// POST /orders without an answer or with 408/5xx: the page retries with the same Idempotency-Key (wytyczne 3.8).
+const ORDER_RETRY = 'Nie udało się potwierdzić zamówienia. Możesz bezpiecznie ponowić zakup — nie powstanie drugie zamówienie.';
+const CANCEL_RETRY = 'Nie udało się teraz anulować zamówienia. Zamówienie się nie zmieniło — spróbuj ponownie za chwilę.';
+// No answer, or the request may have reached Order (502 after sending, 504): the order may already be cancelled.
+const CANCEL_UNKNOWN = 'Nie wiemy, czy zamówienie zostało anulowane — sprawdź jego status powyżej.';
+
+/** Context messages by `error` code (checked first) or by HTTP status. */
+const CONTEXT_MESSAGES: Record<ErrorContext, Partial<Record<string | number, string>>> = {
   review: {
     403: 'Opinię może dodać tylko osoba, która kupiła ten produkt.',
     409: 'Ten produkt już oceniłeś.',
   },
   cart: {
     409: 'Za mało sztuk w magazynie.',
+  },
+  order: {
+    // The same Idempotency-Key with a different address or shipping method; the next attempt gets a new key.
+    CONFLICT: 'Dane zamówienia zmieniły się od poprzedniej próby. Sprawdź je i złóż zamówienie ponownie.',
+    0: ORDER_RETRY,
+    408: ORDER_RETRY,
+    502: ORDER_RETRY,
+    503: ORDER_RETRY,
+    504: ORDER_RETRY,
+  },
+  cancel: {
+    ORDER_NOT_CANCELLABLE: 'Tego zamówienia nie można już anulować. Paczka mogła zostać już nadana.',
+    // 503: Shipping unavailable (Order) or no instance / open breaker (Gateway): the order is unchanged (wytyczne 3.1).
+    503: CANCEL_RETRY,
+    0: CANCEL_UNKNOWN,
+    502: CANCEL_UNKNOWN,
+    504: CANCEL_UNKNOWN,
   },
 };
 
@@ -99,7 +123,7 @@ function messageByStatus(status: number): string {
 export function errorMessage(error: unknown, context?: ErrorContext): string {
   if (!(error instanceof ApiError)) return UNEXPECTED;
 
-  const contextual = context ? CONTEXT_MESSAGES[context][error.status] : undefined;
+  const contextual = context ? (CONTEXT_MESSAGES[context][error.code] ?? CONTEXT_MESSAGES[context][error.status]) : undefined;
   if (contextual) return contextual;
 
   if (error.code === 'TOO_MANY_ATTEMPTS' && error.retryAfter !== null) {

@@ -1,0 +1,14 @@
+# Lokalne sekrety, środowiska, pamięć podręczna i testy nie trafiają do obrazu (D17).
+# **/ działa w każdym folderze kontekstu budowania, także w głównym.
+**/.env
+**/.env.*
+**/.venv
+**/venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/tests
+postman
+k8s
+docs
+.git

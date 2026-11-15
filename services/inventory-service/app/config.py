@@ -29,7 +29,10 @@ class Settings(BaseSettings):
 
     @property
     def effective_instance_id(self) -> str:
-        """ID instancji w Consulu i w nagłówku X-Instance-Id: <usługa>-<hostname>."""
+        """ID instancji w Consulu, w nagłówku X-Instance-Id i w nazwie połączenia RabbitMQ.
+
+        INSTANCE_ID jest pełnym ID (w Kubernetesie nazwa poda, bez dopisywania przedrostka); bez niego <usługa>-<hostname>.
+        """
         return self.instance_id or f"{self.service_name}-{socket.gethostname()}"
 
 

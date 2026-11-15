@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import time
-import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -11,7 +10,9 @@ from app.api import health, router
 from app.config import get_settings
 from app.consul_registration import ConsulRegistrar
 from app.errors import register_error_handlers
-from app.logging_config import configure_logging, request_id_var, user_id_var
+from app.ids import request_id_or_new, valid_uuid
+from app.logging_config import configure_logging, request_id_var, set_service_log_level, user_id_var
+from app.remote_config import load_log_level
 
 settings = get_settings()
 configure_logging(settings.service_name, settings.log_level)
@@ -23,10 +24,16 @@ async def lifespan(app: FastAPI):
     database.init_client(settings.mongodb_url, settings.mongodb_database)
     try:
         await asyncio.to_thread(database.ensure_indexes, database.get_reviews())
-    except Exception:
-        # Mongo może jeszcze startować; indeksy zostaną założone przy kolejnym starcie poda
-        logger.warning("Nie udało się założyć indeksów, sprawdź połączenie z MongoDB", exc_info=True)
+    except Exception as exc:
+        # bez MongoDB proces kończy się błędem, a compose/Kubernetes uruchamiają go ponownie
+        logger.error("Nie udało się założyć indeksów, sprawdź połączenie z MongoDB", extra={"fields": {"reason": type(exc).__name__}})
         raise
+
+    # poziom logowania z Consul KV; zmienna środowiskowa LOG_LEVEL ma pierwszeństwo
+    if settings.consul_enabled and "log_level" not in settings.model_fields_set:
+        level = await load_log_level(settings)
+        if level:
+            logger.info("Poziom logowania z Consul KV: %s", set_service_log_level(level))
 
     tasks: list[asyncio.Task] = []
     if settings.consul_enabled:
@@ -52,10 +59,11 @@ register_error_handlers(app)
 
 @app.middleware("http")
 async def request_context(request: Request, call_next):
-    request_id = (request.headers.get("x-request-id") or str(uuid.uuid4()))[:64]
+    request_id = request_id_or_new(request.headers.get("x-request-id"))
     request.state.request_id = request_id
     rid_token = request_id_var.set(request_id)
-    uid_token = user_id_var.set(request.headers.get("x-user-id"))
+    # do logów trafia tylko poprawny UUID: żądanie z pominięciem Gateway może wysłać dowolny tekst
+    uid_token = user_id_var.set(valid_uuid(request.headers.get("x-user-id")))
     start = time.perf_counter()
     try:
         response = await call_next(request)
@@ -63,11 +71,13 @@ async def request_context(request: Request, call_next):
         response.headers["X-Instance-Id"] = settings.effective_instance_id
         if not request.url.path.startswith("/health"):
             logger.info(
-                "%s %s -> %s (%.1f ms)",
-                request.method,
-                request.url.path,
-                response.status_code,
-                (time.perf_counter() - start) * 1000,
+                "Request completed",
+                extra={"fields": {
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status": response.status_code,
+                    "durationMs": round((time.perf_counter() - start) * 1000),
+                }},
             )
         return response
     finally:

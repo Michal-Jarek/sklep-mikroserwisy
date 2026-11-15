@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "shop-purchase",
-    "description": "Purchase scenario through the shop entrance (nginx of the frontend -> API Gateway): registration, welcome e-mail, login, catalog, product page, stock (ADMIN), cart and access denials. Run with bash postman/run.sh compose (postman/README.md). Checks are named [S<nn>]; checks of team services that do not accept UUID yet (Inventory, Review) or do not exist (Order, Shipping) are skipped with a reason. At most 2 logins per run (rate limit 5/min).",
+    "description": "Purchase scenario through the shop entrance (nginx of the frontend -> API Gateway): registration, welcome e-mail, login, catalog, product page, stock (ADMIN), cart, access denials and the order flow (purchase, payment declined, shipment, cancellation, review, withdrawn product). Run with bash postman/run.sh compose (postman/README.md). Checks are named [S<nn>]. At most 2 logins per run (rate limit 5/min).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "event": [
@@ -73,22 +73,6 @@
       "value": ""
     },
     {
-      "key": "inventoryUuid",
-      "value": ""
-    },
-    {
-      "key": "reviewUuid",
-      "value": ""
-    },
-    {
-      "key": "orderRegistered",
-      "value": ""
-    },
-    {
-      "key": "shippingRegistered",
-      "value": ""
-    },
-    {
       "key": "seedQueue",
       "value": ""
     },
@@ -111,22 +95,78 @@
     {
       "key": "catalogIds",
       "value": ""
+    },
+    {
+      "key": "pBuy",
+      "value": "a0000000-0000-4000-8000-000000000001"
+    },
+    {
+      "key": "pCancel",
+      "value": "a0000000-0000-4000-8000-000000000002"
+    },
+    {
+      "key": "seedTarget",
+      "value": ""
+    },
+    {
+      "key": "orderKey",
+      "value": ""
+    },
+    {
+      "key": "orderBody",
+      "value": ""
+    },
+    {
+      "key": "orderId",
+      "value": ""
+    },
+    {
+      "key": "paidAt",
+      "value": ""
+    },
+    {
+      "key": "shipmentId",
+      "value": ""
+    },
+    {
+      "key": "cancelOrderId",
+      "value": ""
+    },
+    {
+      "key": "cancelShipmentId",
+      "value": ""
+    },
+    {
+      "key": "stockBuy",
+      "value": ""
+    },
+    {
+      "key": "stockCancel",
+      "value": ""
+    },
+    {
+      "key": "withdrawnProductId",
+      "value": ""
+    },
+    {
+      "key": "pollStart",
+      "value": ""
     }
   ],
   "item": [
     {
       "name": "00 setup",
-      "description": "Probes: which team services accept UUID productId (Inventory, Review) and which are registered in Consul (Order, Shipping). Dependent checks are skipped with one of the 4 fixed reasons.",
+      "description": "Start of a run: Inventory and Review accept UUID product ids, Order and Shipping are registered in Consul with a passing check. A failed probe does not stop the run, the dependent checks fail on their own.",
       "item": [
         {
-          "name": "Probe inventory-service UUID support",
+          "name": "Stock of Algorytmy by UUID",
           "event": [
             {
               "listen": "prerequest",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// Run setup. run.mjs puts runId and customerEmail into the environment; the Postman app has neither,",
+                  "// Run setup. run.ts puts runId and customerEmail into the environment; the Postman app has neither,",
                   "// so a new pair (a new customer account) is made for every run there.",
                   "if (!pm.environment.get('customerEmail')) {",
                   "  const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);",
@@ -143,25 +183,9 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// S01: 200/404 = UUID supported; 400 VALIDATION_ERROR with \"integer\" in the message = UUID rejected, the dependent",
-                  "// checks are skipped. Any other answer fails this probe and the dependent checks run (and fail) instead of being skipped.",
-                  "let body = {};",
-                  "try {",
-                  "  body = pm.response.json();",
-                  "} catch (e) {",
-                  "  body = {};",
-                  "}",
-                  "let support = '';",
-                  "if (pm.response.code === 200 || pm.response.code === 404) {",
-                  "  support = 'true';",
-                  "} else if (pm.response.code === 400 && body.error === 'VALIDATION_ERROR' && /integer/.test(String(body.message))) {",
-                  "  support = 'false';",
-                  "}",
-                  "pm.collectionVariables.set('inventoryUuid', support);",
-                  "pm.test('[S01] inventory-service answers 200/404 (UUID supported) or 400 VALIDATION_ERROR \"integer\" (UUID rejected)', () => {",
-                  "  if (support === '') {",
-                  "    pm.expect.fail(`unexpected answer ${pm.response.code}`);",
-                  "  }",
+                  "// S01: Inventory takes the product id as UUID (wytyczne 3.1 of stage 8): 200 (stock set) or 404 (no stock yet).",
+                  "pm.test('[S01] inventory-service accepts the UUID productId: 200 or 404', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.be.oneOf([200, 404]);",
                   "});"
                 ]
               }
@@ -174,32 +198,17 @@
           }
         },
         {
-          "name": "Probe review-service UUID support",
+          "name": "Reviews of Algorytmy by UUID",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// S02: 200/404 = UUID supported; 400 VALIDATION_ERROR with \"integer\" in the message = UUID rejected, the dependent",
-                  "// checks are skipped. Any other answer fails this probe and the dependent checks run (and fail) instead of being skipped.",
-                  "let body = {};",
-                  "try {",
-                  "  body = pm.response.json();",
-                  "} catch (e) {",
-                  "  body = {};",
-                  "}",
-                  "let support = '';",
-                  "if (pm.response.code === 200 || pm.response.code === 404) {",
-                  "  support = 'true';",
-                  "} else if (pm.response.code === 400 && body.error === 'VALIDATION_ERROR' && /integer/.test(String(body.message))) {",
-                  "  support = 'false';",
-                  "}",
-                  "pm.collectionVariables.set('reviewUuid', support);",
-                  "pm.test('[S02] review-service answers 200/404 (UUID supported) or 400 VALIDATION_ERROR \"integer\" (UUID rejected)', () => {",
-                  "  if (support === '') {",
-                  "    pm.expect.fail(`unexpected answer ${pm.response.code}`);",
-                  "  }",
+                  "// S02: Review takes the product id as UUID (wytyczne 3.1 of stage 8): 200 with a page of reviews.",
+                  "pm.test('[S02] review-service accepts the UUID productId: 200 with a page of reviews', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "  pm.expect(pm.response.json().items, 'items').to.be.an('array');",
                   "});"
                 ]
               }
@@ -212,20 +221,18 @@
           }
         },
         {
-          "name": "Probe order-service in Consul",
+          "name": "order-service passing in Consul",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// S03: an empty list in the Consul catalog = order-service not registered. A registered order-service is in the",
-                  "// catalog whatever its health checks say, so an unhealthy one fails S80 instead of being skipped.",
+                  "// S03: order-service is registered in Consul with a passing health check (the Gateway routes only to passing instances).",
                   "const list = pm.response.code === 200 ? pm.response.json() : null;",
-                  "pm.collectionVariables.set('orderRegistered', Array.isArray(list) ? String(list.length > 0) : '');",
-                  "pm.test('[S03] Consul answers 200 with a list for order-service', () => {",
+                  "pm.test('[S03] order-service: at least 1 instance passing in Consul', () => {",
                   "  pm.expect(pm.response.code, 'status').to.eql(200);",
-                  "  pm.expect(Array.isArray(list), 'list').to.be.true;",
+                  "  pm.expect(Array.isArray(list) && list.length, 'passing instances').to.be.at.least(1);",
                   "});"
                 ]
               }
@@ -234,24 +241,22 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": "{{consulUrl}}/v1/catalog/service/order-service"
+            "url": "{{consulUrl}}/v1/health/service/order-service?passing=true"
           }
         },
         {
-          "name": "Probe shipping-service in Consul",
+          "name": "shipping-service passing in Consul",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// S03: an empty list in the Consul catalog = shipping-service not registered. A registered shipping-service is in the",
-                  "// catalog whatever its health checks say, so an unhealthy one fails S81 instead of being skipped.",
+                  "// S03: shipping-service is registered in Consul with a passing health check (the Gateway routes only to passing instances).",
                   "const list = pm.response.code === 200 ? pm.response.json() : null;",
-                  "pm.collectionVariables.set('shippingRegistered', Array.isArray(list) ? String(list.length > 0) : '');",
-                  "pm.test('[S03] Consul answers 200 with a list for shipping-service', () => {",
+                  "pm.test('[S03] shipping-service: at least 1 instance passing in Consul', () => {",
                   "  pm.expect(pm.response.code, 'status').to.eql(200);",
-                  "  pm.expect(Array.isArray(list), 'list').to.be.true;",
+                  "  pm.expect(Array.isArray(list) && list.length, 'passing instances').to.be.at.least(1);",
                   "});"
                 ]
               }
@@ -260,14 +265,14 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": "{{consulUrl}}/v1/catalog/service/shipping-service"
+            "url": "{{consulUrl}}/v1/health/service/shipping-service?passing=true"
           }
         }
       ]
     },
     {
       "name": "01 preparation",
-      "description": "Admin login and the stock of the 24 seed products (decision 7): Algorytmy 5, Bazy danych 0, the other 22 products 25. PUT sets an absolute value, so every run starts from the same stock.",
+      "description": "Admin login and the stock of the 24 seed products. S11 counts with `reserved`: quantity = target + reserved, so `available` is the target even when an interrupted run left a reservation.",
       "item": [
         {
           "name": "Log in as admin",
@@ -329,23 +334,12 @@
           "name": "List seed products",
           "event": [
             {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// Skipped together with \"Set stock of seed products\", which records the skip (S11).",
-                  "if (pm.collectionVariables.get('inventoryUuid') === 'false') {",
-                  "  pm.execution.skipRequest();",
-                  "}"
-                ]
-              }
-            },
-            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// S11: the seed products are the ones with this id prefix; the queue drives \"Set stock of seed products\".",
+                  "// S11: the seed products are the ones with this id prefix; the queue drives \"Get stock of a seed product\" and",
+                  "// \"Set stock of seed products\".",
                   "const SEED_PREFIX = 'a0000000-0000-4000-8000-0000000000';",
                   "const ids = pm.response.code === 200 ? pm.response.json().items.map((product) => product.id).filter((id) => id.startsWith(SEED_PREFIX)) : [];",
                   "pm.test('[S11] 24 seed products in the catalog', () => pm.expect(ids.length, 'seed products').to.eql(24));",
@@ -362,6 +356,49 @@
           }
         },
         {
+          "name": "Get stock of a seed product",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// One GET + PUT per seed product: \"Set stock of seed products\" comes back here until the queue is empty.",
+                  "const queue = JSON.parse(pm.collectionVariables.get('seedQueue') || '[]');",
+                  "if (queue.length === 0) {",
+                  "  // \"List seed products\" failed; its [S11] assertion shows it.",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  const [id, target] = queue.shift();",
+                  "  pm.collectionVariables.set('seedQueue', JSON.stringify(queue));",
+                  "  pm.collectionVariables.set('seedProductId', id);",
+                  "  pm.collectionVariables.set('seedTarget', String(target));",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// quantity = target + reserved: a reservation left by an interrupted run must not make the PUT fail (409 below",
+                  "// reserved) nor lower the available stock of this run. 404 = no stock yet, nothing reserved.",
+                  "const id = pm.collectionVariables.get('seedProductId');",
+                  "const reserved = pm.response.code === 200 ? pm.response.json().reserved : 0;",
+                  "pm.test(`[S11] stock of ${id} read: 200 or 404`, () => pm.expect(pm.response.code, 'status').to.be.oneOf([200, 404]));",
+                  "pm.collectionVariables.set('seedQuantity', String(Number(pm.collectionVariables.get('seedTarget')) + reserved));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/inventory/{{seedProductId}}"
+          }
+        },
+        {
           "name": "Set stock of seed products",
           "event": [
             {
@@ -369,21 +406,9 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// One PUT per seed product: the item repeats itself (setNextRequest) until the queue is empty.",
-                  "const queue = JSON.parse(pm.collectionVariables.get('seedQueue') || '[]');",
-                  "if (pm.collectionVariables.get('inventoryUuid') === 'false') {",
-                  "  const skipped = JSON.parse(pm.environment.get('skipped') || '[]');",
-                  "  skipped.push({ item: pm.info.requestName, reason: 'inventory-service rejects UUID productId', checks: [\"S11\"] });",
-                  "  pm.environment.set('skipped', JSON.stringify(skipped));",
+                  "// Skipped when \"Get stock of a seed product\" was skipped (empty queue).",
+                  "if (!pm.collectionVariables.get('seedQuantity')) {",
                   "  pm.execution.skipRequest();",
-                  "} else if (queue.length === 0) {",
-                  "  // \"List seed products\" failed; its [S11] assertion shows it.",
-                  "  pm.execution.skipRequest();",
-                  "} else {",
-                  "  const [id, quantity] = queue.shift();",
-                  "  pm.collectionVariables.set('seedQueue', JSON.stringify(queue));",
-                  "  pm.collectionVariables.set('seedProductId', id);",
-                  "  pm.collectionVariables.set('seedQuantity', String(quantity));",
                   "}"
                 ]
               }
@@ -395,12 +420,15 @@
                 "exec": [
                   "const id = pm.collectionVariables.get('seedProductId');",
                   "const quantity = Number(pm.collectionVariables.get('seedQuantity'));",
-                  "pm.test(`[S11] stock of ${id} set to ${quantity}`, () => {",
+                  "const target = Number(pm.collectionVariables.get('seedTarget'));",
+                  "pm.collectionVariables.unset('seedQuantity');",
+                  "pm.test(`[S11] stock of ${id} set to ${quantity}, available ${target}`, () => {",
                   "  pm.expect(pm.response.code, 'status').to.eql(200);",
                   "  pm.expect(pm.response.json().quantity, 'quantity').to.eql(quantity);",
+                  "  pm.expect(pm.response.json().available, 'available').to.eql(target);",
                   "});",
                   "if (JSON.parse(pm.collectionVariables.get('seedQueue') || '[]').length > 0) {",
-                  "  pm.execution.setNextRequest(pm.info.requestId);",
+                  "  pm.execution.setNextRequest('Get stock of a seed product');",
                   "}"
                 ]
               }
@@ -433,21 +461,6 @@
         {
           "name": "Get stock of Algorytmy without a token",
           "event": [
-            {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// Skipped while inventory-service rejects UUID (probe S01); runs by itself once it accepts them.",
-                  "if (pm.collectionVariables.get('inventoryUuid') === 'false') {",
-                  "  const skipped = JSON.parse(pm.environment.get('skipped') || '[]');",
-                  "  skipped.push({ item: pm.info.requestName, reason: 'inventory-service rejects UUID productId', checks: [\"S12\"] });",
-                  "  pm.environment.set('skipped', JSON.stringify(skipped));",
-                  "  pm.execution.skipRequest();",
-                  "}"
-                ]
-              }
-            },
             {
               "listen": "test",
               "script": {
@@ -1000,28 +1013,12 @@
                   "  pm.expect(product.category, 'category').to.be.an('object');",
                   "  pm.expect(Object.keys(product.category).sort(), 'category fields').to.eql(['id', 'name']);",
                   "});",
-                  "// S47a needs Inventory with UUID (probe S01): otherwise skipped, and the fallback (availability null) is checked.",
-                  "if (pm.collectionVariables.get('inventoryUuid') === 'false') {",
-                  "  const skipped = JSON.parse(pm.environment.get('skipped') || '[]');",
-                  "  skipped.push({ item: pm.info.requestName, reason: 'inventory-service rejects UUID productId', checks: [\"S47a\"] });",
-                  "  pm.environment.set('skipped', JSON.stringify(skipped));",
-                  "  pm.test('[fallback] availability is null while inventory-service rejects UUID', () => pm.expect(product.availability).to.eql(null));",
-                  "} else {",
-                  "  pm.test('[S47a] availability {available: 5, inStock: true}', () => pm.expect(product.availability).to.eql({ available: 5, inStock: true }));",
-                  "}",
-                  "// S47r needs Review with UUID (probe S02): otherwise skipped, and the fallback (rating null) is checked.",
-                  "if (pm.collectionVariables.get('reviewUuid') === 'false') {",
-                  "  const skipped = JSON.parse(pm.environment.get('skipped') || '[]');",
-                  "  skipped.push({ item: pm.info.requestName, reason: 'review-service rejects UUID productId', checks: [\"S47r\"] });",
-                  "  pm.environment.set('skipped', JSON.stringify(skipped));",
-                  "  pm.test('[fallback] rating is null while review-service rejects UUID', () => pm.expect(product.rating).to.eql(null));",
-                  "} else {",
-                  "  pm.test('[S47r] rating is an object {average, count}', () => {",
-                  "    pm.expect(product.rating, 'rating').to.be.an('object');",
-                  "    pm.expect(Object.keys(product.rating).sort(), 'rating fields').to.eql(['average', 'count']);",
-                  "    pm.expect(product.rating.count, 'count').to.be.a('number');",
-                  "  });",
-                  "}"
+                  "pm.test('[S47a] availability {available: 5, inStock: true}', () => pm.expect(product.availability).to.eql({ available: 5, inStock: true }));",
+                  "pm.test('[S47r] rating is an object {average, count}', () => {",
+                  "  pm.expect(product.rating, 'rating').to.be.an('object');",
+                  "  pm.expect(Object.keys(product.rating).sort(), 'rating fields').to.eql(['average', 'count']);",
+                  "  pm.expect(product.rating.count, 'count').to.be.a('number');",
+                  "});"
                 ]
               }
             }
@@ -1246,7 +1243,7 @@
     },
     {
       "name": "06 cart",
-      "description": "Cart of the customer: prices from Product, stock check in Inventory (S63, S64 need Inventory with UUID).",
+      "description": "Cart of the customer: prices from Product, stock check in Inventory.",
       "item": [
         {
           "name": "Get the empty cart",
@@ -1300,8 +1297,8 @@
                   "  pm.expect(cents(line.subtotal), 'subtotal').to.eql(cents(line.unitPrice) * 2);",
                   "  pm.expect(cents(cart.total), 'total').to.eql(cart.items.reduce((sum, item) => sum + cents(item.subtotal), 0));",
                   "});",
-                  "pm.test('[S61] inventoryChecked as the inventory probe (S01)', () => {",
-                  "  pm.expect(cart.inventoryChecked, 'inventoryChecked').to.eql(pm.collectionVariables.get('inventoryUuid') === 'true');",
+                  "pm.test('[S61] inventoryChecked true (Inventory checked the stock)', () => {",
+                  "  pm.expect(cart.inventoryChecked, 'inventoryChecked').to.eql(true);",
                   "});"
                 ]
               }
@@ -1376,21 +1373,6 @@
           "name": "Add 3 more Algorytmy (6 > stock 5)",
           "event": [
             {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// Skipped while inventory-service rejects UUID (probe S01); runs by itself once it accepts them.",
-                  "if (pm.collectionVariables.get('inventoryUuid') === 'false') {",
-                  "  const skipped = JSON.parse(pm.environment.get('skipped') || '[]');",
-                  "  skipped.push({ item: pm.info.requestName, reason: 'inventory-service rejects UUID productId', checks: [\"S63\"] });",
-                  "  pm.environment.set('skipped', JSON.stringify(skipped));",
-                  "  pm.execution.skipRequest();",
-                  "}"
-                ]
-              }
-            },
-            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
@@ -1430,21 +1412,6 @@
         {
           "name": "Add Bazy danych (stock 0)",
           "event": [
-            {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// Skipped while inventory-service rejects UUID (probe S01); runs by itself once it accepts them.",
-                  "if (pm.collectionVariables.get('inventoryUuid') === 'false') {",
-                  "  const skipped = JSON.parse(pm.environment.get('skipped') || '[]');",
-                  "  skipped.push({ item: pm.info.requestName, reason: 'inventory-service rejects UUID productId', checks: [\"S64\"] });",
-                  "  pm.environment.set('skipped', JSON.stringify(skipped));",
-                  "  pm.execution.skipRequest();",
-                  "}"
-                ]
-              }
-            },
             {
               "listen": "test",
               "script": {
@@ -1814,7 +1781,87 @@
                 "value": "Bearer {{customerToken}}"
               }
             ],
-            "url": "{{baseUrl}}/orders/purchased?productId={{pStock}}"
+            "url": "{{baseUrl}}/orders/purchased?userId={{customerId}}&productId={{pStock}}"
+          }
+        },
+        {
+          "name": "Internal POST /shipments/cancel as the customer",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S70] internal POST /shipments/cancel as the customer: 404 NOT_FOUND', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(404);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('NOT_FOUND');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/shipments/cancel",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"orderId\": \"{{customerId}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Internal POST /shipments/cancel as the admin",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S70] internal POST /shipments/cancel as the admin: 404 NOT_FOUND', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(404);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('NOT_FOUND');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/shipments/cancel",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"orderId\": \"{{customerId}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
           }
         },
         {
@@ -1959,27 +2006,196 @@
       ]
     },
     {
-      "name": "08 order (stage 8)",
-      "description": "Placeholder of the order flow (stage 8): skipped while Order and Shipping are not registered in Consul, failing once they are.",
+      "name": "08 order",
+      "description": "Order flow on the real services: purchase (PAID, e-mail), declined card (PAYMENT_FAILED, reservation released), shipment PREPARING after order.created, SHIPPED and DELIVERED by ADMIN (order status, stock, e-mails), cancellation before and after shipping, review after a purchase, withdrawn product in the cart. Every order of the run ends shipped (delivered) or cancelled: no reservation is left behind.",
       "item": [
         {
-          "name": "Order flow (stage 8)",
+          "name": "Stock of the product to buy",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const stock = pm.response.code === 200 ? pm.response.json() : {};",
+                  "pm.test('[S80] stock read: 200', () => pm.expect(pm.response.code, 'status').to.eql(200));",
+                  "pm.collectionVariables.set('stockBuy', JSON.stringify({ quantity: stock.quantity, reserved: stock.reserved }));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/inventory/{{pBuy}}"
+          }
+        },
+        {
+          "name": "Add 2 x the product to buy",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S80] product added to the cart: 200', () => pm.expect(pm.response.code, 'status').to.eql(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/cart/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"productId\": \"{{pBuy}}\", \"quantity\": 2}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Buy the cart (card accepted)",
           "event": [
             {
               "listen": "prerequest",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// S80: the order flow comes in stage 8. Without order-service the check is skipped; once order-service is registered",
-                  "// in Consul this item fails, so a registration before stage 8 cannot pass unnoticed.",
-                  "if (pm.collectionVariables.get('orderRegistered') === 'false') {",
-                  "  const skipped = JSON.parse(pm.environment.get('skipped') || '[]');",
-                  "  skipped.push({ item: pm.info.requestName, reason: 'order-service not registered', checks: [\"S80\"] });",
-                  "  pm.environment.set('skipped', JSON.stringify(skipped));",
-                  "} else {",
-                  "  pm.test('[S80] order flow (stage 8)', () => pm.expect.fail('order flow is implemented in stage 8'));",
-                  "}",
-                  "pm.execution.skipRequest();"
+                  "// A new Idempotency-Key for every purchase of every run (wytyczne 3.8: a new key after each 201 and each 4xx).",
+                  "pm.collectionVariables.set('orderKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Amounts are compared in grosze (integers), never as floating point numbers.",
+                  "const cents = (amount) => {",
+                  "  const [zloty, grosze] = amount.split('.');",
+                  "  return Number(zloty) * 100 + Number(grosze);",
+                  "};",
+                  "",
+                  "const order = pm.response.code === 201 ? pm.response.json() : { items: [] };",
+                  "pm.test('[S80] purchase: 201 PAID, totals in grosze', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(201);",
+                  "  pm.expect(order.status, 'status').to.eql('PAID');",
+                  "  pm.expect(order.userId, 'userId').to.eql(pm.collectionVariables.get('customerId'));",
+                  "  pm.expect(order.shippingMethod, 'shippingMethod').to.eql('COURIER');",
+                  "  pm.expect(cents(order.itemsTotal), 'itemsTotal').to.eql(order.items.reduce((sum, line) => sum + cents(line.subtotal), 0));",
+                  "  pm.expect(cents(order.total), 'total').to.eql(cents(order.itemsTotal) + cents(order.shippingCost));",
+                  "});",
+                  "pm.test('[S80] order lines: the product to buy x 2', () => {",
+                  "  pm.expect(order.items.map((line) => [line.productId, line.quantity]), 'lines').to.eql([[pm.collectionVariables.get('pBuy'), 2]]);",
+                  "});",
+                  "pm.collectionVariables.set('orderId', order.id || '');",
+                  "pm.collectionVariables.set('orderBody', pm.request.body.raw);",
+                  "pm.collectionVariables.set('paidAt', String(Date.now()));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{orderKey}}"
+              }
+            ],
+            "url": "{{baseUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"shippingMethod\": \"COURIER\", \"shippingAddress\": {\"firstName\": \"Scenario\", \"lastName\": \"Customer\", \"street\": \"ul. Testowa 1\", \"postalCode\": \"00-001\", \"city\": \"Warszawa\", \"countryCode\": \"PL\"}, \"payment\": {\"cardNumber\": \"4111111111111111\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Buy again with the same Idempotency-Key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Same customer, key and data (a retry after a lost answer): the same order, no second purchase (wytyczne 3.1).",
+                  "pm.test('[S80] same Idempotency-Key and data again: 201 with the same order', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(201);",
+                  "  pm.expect(pm.response.json().id, 'id').to.eql(pm.collectionVariables.get('orderId'));",
+                  "  pm.expect(pm.response.json().status, 'status').to.eql('PAID');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{orderKey}}"
+              }
+            ],
+            "url": "{{baseUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"shippingMethod\": \"COURIER\", \"shippingAddress\": {\"firstName\": \"Scenario\", \"lastName\": \"Customer\", \"street\": \"ul. Testowa 1\", \"postalCode\": \"00-001\", \"city\": \"Warszawa\", \"countryCode\": \"PL\"}, \"payment\": {\"cardNumber\": \"4111111111111111\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Cart after the purchase",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S80] cart after the purchase: 200, no items', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "  pm.expect(pm.response.json().items, 'items').to.eql([]);",
+                  "});"
                 ]
               }
             }
@@ -1992,27 +2208,24 @@
                 "value": "Bearer {{customerToken}}"
               }
             ],
-            "url": "{{baseUrl}}/orders"
+            "url": "{{baseUrl}}/cart"
           }
         },
         {
-          "name": "Shipping flow (stage 8)",
+          "name": "Stock reserved by the purchase",
           "event": [
             {
-              "listen": "prerequest",
+              "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// S81: the shipping flow comes in stage 8. Without shipping-service the check is skipped; once shipping-service is registered",
-                  "// in Consul this item fails, so a registration before stage 8 cannot pass unnoticed.",
-                  "if (pm.collectionVariables.get('shippingRegistered') === 'false') {",
-                  "  const skipped = JSON.parse(pm.environment.get('skipped') || '[]');",
-                  "  skipped.push({ item: pm.info.requestName, reason: 'shipping-service not registered', checks: [\"S81\"] });",
-                  "  pm.environment.set('skipped', JSON.stringify(skipped));",
-                  "} else {",
-                  "  pm.test('[S81] shipping flow (stage 8)', () => pm.expect.fail('shipping flow is implemented in stage 8'));",
-                  "}",
-                  "pm.execution.skipRequest();"
+                  "const stock = pm.response.code === 200 ? pm.response.json() : {};",
+                  "const before = JSON.parse(pm.collectionVariables.get('stockBuy') || '{}');",
+                  "pm.test('[S80] stock after the purchase: reserved +2, quantity unchanged', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "  pm.expect(stock.reserved, 'reserved').to.eql(before.reserved + 2);",
+                  "  pm.expect(stock.quantity, 'quantity').to.eql(before.quantity);",
+                  "});"
                 ]
               }
             }
@@ -2020,7 +2233,1253 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": "{{baseUrl}}/shipping/methods"
+            "url": "{{baseUrl}}/inventory/{{pBuy}}"
+          }
+        },
+        {
+          "name": "Shipment of the order",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const page = pm.response.code === 200 ? pm.response.json() : { items: [] };",
+                  "const shipment = page.items.length === 1 ? page.items[0] : {};",
+                  "// Polled every 500 ms (no fixed waits): the effect comes from an event processed in the background.",
+                  "const waitedMs = Date.now() - Number(pm.collectionVariables.get('paidAt'));",
+                  "if (!(shipment.status === 'PREPARING') && waitedMs < 10000) {",
+                  "  pm.execution.setNextRequest(pm.info.requestId);",
+                  "  setTimeout(() => {}, 500);",
+                  "} else {",
+                  "  pm.collectionVariables.unset('pollStart');",
+                  "  pm.test('[S81] shipment PREPARING within 10 s of the purchase (order.created -> Shipping)', () => {",
+                  "    pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "    pm.expect(page.items.length, 'shipments of the order').to.eql(1);",
+                  "    pm.expect(shipment.status, 'status').to.eql('PREPARING');",
+                  "    pm.expect(shipment.orderId, 'orderId').to.eql(pm.collectionVariables.get('orderId'));",
+                  "    pm.expect(shipment.method, 'method').to.eql('COURIER');",
+                  "    pm.expect(shipment.trackingNumber, 'trackingNumber').to.eql(null);",
+                  "    pm.expect(waitedMs, 'ms since the purchase').to.be.at.most(10000);",
+                  "  });",
+                  "  pm.collectionVariables.set('shipmentId', shipment.id || '');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/shipments?orderId={{orderId}}"
+          }
+        },
+        {
+          "name": "Confirmation e-mail in Mailpit",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('pollStart')) {",
+                  "  pm.collectionVariables.set('pollStart', String(Date.now()));",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// E-mails come from Notification after an event, so Mailpit is polled for up to 30 s (as S23).",
+                  "const messages = pm.response.code === 200 ? pm.response.json().messages : [];",
+                  "// Polled every 500 ms (no fixed waits): the effect comes from an event processed in the background.",
+                  "const waitedMs = Date.now() - Number(pm.collectionVariables.get('pollStart'));",
+                  "if (!(messages.filter((message) => message.Subject === 'Potwierdzenie zamówienia').length >= 1) && waitedMs < 30000) {",
+                  "  pm.execution.setNextRequest(pm.info.requestId);",
+                  "  setTimeout(() => {}, 500);",
+                  "} else {",
+                  "  pm.collectionVariables.unset('pollStart');",
+                  "  pm.test('[S82] 1 e-mail(s) \"Potwierdzenie zamówienia\" to the customer', () => {",
+                  "    pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "    pm.expect(messages.filter((message) => message.Subject === 'Potwierdzenie zamówienia').length, 'e-mails').to.eql(1);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mailpitUrl}}/api/v1/search?query=to:{{customerEmail}}"
+          }
+        },
+        {
+          "name": "Stock of the second product",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const stock = pm.response.code === 200 ? pm.response.json() : {};",
+                  "pm.test('[S83] stock read: 200', () => pm.expect(pm.response.code, 'status').to.eql(200));",
+                  "pm.collectionVariables.set('stockCancel', JSON.stringify({ quantity: stock.quantity, reserved: stock.reserved }));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/inventory/{{pCancel}}"
+          }
+        },
+        {
+          "name": "Add 1 x the second product",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S83] product added to the cart: 200', () => pm.expect(pm.response.code, 'status').to.eql(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/cart/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"productId\": \"{{pCancel}}\", \"quantity\": 1}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Buy the cart (card declined)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A new Idempotency-Key for every purchase of every run (wytyczne 3.8: a new key after each 201 and each 4xx).",
+                  "pm.collectionVariables.set('orderKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Amounts are compared in grosze (integers), never as floating point numbers.",
+                  "const cents = (amount) => {",
+                  "  const [zloty, grosze] = amount.split('.');",
+                  "  return Number(zloty) * 100 + Number(grosze);",
+                  "};",
+                  "",
+                  "const order = pm.response.code === 201 ? pm.response.json() : { items: [] };",
+                  "pm.test('[S83] purchase: 201 PAYMENT_FAILED, totals in grosze', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(201);",
+                  "  pm.expect(order.status, 'status').to.eql('PAYMENT_FAILED');",
+                  "  pm.expect(order.userId, 'userId').to.eql(pm.collectionVariables.get('customerId'));",
+                  "  pm.expect(order.shippingMethod, 'shippingMethod').to.eql('COURIER');",
+                  "  pm.expect(cents(order.itemsTotal), 'itemsTotal').to.eql(order.items.reduce((sum, line) => sum + cents(line.subtotal), 0));",
+                  "  pm.expect(cents(order.total), 'total').to.eql(cents(order.itemsTotal) + cents(order.shippingCost));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{orderKey}}"
+              }
+            ],
+            "url": "{{baseUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"shippingMethod\": \"COURIER\", \"shippingAddress\": {\"firstName\": \"Scenario\", \"lastName\": \"Customer\", \"street\": \"ul. Testowa 1\", \"postalCode\": \"00-001\", \"city\": \"Warszawa\", \"countryCode\": \"PL\"}, \"payment\": {\"cardNumber\": \"4111111111111110\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Stock after the declined payment",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const stock = pm.response.code === 200 ? pm.response.json() : {};",
+                  "const before = JSON.parse(pm.collectionVariables.get('stockCancel') || '{}');",
+                  "pm.test('[S83] stock after PAYMENT_FAILED: reservation released (reserved and quantity unchanged)', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "  pm.expect(stock.reserved, 'reserved').to.eql(before.reserved);",
+                  "  pm.expect(stock.quantity, 'quantity').to.eql(before.quantity);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/inventory/{{pCancel}}"
+          }
+        },
+        {
+          "name": "Cart after the declined payment",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S83] cart after PAYMENT_FAILED: unchanged (1 x the second product)', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "  const lines = pm.response.json().items.map((line) => [line.productId, line.quantity]);",
+                  "  pm.expect(lines, 'lines').to.eql([[pm.collectionVariables.get('pCancel'), 1]]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/cart"
+          }
+        },
+        {
+          "name": "Ship the order (ADMIN)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const shipment = pm.response.code === 200 ? pm.response.json() : {};",
+                  "pm.test('[S84] ADMIN sets the shipment to SHIPPED: 200', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "  pm.expect(shipment.status, 'status').to.eql('SHIPPED');",
+                  "  pm.expect(shipment.trackingNumber, 'trackingNumber').to.be.a('string').and.not.empty;",
+                  "  pm.expect(shipment.history[shipment.history.length - 1].status, 'last history entry').to.eql('SHIPPED');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/shipments/{{shipmentId}}/status",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"status\": \"SHIPPED\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Order status after shipping",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('pollStart')) {",
+                  "  pm.collectionVariables.set('pollStart', String(Date.now()));",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const order = pm.response.code === 200 ? pm.response.json() : {};",
+                  "// Polled every 500 ms (no fixed waits): the effect comes from an event processed in the background.",
+                  "const waitedMs = Date.now() - Number(pm.collectionVariables.get('pollStart'));",
+                  "if (!(order.status === 'SHIPPED') && waitedMs < 10000) {",
+                  "  pm.execution.setNextRequest(pm.info.requestId);",
+                  "  setTimeout(() => {}, 500);",
+                  "} else {",
+                  "  pm.collectionVariables.unset('pollStart');",
+                  "  pm.test('[S84] order status SHIPPED within 10 s', () => {",
+                  "    pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "    pm.expect(order.status, 'status').to.eql('SHIPPED');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/{{orderId}}"
+          }
+        },
+        {
+          "name": "Stock after shipping",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('pollStart')) {",
+                  "  pm.collectionVariables.set('pollStart', String(Date.now()));",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const stock = pm.response.code === 200 ? pm.response.json() : {};",
+                  "const before = JSON.parse(pm.collectionVariables.get('stockBuy') || '{}');",
+                  "// Polled every 500 ms (no fixed waits): the effect comes from an event processed in the background.",
+                  "const waitedMs = Date.now() - Number(pm.collectionVariables.get('pollStart'));",
+                  "if (!(stock.quantity === before.quantity + (-2) && stock.reserved === before.reserved + (0)) && waitedMs < 10000) {",
+                  "  pm.execution.setNextRequest(pm.info.requestId);",
+                  "  setTimeout(() => {}, 500);",
+                  "} else {",
+                  "  pm.collectionVariables.unset('pollStart');",
+                  "  pm.test('[S84] goods issued: quantity -2, reservation removed within 10 s', () => {",
+                  "    pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "    pm.expect(stock.quantity, 'quantity').to.eql(before.quantity + (-2));",
+                  "    pm.expect(stock.reserved, 'reserved').to.eql(before.reserved + (0));",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/inventory/{{pBuy}}"
+          }
+        },
+        {
+          "name": "Shipping e-mail in Mailpit",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('pollStart')) {",
+                  "  pm.collectionVariables.set('pollStart', String(Date.now()));",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// E-mails come from Notification after an event, so Mailpit is polled for up to 30 s (as S23).",
+                  "const messages = pm.response.code === 200 ? pm.response.json().messages : [];",
+                  "// Polled every 500 ms (no fixed waits): the effect comes from an event processed in the background.",
+                  "const waitedMs = Date.now() - Number(pm.collectionVariables.get('pollStart'));",
+                  "if (!(messages.filter((message) => message.Subject === 'Twoja paczka jest w drodze').length >= 1) && waitedMs < 30000) {",
+                  "  pm.execution.setNextRequest(pm.info.requestId);",
+                  "  setTimeout(() => {}, 500);",
+                  "} else {",
+                  "  pm.collectionVariables.unset('pollStart');",
+                  "  pm.test('[S84] 1 e-mail(s) \"Twoja paczka jest w drodze\" to the customer', () => {",
+                  "    pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "    pm.expect(messages.filter((message) => message.Subject === 'Twoja paczka jest w drodze').length, 'e-mails').to.eql(1);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mailpitUrl}}/api/v1/search?query=to:{{customerEmail}}"
+          }
+        },
+        {
+          "name": "Cancel the shipped order",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S85] cancel after shipping: 409 ORDER_NOT_CANCELLABLE', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(409);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('ORDER_NOT_CANCELLABLE');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/{{orderId}}/cancel"
+          }
+        },
+        {
+          "name": "Shipped order after the refused cancellation",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S85] order still SHIPPED', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "  pm.expect(pm.response.json().status, 'status').to.eql('SHIPPED');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/{{orderId}}"
+          }
+        },
+        {
+          "name": "Shipment in transit (ADMIN)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const shipment = pm.response.code === 200 ? pm.response.json() : {};",
+                  "pm.test('[S86] ADMIN sets the shipment to IN_TRANSIT: 200', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "  pm.expect(shipment.status, 'status').to.eql('IN_TRANSIT');",
+                  "  pm.expect(shipment.trackingNumber, 'trackingNumber').to.be.a('string').and.not.empty;",
+                  "  pm.expect(shipment.history[shipment.history.length - 1].status, 'last history entry').to.eql('IN_TRANSIT');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/shipments/{{shipmentId}}/status",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"status\": \"IN_TRANSIT\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Shipment delivered (ADMIN)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const shipment = pm.response.code === 200 ? pm.response.json() : {};",
+                  "pm.test('[S86] ADMIN sets the shipment to DELIVERED: 200', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "  pm.expect(shipment.status, 'status').to.eql('DELIVERED');",
+                  "  pm.expect(shipment.trackingNumber, 'trackingNumber').to.be.a('string').and.not.empty;",
+                  "  pm.expect(shipment.history[shipment.history.length - 1].status, 'last history entry').to.eql('DELIVERED');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/shipments/{{shipmentId}}/status",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"status\": \"DELIVERED\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Order status after delivery",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('pollStart')) {",
+                  "  pm.collectionVariables.set('pollStart', String(Date.now()));",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const order = pm.response.code === 200 ? pm.response.json() : {};",
+                  "// Polled every 500 ms (no fixed waits): the effect comes from an event processed in the background.",
+                  "const waitedMs = Date.now() - Number(pm.collectionVariables.get('pollStart'));",
+                  "if (!(order.status === 'DELIVERED') && waitedMs < 10000) {",
+                  "  pm.execution.setNextRequest(pm.info.requestId);",
+                  "  setTimeout(() => {}, 500);",
+                  "} else {",
+                  "  pm.collectionVariables.unset('pollStart');",
+                  "  pm.test('[S86] order status DELIVERED within 10 s', () => {",
+                  "    pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "    pm.expect(order.status, 'status').to.eql('DELIVERED');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/{{orderId}}"
+          }
+        },
+        {
+          "name": "Delivery e-mail in Mailpit",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('pollStart')) {",
+                  "  pm.collectionVariables.set('pollStart', String(Date.now()));",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// E-mails come from Notification after an event, so Mailpit is polled for up to 30 s (as S23).",
+                  "const messages = pm.response.code === 200 ? pm.response.json().messages : [];",
+                  "// Polled every 500 ms (no fixed waits): the effect comes from an event processed in the background.",
+                  "const waitedMs = Date.now() - Number(pm.collectionVariables.get('pollStart'));",
+                  "if (!(messages.filter((message) => message.Subject === 'Paczka dostarczona').length >= 1) && waitedMs < 30000) {",
+                  "  pm.execution.setNextRequest(pm.info.requestId);",
+                  "  setTimeout(() => {}, 500);",
+                  "} else {",
+                  "  pm.collectionVariables.unset('pollStart');",
+                  "  pm.test('[S86] 1 e-mail(s) \"Paczka dostarczona\" to the customer', () => {",
+                  "    pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "    pm.expect(messages.filter((message) => message.Subject === 'Paczka dostarczona').length, 'e-mails').to.eql(1);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mailpitUrl}}/api/v1/search?query=to:{{customerEmail}}"
+          }
+        },
+        {
+          "name": "Buy the cart again (card accepted)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A new Idempotency-Key for every purchase of every run (wytyczne 3.8: a new key after each 201 and each 4xx).",
+                  "pm.collectionVariables.set('orderKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Amounts are compared in grosze (integers), never as floating point numbers.",
+                  "const cents = (amount) => {",
+                  "  const [zloty, grosze] = amount.split('.');",
+                  "  return Number(zloty) * 100 + Number(grosze);",
+                  "};",
+                  "",
+                  "const order = pm.response.code === 201 ? pm.response.json() : { items: [] };",
+                  "pm.test('[S87] purchase: 201 PAID, totals in grosze', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(201);",
+                  "  pm.expect(order.status, 'status').to.eql('PAID');",
+                  "  pm.expect(order.userId, 'userId').to.eql(pm.collectionVariables.get('customerId'));",
+                  "  pm.expect(order.shippingMethod, 'shippingMethod').to.eql('COURIER');",
+                  "  pm.expect(cents(order.itemsTotal), 'itemsTotal').to.eql(order.items.reduce((sum, line) => sum + cents(line.subtotal), 0));",
+                  "  pm.expect(cents(order.total), 'total').to.eql(cents(order.itemsTotal) + cents(order.shippingCost));",
+                  "});",
+                  "pm.collectionVariables.set('cancelOrderId', order.id || '');",
+                  "pm.collectionVariables.set('paidAt', String(Date.now()));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{orderKey}}"
+              }
+            ],
+            "url": "{{baseUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"shippingMethod\": \"COURIER\", \"shippingAddress\": {\"firstName\": \"Scenario\", \"lastName\": \"Customer\", \"street\": \"ul. Testowa 1\", \"postalCode\": \"00-001\", \"city\": \"Warszawa\", \"countryCode\": \"PL\"}, \"payment\": {\"cardNumber\": \"4111111111111111\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Stock reserved by the second purchase",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const stock = pm.response.code === 200 ? pm.response.json() : {};",
+                  "const before = JSON.parse(pm.collectionVariables.get('stockCancel') || '{}');",
+                  "pm.test('[S87] stock after the purchase: reserved +1', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "  pm.expect(stock.reserved, 'reserved').to.eql(before.reserved + 1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/inventory/{{pCancel}}"
+          }
+        },
+        {
+          "name": "Shipment of the second order",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const page = pm.response.code === 200 ? pm.response.json() : { items: [] };",
+                  "const shipment = page.items.length === 1 ? page.items[0] : {};",
+                  "// Polled every 500 ms (no fixed waits): the effect comes from an event processed in the background.",
+                  "const waitedMs = Date.now() - Number(pm.collectionVariables.get('paidAt'));",
+                  "if (!(shipment.status === 'PREPARING') && waitedMs < 10000) {",
+                  "  pm.execution.setNextRequest(pm.info.requestId);",
+                  "  setTimeout(() => {}, 500);",
+                  "} else {",
+                  "  pm.collectionVariables.unset('pollStart');",
+                  "  pm.test('[S87] shipment PREPARING within 10 s of the purchase (order.created -> Shipping)', () => {",
+                  "    pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "    pm.expect(page.items.length, 'shipments of the order').to.eql(1);",
+                  "    pm.expect(shipment.status, 'status').to.eql('PREPARING');",
+                  "    pm.expect(shipment.orderId, 'orderId').to.eql(pm.collectionVariables.get('cancelOrderId'));",
+                  "    pm.expect(shipment.method, 'method').to.eql('COURIER');",
+                  "    pm.expect(shipment.trackingNumber, 'trackingNumber').to.eql(null);",
+                  "    pm.expect(waitedMs, 'ms since the purchase').to.be.at.most(10000);",
+                  "  });",
+                  "  pm.collectionVariables.set('cancelShipmentId', shipment.id || '');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/shipments?orderId={{cancelOrderId}}"
+          }
+        },
+        {
+          "name": "Cancel the order before shipping",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S87] cancel before shipping: 200 CANCELLED', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "  pm.expect(pm.response.json().id, 'id').to.eql(pm.collectionVariables.get('cancelOrderId'));",
+                  "  pm.expect(pm.response.json().status, 'status').to.eql('CANCELLED');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/{{cancelOrderId}}/cancel"
+          }
+        },
+        {
+          "name": "Shipment of the cancelled order",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Shipping cancels the shipment synchronously (POST /shipments/cancel from Order) before the order is cancelled.",
+                  "pm.test('[S87] shipment of the cancelled order: CANCELLED, no tracking number', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "  pm.expect(pm.response.json().status, 'status').to.eql('CANCELLED');",
+                  "  pm.expect(pm.response.json().trackingNumber, 'trackingNumber').to.eql(null);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/shipments/{{cancelShipmentId}}"
+          }
+        },
+        {
+          "name": "Stock after the cancellation",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('pollStart')) {",
+                  "  pm.collectionVariables.set('pollStart', String(Date.now()));",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const stock = pm.response.code === 200 ? pm.response.json() : {};",
+                  "const before = JSON.parse(pm.collectionVariables.get('stockCancel') || '{}');",
+                  "// Polled every 500 ms (no fixed waits): the effect comes from an event processed in the background.",
+                  "const waitedMs = Date.now() - Number(pm.collectionVariables.get('pollStart'));",
+                  "if (!(stock.quantity === before.quantity + (0) && stock.reserved === before.reserved + (0)) && waitedMs < 10000) {",
+                  "  pm.execution.setNextRequest(pm.info.requestId);",
+                  "  setTimeout(() => {}, 500);",
+                  "} else {",
+                  "  pm.collectionVariables.unset('pollStart');",
+                  "  pm.test('[S87] reservation released after order.cancelled within 10 s', () => {",
+                  "    pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "    pm.expect(stock.quantity, 'quantity').to.eql(before.quantity + (0));",
+                  "    pm.expect(stock.reserved, 'reserved').to.eql(before.reserved + (0));",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/inventory/{{pCancel}}"
+          }
+        },
+        {
+          "name": "Cancellation e-mail in Mailpit",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('pollStart')) {",
+                  "  pm.collectionVariables.set('pollStart', String(Date.now()));",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// E-mails come from Notification after an event, so Mailpit is polled for up to 30 s (as S23).",
+                  "const messages = pm.response.code === 200 ? pm.response.json().messages : [];",
+                  "// Polled every 500 ms (no fixed waits): the effect comes from an event processed in the background.",
+                  "const waitedMs = Date.now() - Number(pm.collectionVariables.get('pollStart'));",
+                  "if (!(messages.filter((message) => message.Subject === 'Zamówienie anulowane').length >= 1) && waitedMs < 30000) {",
+                  "  pm.execution.setNextRequest(pm.info.requestId);",
+                  "  setTimeout(() => {}, 500);",
+                  "} else {",
+                  "  pm.collectionVariables.unset('pollStart');",
+                  "  pm.test('[S87] 1 e-mail(s) \"Zamówienie anulowane\" to the customer', () => {",
+                  "    pm.expect(pm.response.code, 'status').to.eql(200);",
+                  "    pm.expect(messages.filter((message) => message.Subject === 'Zamówienie anulowane').length, 'e-mails').to.eql(1);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mailpitUrl}}/api/v1/search?query=to:{{customerEmail}}"
+          }
+        },
+        {
+          "name": "Review the bought product",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Review asks Order (GET /orders/purchased): the delivered order has this product.",
+                  "pm.test('[S88] review of a bought product: 201, id UUID', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(201);",
+                  "  const review = pm.response.json();",
+                  "  pm.expect(review.id, 'id').to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);",
+                  "  pm.expect(review.productId, 'productId').to.eql(pm.collectionVariables.get('pBuy'));",
+                  "  pm.expect(review.userId, 'userId').to.eql(pm.collectionVariables.get('customerId'));",
+                  "  pm.expect(review.rating, 'rating').to.eql(5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/reviews",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"productId\": \"{{pBuy}}\", \"rating\": 5, \"comment\": \"Scenario review {{runId}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Review a product that was not bought",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S88] review without a purchase: 403 FORBIDDEN', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(403);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('FORBIDDEN');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/reviews",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"productId\": \"{{pEmpty}}\", \"rating\": 5, \"comment\": null}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Create a product to withdraw (ADMIN)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S89] product created: 201', () => pm.expect(pm.response.code, 'status').to.eql(201));",
+                  "pm.collectionVariables.set('withdrawnProductId', pm.response.code === 201 ? pm.response.json().id : '');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/products",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Scenario {{runId}}\", \"description\": \"Withdrawn by the scenario\", \"price\": \"1.00\", \"currency\": \"PLN\", \"categoryId\": \"{{kitchenCategoryId}}\", \"imageUrl\": null}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Set stock of the product to withdraw (ADMIN)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S89] stock of the new product set: 200', () => pm.expect(pm.response.code, 'status').to.eql(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/inventory/{{withdrawnProductId}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"quantity\": 1}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Add the product to withdraw to the cart",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S89] product added to the cart: 200', () => pm.expect(pm.response.code, 'status').to.eql(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/cart/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"productId\": \"{{withdrawnProductId}}\", \"quantity\": 1}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Withdraw the product (ADMIN)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S89] product withdrawn: 204', () => pm.expect(pm.response.code, 'status').to.eql(204));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/products/{{withdrawnProductId}}"
+          }
+        },
+        {
+          "name": "Buy a cart with the withdrawn product",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A new Idempotency-Key for every purchase of every run (wytyczne 3.8: a new key after each 201 and each 4xx).",
+                  "pm.collectionVariables.set('orderKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S89] purchase with a withdrawn product in the cart: 409 PRODUCT_UNAVAILABLE', () => {",
+                  "  pm.expect(pm.response.code, 'status').to.eql(409);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('PRODUCT_UNAVAILABLE');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{orderKey}}"
+              }
+            ],
+            "url": "{{baseUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"shippingMethod\": \"COURIER\", \"shippingAddress\": {\"firstName\": \"Scenario\", \"lastName\": \"Customer\", \"street\": \"ul. Testowa 1\", \"postalCode\": \"00-001\", \"city\": \"Warszawa\", \"countryCode\": \"PL\"}, \"payment\": {\"cardNumber\": \"4111111111111111\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Remove the withdrawn product from the cart",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('[S89] withdrawn product removed from the cart: 204', () => pm.expect(pm.response.code, 'status').to.eql(204));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/cart/items/{{withdrawnProductId}}"
           }
         }
       ]

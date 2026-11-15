@@ -193,6 +193,12 @@ add_secret inventory-service-secret \
   RABBITMQ_PASSWORD "$(read_env INVENTORY_RABBITMQ_PASSWORD)"
 add_secret review-service-secret \
   MONGODB_URL "mongodb://review_service:$(read_env REVIEW_DB_PASSWORD)@mongo:27017/review_db?authSource=review_db"
+add_secret order-service-secret \
+  ORDER_DB_PASSWORD "$(read_env ORDER_DB_PASSWORD)" \
+  RABBITMQ_PASSWORD "$(read_env ORDER_RABBITMQ_PASSWORD)"
+add_secret shipping-service-secret \
+  SHIPPING_DB_PASSWORD "$(read_env SHIPPING_DB_PASSWORD)" \
+  RABBITMQ_PASSWORD "$(read_env SHIPPING_RABBITMQ_PASSWORD)"
 add_secret notification-service-secret \
   DB_PASSWORD "$(read_env NOTIFICATION_DB_PASSWORD)" \
   RABBITMQ_PASSWORD "$(read_env NOTIFICATION_RABBITMQ_PASSWORD)"

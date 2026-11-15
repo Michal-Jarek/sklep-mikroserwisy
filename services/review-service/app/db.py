@@ -5,7 +5,17 @@ from pymongo.collection import Collection
 
 logger = logging.getLogger(__name__)
 
-COLLECTION = "reviews"
+# Opinie z productId jako UUID tekstem i _id jako UUID. Stara kolekcja "reviews" (productId liczbą, _id jako ObjectId)
+# nie jest używana ani usuwana przez kod - usuwa ją platforma (deploy/README.md).
+COLLECTION = "product_reviews"
+
+# Każda operacja kończy się błędem najpóźniej po ~1,5 s, gdy baza nie odpowiada (wołający czekają 2 s):
+# - wybór serwera 1 s (pymongo czeka w krokach do 0,5 s, więc w praktyce do ~1,5 s), nawiązanie połączenia 1 s;
+# - brak odpowiedzi na otwartym połączeniu (baza zawieszona) 1,5 s;
+# - bez ponowienia odczytu przez sterownik (retryReads), które podwajało czas przy zawieszonej bazie (3 s).
+SERVER_SELECTION_TIMEOUT_MS = 1000
+CONNECT_TIMEOUT_MS = 1000
+SOCKET_TIMEOUT_MS = 1500
 
 
 class _State:
@@ -16,7 +26,13 @@ class _State:
 def init_client(url: str, database: str) -> None:
     if not url:
         raise RuntimeError("Brak MONGODB_URL")
-    _State.client = MongoClient(url, serverSelectionTimeoutMS=3000)
+    _State.client = MongoClient(
+        url,
+        serverSelectionTimeoutMS=SERVER_SELECTION_TIMEOUT_MS,
+        connectTimeoutMS=CONNECT_TIMEOUT_MS,
+        socketTimeoutMS=SOCKET_TIMEOUT_MS,
+        retryReads=False,
+    )
     _State.database = _State.client[database]
 
 

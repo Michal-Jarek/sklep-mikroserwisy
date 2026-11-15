@@ -61,6 +61,50 @@ class Registration:
         service = response.json()
         return service.get("Address") == address and service.get("Port") == self.settings.port
 
+    async def remove_orphans(self, address: str) -> None:
+        """Z7: removes entries of this service with our address and port but another ID (an earlier container
+        on the same IP whose deregistration never ran). No connection to Consul ends the attempt like the
+        registration (retried on the first successful contact); a bad answer (HTTP != 2xx, bad JSON) is one
+        warning and the registration goes on. A refused deregistration of one orphan (e.g. the reaper removed it
+        meanwhile) does not stop the others: one warning after the loop."""
+        try:
+            response = await self.consul.get(f"/v1/health/service/{SERVICE_NAME}")
+            response.raise_for_status()
+            orphans = [
+                item["Service"]["ID"]
+                for item in response.json()
+                if item["Service"]["Address"] == address
+                and item["Service"]["Port"] == self.settings.port
+                and item["Service"]["ID"] != self.settings.instance_id
+            ]
+        except httpx.TransportError:
+            raise
+        except Exception as exc:
+            logger.warning("Orphaned Consul entries not removed, registering anyway", extra=reason(exc))
+            return
+        failed = 0
+        for orphan_id in orphans:
+            response = await self.consul.put(f"/v1/agent/service/deregister/{orphan_id}")
+            if not response.is_success:
+                failed += 1
+                continue
+            logger.info("Removed an orphaned entry from Consul", extra={"fields": {"removedId": orphan_id}})
+        if failed:
+            logger.warning("Orphaned Consul entries not removed, registering anyway",
+                           extra={"fields": {"reason": "HTTPStatusError", "failed": failed}})
+
+    async def remove_previous_entry(self) -> None:
+        """Z5: an entry with our own ID left by a process killed without deregistration keeps its old check
+        state (e.g. critical) when registered again, and Consul ignores "Status"; so it is removed first."""
+        response = await self.consul.get(f"/v1/agent/service/{self.settings.instance_id}")
+        if response.status_code == 404:
+            return
+        response.raise_for_status()
+        response = await self.consul.put(f"/v1/agent/service/deregister/{self.settings.instance_id}")
+        response.raise_for_status()
+        logger.info("Removed the Consul entry of the previous process",
+                    extra={"fields": {"instanceId": self.settings.instance_id}})
+
     async def register(self, address: str) -> None:
         status = "passing" if await self.is_ready() else "critical"
         port = self.settings.port
@@ -88,12 +132,18 @@ class Registration:
         """Background task: never ends on an error. One warning per Consul outage, then retries."""
         reachable = True
         retry_in = 1
+        started = False
         while True:
             try:
                 address = self.settings.service_address or await asyncio.wait_for(
                     asyncio.to_thread(self.own_address), 2
                 )
-                if not await self.is_registered(address):
+                if not started:  # only on the first successful contact of this process (Z7, Z5)
+                    await self.remove_orphans(address)
+                    await self.remove_previous_entry()
+                    await self.register(address)
+                    started = True
+                elif not await self.is_registered(address):
                     await self.register(address)
                 if not reachable:
                     reachable = True

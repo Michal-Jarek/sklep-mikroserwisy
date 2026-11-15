@@ -1,8 +1,6 @@
 import asyncio
 import logging
-import re
 import time
-import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -15,11 +13,10 @@ from app.consumer import run_consumer
 from app.errors import register_error_handlers
 from app.events import handle_event
 from app.remote_config import load_log_level
-from app.ids import valid_uuid
+from app.ids import request_id_or_new, valid_uuid
 from app.logging_config import configure_logging, request_id_var, set_service_log_level, user_id_var
 
 settings = get_settings()
-REQUEST_ID_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,64}")  # ta sama reguła co w Gateway
 configure_logging(settings.service_name, settings.log_level)
 logger = logging.getLogger(__name__)
 
@@ -66,8 +63,7 @@ register_error_handlers(app)
 
 @app.middleware("http")
 async def request_context(request: Request, call_next):
-    received = request.headers.get("x-request-id", "")
-    request_id = received if REQUEST_ID_PATTERN.fullmatch(received) else str(uuid.uuid4())
+    request_id = request_id_or_new(request.headers.get("x-request-id"))
     request.state.request_id = request_id
     rid_token = request_id_var.set(request_id)
     # do logów trafia tylko poprawny UUID: żądanie z pominięciem Gateway może wysłać dowolny tekst

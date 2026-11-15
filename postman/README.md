@@ -1,6 +1,6 @@
 # Postman: scenariusz zakupu i pokazy
 
-Kolekcja `shop-purchase` sprawdza sklep tak, jak używa go przeglądarka: przez wejście `http://127.0.0.1:8090/api/v1` (nginx frontendu → API Gateway → usługi), a w Kubernetes przez `https://shop.localhost/api/v1` (Ingress → API Gateway → usługi, sekcja „Środowisko `k8s`”). Przechodzi rejestrację, e-mail powitalny w Mailpit, logowanie, katalog, stronę produktu, stany magazynowe (ADMIN), koszyk i odmowy dostępu. Uruchamia ją newman w kontenerze, a wynik trafia do raportu JSON bez haseł i tokenów.
+Kolekcja `shop-purchase` sprawdza sklep tak, jak używa go przeglądarka: przez wejście `http://127.0.0.1:8090/api/v1` (nginx frontendu → API Gateway → usługi), a w Kubernetes przez `https://shop.localhost/api/v1` (Ingress → API Gateway → usługi, sekcja „Środowisko `k8s`”). Przechodzi rejestrację, e-mail powitalny w Mailpit, logowanie, katalog, stronę produktu, stany magazynowe (ADMIN), koszyk, odmowy dostępu i zamówienia: zakup, odrzuconą płatność, przesyłkę, wysyłkę i doręczenie, anulowanie, opinię po zakupie i wycofany produkt w koszyku. Uruchamia ją newman w kontenerze, a wynik trafia do raportu JSON bez haseł i tokenów.
 
 Do tego dwa skrypty pokazowe: load balancing (`lb-demo.sh`) i odporność (`resilience-demo.sh`) — sekcja „Pokazy”.
 
@@ -17,7 +17,7 @@ Kolekcje pojedynczych usług są w `services/<usługa>/postman/`.
   Nazwa projektu `sklep` jest w `deploy/compose.yaml`, więc `-p sklep` w niektórych poleceniach niżej można pominąć.
 - `jq` — tylko do odczytu raportu JSON (sekcje „Raport JSON” i „Problemy”); skrypty go nie potrzebują.
 
-Node.js na laptopie nie jest potrzebny: newman 6.2.3 jest w obrazie `shop-scenario:dev` budowanym z `postman/Dockerfile`.
+Node.js na laptopie nie jest potrzebny: newman 6.2.3 jest w obrazie `shop-scenario:dev` budowanym z `postman/Dockerfile`. Runner jest w TypeScript (`runner/*.ts`); Node 22 uruchamia go wprost, bez kompilacji (sekcja „Pliki”). Wymaga to Node 22.18 albo nowszego, dlatego `postman/Dockerfile` ma dokładny obraz `node:22.23-alpine`; na starszym Node runner kończy się błędem `ERR_UNKNOWN_FILE_EXTENSION`.
 
 ## Uruchomienie
 
@@ -69,20 +69,18 @@ kubectl --context rancher-desktop -n shop rollout restart deploy/auth-service &&
 Samo `FLUSHALL` nie wystarczy: po nim Auth dalej odpowiada 429 do końca swojego okna 60 s.
 
 Czego oczekiwać:
-- **Tylko warstwa `platform`** (Gateway, Auth, User, frontend — część 7b etapu 7): `RESULT: FAILED`, kod 1. Przechodzą sprawdzenia platformy: S03, S10, S20–S22, S30, S31, S50, S51, S70, S72, S73, S90, S91. Nie przechodzą sprawdzenia usług, których jeszcze nie ma w klastrze — Gateway odpowiada na nie 503 `SERVICE_UNAVAILABLE`: S01, S02 (Inventory, Review), S11, S12, S40–S48 (Product), S23 (bez Notification nie ma e-maila powitalnego), S60–S67, S71 (Cart). To nie jest pominięcie: braku usługi scenariusz nie ukrywa.
-- **Pełny klaster** (`up.sh all`, od części 7c): wynik jak w compose — 0 nieudanych sprawdzeń, te same pominięcia (sekcja „Pominięcia i `--strict`”).
+- **Pełny klaster** (`up.sh all`): wynik jak w compose — 0 nieudanych sprawdzeń, 0 pominięć.
+- **Tylko część warstw** (np. `up.sh platform`): `RESULT: FAILED`, kod 1 — sprawdzenia usług, których nie ma w klastrze, nie przechodzą (Gateway odpowiada 503 `SERVICE_UNAVAILABLE`, Consul nie ma Order i Shipping — S03). Braku usługi scenariusz nie ukrywa.
 
 ## Wynik
 
 Na wyjściu jest raport newman (żądania i sprawdzenia `✓`/`✗`), a na końcu:
 
 ```
-SKIPPED: Get product Algorytmy — review-service rejects UUID productId (S47r)
-…
-RESULT: PASSED — assertions 114, failed 0, skipped checks 8; report: postman/reports/20261113T115623Z-compose-shop-purchase.json
+RESULT: PASSED — assertions 305, failed 0, skipped checks 0, strict; report: postman/reports/20261114T184048Z-compose-shop-purchase.json
 ```
 
-- `SKIPPED: <element> — <powód> (<sprawdzenia>)` — po jednej linii na każde pominięcie (sekcja „Pominięcia i `--strict`”).
+- `SKIPPED: <element> — <powód> (<sprawdzenia>)` — po jednej linii na każde pominięcie; od etapu 8 kolekcja niczego nie pomija (sekcja „Pominięcia i `--strict`”).
 - `hint: rate limit of the shop entrance reached, wait 60 s and run again` — gdy logowanie albo rejestracja dostały 429 `TOO_MANY_REQUESTS`.
 - `RESULT: PASSED|FAILED — …` — ostatnia linia każdego przebiegu z kodem 0 albo 1; z `--strict` dopisane `, strict`.
 
@@ -109,7 +107,7 @@ Raport leży w `postman/reports/<yyyymmddThhmmssZ>-<środowisko>-shop-purchase.j
 | `failures` | `[{item, assertion, message}]` — nieudane sprawdzenia (`assertion` = `null` przy błędzie żądania albo skryptu) |
 | `items` | `[{item, target, method, path, status, timeMs, assertions: [{name, passed}]}]` — jedno żądanie na wpis; `target` = `shop`, `mailpit` albo `consul`; `path` bez adresu i bez parametrów zapytania; `status` = `null`, gdy nie było odpowiedzi |
 
-W raporcie nie ma treści żądań i odpowiedzi, nagłówków, ciasteczek ani zmiennych środowiska — tylko pola z tabeli. Sprawdzenia porównują tokeny i hasła wyłącznie po kształcie (np. trzy części JWT), więc komunikaty błędów ich nie zawierają; `runner/run.mjs` dodatkowo zamienia hasło admina i tekst w formacie JWT na `<redacted>`. Surowy wynik newman nie jest zapisywany.
+W raporcie nie ma treści żądań i odpowiedzi, nagłówków, ciasteczek ani zmiennych środowiska — tylko pola z tabeli. Sprawdzenia porównują tokeny i hasła wyłącznie po kształcie (np. trzy części JWT), więc komunikaty błędów ich nie zawierają; `runner/run.ts` dodatkowo zamienia hasło admina i tekst w formacie JWT na `<redacted>`. Surowy wynik newman nie jest zapisywany.
 
 Przykładowe odczyty:
 
@@ -122,41 +120,28 @@ jq -r '.skipped[] | "\(.checks | join(",")) \(.reason)"' "$R"
 
 ## Pominięcia i `--strict`
 
-Część sprawdzeń zależy od poprawek usług zespołu, których jeszcze nie ma w `develop`. Folder `00 setup` sprawdza to na początku każdego przebiegu i zależne sprawdzenia pomija z jednym z czterech stałych powodów:
+Od etapu 8 wszystkie usługi sklepu działają, więc kolekcja **niczego nie pomija**: folder `00 setup` sprawdza tylko, czy Inventory i Review przyjmują identyfikatory UUID (S01, S02) i czy Order i Shipping są w Consulu ze zdrowym sprawdzeniem (S03). Gdy któraś sonda nie przechodzi, zależne sprawdzenia wykonują się dalej i też nie przechodzą — awaria nie wygląda jak pominięcie. Test `runner/collection.test.ts` pilnuje, że w kolekcji nie ma żadnego powodu pominięcia (nowy powód to decyzja Michała).
 
-| Powód | Pomijane sprawdzenia | Kiedy zniknie |
-|---|---|---|
-| `inventory-service rejects UUID productId` | S11, S12, S47a, S63, S64 | gdy Inventory przyjmie `productId` jako UUID (`GET /inventory/<uuid>` → 200 albo 404) |
-| `review-service rejects UUID productId` | S47r | gdy Review przyjmie UUID (`GET /reviews?productId=<uuid>` → 200 albo 404) |
-| `order-service not registered` | S80 | etap 8 (zamówienia) |
-| `shipping-service not registered` | S81 | etap 8 (przesyłki) |
-
-Pominięcie następuje tylko przy dokładnie tej odpowiedzi: 400 `VALIDATION_ERROR` ze słowem „integer” w `message` (Inventory, Review) albo brak usługi w Consulu (Order, Shipping; katalog `/v1/catalog/service/<nazwa>` zwraca pustą listę). Każda inna odpowiedź (np. 503 przy zatrzymanej usłudze) to nieudane sprawdzenie, a zależne sprawdzenia wykonują się i też nie przechodzą — awaria nie wygląda jak pominięcie. Usługa zarejestrowana w Consulu, ale niezdrowa, też nie jest pomijana.
-
-Gdy pominięcie dotyczy tylko części odpowiedzi, kolekcja sprawdza zachowanie zastępcze (asercje `[fallback] …`, np. strona produktu ma `availability: null` i `rating: null`). Koszyk sprawdza to w S61: `inventoryChecked` odpowiada wynikowi sondy Inventory (S01), dziś `false`.
-
-Po poprawce usługi sprawdzenia włączają się same. `--strict` zamienia każde pominięcie w błąd (kod 1, `RESULT: FAILED — … skipped checks <k>, strict`) — to bramka na czas, gdy wszystkie usługi będą gotowe.
-
-Folder `08 order (stage 8)` jest szkieletem: gdy `order-service` albo `shipping-service` pojawi się w Consulu przed etapem 8 (zdrowa albo nie), sprawdzenie S80/S81 nie przechodzi z komunikatem `… flow is implemented in stage 8`.
+Mechanizm pominięć w runnerze zostaje (zmienna środowiska `skipped`, linie `SKIPPED`, pole `skipped` raportu). `--strict` zamienia każde pominięcie w błąd (kod 1, `RESULT: FAILED — … skipped checks <k>, strict`); przy obecnej kolekcji wynik z `--strict` i bez niego jest ten sam.
 
 ## Co sprawdza kolekcja
 
-Każde sprawdzenie ma w nazwie identyfikator `[S<nn>]`; zaliczone i pominięte razem dają pełną listę 41 identyfikatorów.
+Każde sprawdzenie ma w nazwie identyfikator `[S<nn>]`; pełna lista to 49 identyfikatorów (pilnuje jej `runner/collection.test.ts`).
 
 | Folder | Sprawdzenia |
 |---|---|
-| `00 setup` | S01 Inventory przyjmuje UUID?, S02 Review przyjmuje UUID?, S03 Order i Shipping w Consulu? |
-| `01 preparation` | S10 logowanie admina (rola `ADMIN` w tokenie), S11 stany 24 produktów startowych (`Algorytmy` 5, `Bazy danych` 0, pozostałe 25 — przy każdym przebiegu), S12 stan `Algorytmy` bez tokenu |
+| `00 setup` | S01 Inventory przyjmuje `productId` jako UUID (200 albo 404), S02 Review przyjmuje UUID (200), S03 Order i Shipping mają w Consulu co najmniej jedną instancję `passing` |
+| `01 preparation` | S10 logowanie admina (rola `ADMIN` w tokenie), S11 stany 24 produktów startowych (`Algorytmy` 5, `Bazy danych` 0, pozostałe 25 sztuk dostępnych — przy każdym przebiegu; najpierw odczyt `reserved`, potem `quantity` = cel + `reserved`, więc rezerwacja pozostawiona przez przerwany przebieg nie psuje stanu ani nie kończy się 409), S12 stan `Algorytmy` bez tokenu |
 | `02 registration` | S20 rejestracja klienta (adres z wielką literą, w odpowiedzi małymi), S21 ten sam e-mail → 409 `EMAIL_TAKEN`, S22 hasło 5 znaków → 400, S23 jeden e-mail „Witamy w sklepie” w Mailpit (odpytywanie co 1 s, najwyżej 30 s) |
 | `03 login` | S30 logowanie klienta (JWT: `sub`, `roles`, `iss`, `aud`; ciasteczko `refresh_token` z `HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/api/v1/auth`), S31 własny profil |
 | `04 catalog` | S40 lista (24 produkty startowe, ceny tekstem, PLN), S41 wyszukiwanie, S42 kategoria, S43 sortowanie po cenie (wszystkie produkty, najwyżej 100), S44 strony (strona 2 po 5 = pozycje 6–10 z S40), S45 walidacja `page`/`size`, S46 kategorie, S47 strona produktu (S47a dostępność, S47r ocena), S48 nieznany produkt i zły identyfikator |
 | `05 admin access` | S50 zmiana stanu jako klient → 403, bez tokenu → 401; S51 dodanie produktu jako klient (także z nagłówkiem `X-User-Roles: ADMIN`) → 403 |
-| `06 cart` | S60 pusty koszyk, S61 dodanie (kwoty w groszach, `inventoryChecked`), S62 zmiana ilości, S63 więcej niż stan → 409, S64 produkt bez stanu → 409, S65 ilość 1000 i 0 → 400, S66 nieznany produkt → 404, S67 usuwanie (dwa razy 204) |
-| `07 access denials` | S70 endpointy wewnętrzne z tokenem klienta → 404, S71 podrobione `X-User-Id`/`X-User-Roles` są zastępowane przez Gateway, S72 brak tokenu i zły token → 401, S73 `GET /users/{id}` jako klient (własny i cudzy identyfikator) → 403 `FORBIDDEN` |
-| `08 order (stage 8)` | S80, S81 — szkielet etapu 8 |
+| `06 cart` | S60 pusty koszyk, S61 dodanie (kwoty w groszach, `inventoryChecked: true`), S62 zmiana ilości, S63 więcej niż stan → 409, S64 produkt bez stanu → 409, S65 ilość 1000 i 0 → 400, S66 nieznany produkt → 404, S67 usuwanie (dwa razy 204) |
+| `07 access denials` | S70 endpointy wewnętrzne z zewnątrz → 404 (`POST /users`, `DELETE /cart/{userId}`, `POST /inventory/reservations`, `GET /orders/purchased?userId=&productId=` z tokenem klienta, `POST /shipments/cancel` z tokenem klienta i admina), S71 podrobione `X-User-Id`/`X-User-Roles` są zastępowane przez Gateway, S72 brak tokenu i zły token → 401, S73 `GET /users/{id}` jako klient (własny i cudzy identyfikator) → 403 `FORBIDDEN` |
+| `08 order` | S80 zakup kartą przyjętą: 201 `PAID`, kwoty, ten sam `Idempotency-Key` → to samo zamówienie, pusty koszyk, `reserved` +2; S81 przesyłka `PREPARING` najpóźniej 10 s po zakupie (odpytywanie co 0,5 s); S82 e-mail „Potwierdzenie zamówienia”; S83 karta kończąca się na `0` → 201 `PAYMENT_FAILED`, rezerwacja zwolniona, koszyk bez zmian; S84 ADMIN `SHIPPED` → zamówienie `SHIPPED`, `quantity` −2, e-mail „Twoja paczka jest w drodze”; S85 anulowanie po wysyłce → 409 `ORDER_NOT_CANCELLABLE`; S86 `IN_TRANSIT`, `DELIVERED` → zamówienie `DELIVERED`, e-mail „Paczka dostarczona”; S87 anulowanie przed wysyłką → 200 `CANCELLED`, przesyłka `CANCELLED`, rezerwacja zwolniona, e-mail „Zamówienie anulowane”; S88 opinia po zakupie → 201, bez zakupu → 403; S89 wycofany produkt w koszyku → 409 `PRODUCT_UNAVAILABLE` |
 | cała kolekcja | S90 każda odpowiedź błędu API w formacie `{status, error, message, requestId}`, S91 każda odpowiedź API ma `X-Request-Id` |
 
-Przebieg zakłada najwyżej 2 logowania (bez testu złego hasła — sprawdzają go kolekcje Auth i Gateway) i nie tworzy produktów. Każdy przebieg zakłada nowe konto klienta.
+Przebieg zakłada najwyżej 2 logowania (bez testu złego hasła — sprawdzają go kolekcje Auth i Gateway). Każdy przebieg zakłada nowe konto klienta i jeden produkt `Scenario <runId>`, który od razu wycofuje (S89; produkt zostaje w bazie Product jako usunięty, ze stanem 1 w Inventory). Każde `POST /orders` ma nowy `Idempotency-Key`. Każde zamówienie przebiegu kończy się doręczeniem albo anulowaniem, więc przebieg nie zostawia rezerwacji. Zamówienia kupują produkty startowe `…0001` (2 sztuki) i `…0002` (1 sztuka); stany wraca S11 następnego przebiegu.
 
 ## Test Twojej poprawki
 
@@ -174,20 +159,21 @@ Scenariusz jest testem odbiorczym poprawek usług: po zmianie w swojej usłudze 
    Kontener migracji kończy pracę (`Exited (0)` w `docker compose … ps -a`) — to poprawne.
 2. Uruchom scenariusz: `bash postman/run.sh compose`.
 3. Znajdź w wyniku sprawdzenia swojej usługi (tabela niżej): w wyjściu newman (`✓`/`✗` przy nazwie z `[S<nn>]`), w liniach `SKIPPED` i w raporcie JSON (sekcja „Raport JSON”, odczyty `failures` i `skipped`).
-4. Poprawka przeszła, gdy w liniach `SKIPPED` nie ma już powodu dotyczącego Twojej usługi, a raport nie ma żadnych `failures` (`RESULT: PASSED`). `--strict` przechodzi dopiero wtedy, gdy wszystkie poprawki są w `develop` — do etapu 8 zawsze zostają pominięcia Order i Shipping.
+4. Poprawka przeszła, gdy raport nie ma żadnych `failures` (`RESULT: PASSED`); kolekcja niczego nie pomija, więc `--strict` daje ten sam wynik.
 5. Kolekcję, powody pominięć i pozostałe pliki w `postman/` zmienia tylko Michał. Jeśli uważasz, że kolekcja oczekuje złej odpowiedzi, napisz do niego zamiast zmieniać ją w swoim PR.
 
 | Usługa | Sprawdzenia |
 |---|---|
 | Auth | S10, S20, S21, S22, S30 |
 | User | S31 |
-| Notification | S23 |
-| Product | S40–S48 |
-| Inventory | S11, S12, S47a, S63, S64 |
-| Review | S47r |
+| Notification | S23, S82, S84, S86, S87 |
+| Product | S40–S48, S89 |
+| Inventory | S01, S11, S12, S47a, S63, S64, S80, S83, S84, S87 |
+| Review | S02, S47r, S88 |
 | Cart | S60–S67, S71 |
 | API Gateway | S50, S51, S70–S73, S90, S91 |
-| Order, Shipping | S80, S81 — szkielet etapu 8: zarejestrowanie usługi w Consulu przed etapem 8 celowo daje błąd `… flow is implemented in stage 8` |
+| Order | S03, S70, S80–S89 |
+| Shipping | S03, S70, S81, S84, S86, S87 |
 
 S90 (format błędu) i S91 (`X-Request-Id`) dotyczą odpowiedzi każdej usługi: nazwa elementu w `failures` wskazuje, która usługa odpowiedziała.
 
@@ -207,7 +193,7 @@ Hasło admina w aplikacji Postman:
 - treść żądania logowania admina (z hasłem) widać w Postman Console — po pracy wyczyść Console (Clear);
 - nie eksportuj środowiska `compose` po wpisaniu hasła i nie udostępniaj go.
 
-Kolekcja pokazu odporności (`shop-resilience`) w aplikacji: folder `product down` rejestruje klienta adresem zapamiętanym w zmiennej kolekcji, więc drugie uruchomienie tego folderu w tym samym imporcie kończy się `409` przy rejestracji. W aplikacji uruchamiaj go raz (albo wyczyść bieżącą wartość `customerEmail` w zmiennych kolekcji); `resilience-demo.sh` tego problemu nie ma — adres podaje `run.mjs` przy każdym przebiegu.
+Kolekcja pokazu odporności (`shop-resilience`) w aplikacji: folder `product down` rejestruje klienta adresem zapamiętanym w zmiennej kolekcji, więc drugie uruchomienie tego folderu w tym samym imporcie kończy się `409` przy rejestracji. W aplikacji uruchamiaj go raz (albo wyczyść bieżącą wartość `customerEmail` w zmiennych kolekcji); `resilience-demo.sh` tego problemu nie ma — adres podaje `run.ts` przy każdym przebiegu.
 
 ## Pliki
 
@@ -217,16 +203,21 @@ postman/
   lb-demo.sh             pokaz load balancingu (Product ×3, 9 żądań)
   resilience-demo.sh     pokaz odporności (zatrzymany Review i Product, kolekcja shop-resilience)
   Dockerfile, .dockerignore, package.json, package-lock.json
-                         obraz shop-scenario:dev: Node 22 i newman 6.2.3, użytkownik node (UID 1000)
-  runner/run.mjs         newman przez API: dane admina ze stdin, sprawdzenie wejścia, linie SKIPPED/RESULT, raport
-  runner/report.mjs      budowa i zapis raportu (tylko pola z tabeli, bez nadpisywania pliku), kod wyjścia
-  runner/report.test.mjs testy jednostkowe raportu
-  runner/collection.test.mjs
-                         testy kolekcji shop-purchase: tylko 4 stałe powody pominięć, dokładnie 41 identyfikatorów [S<nn>]
+                         obraz shop-scenario:dev: Node 22 i newman 6.2.3 (bez zależności deweloperskich),
+                         użytkownik node (UID 1000); "type": "module" — runner to moduły ES
+  tsconfig.json          sprawdzanie typów runnera (tsc --noEmit, strict); typescript, @types/node i @types/newman
+                         są tylko w devDependencies
+  runner/run.ts          newman przez API: dane admina ze stdin, sprawdzenie wejścia, linie SKIPPED/RESULT, raport
+  runner/report.ts       budowa i zapis raportu (tylko pola z tabeli, bez nadpisywania pliku), kod wyjścia
+  runner/report.test.ts  testy jednostkowe raportu
+  runner/collection.test.ts
+                         testy kolekcji shop-purchase: żadnego pominięcia, dokładnie 49 identyfikatorów [S<nn>]
   collections/           kolekcje Postman (v2.1)
   environments/          środowiska compose i k8s
   reports/               raporty JSON (poza gitem)
 ```
+
+Runner jest w TypeScript i Node 22 uruchamia go wprost (usuwa same typy, bez kompilacji) — dlatego kod używa tylko składni, którą da się usunąć (`erasableSyntaxOnly`), a importy mają rozszerzenie `.ts`.
 
 Testy jednostkowe raportu i kolekcji (w obrazie, bez stosu; testy kolekcji czytają `collections/`):
 
@@ -234,7 +225,15 @@ Testy jednostkowe raportu i kolekcji (w obrazie, bez stosu; testy kolekcji czyta
 docker build -q -t shop-scenario:dev postman
 docker run --rm -v "$PWD/postman/runner:/opt/scenario/work/runner:ro" \
   -v "$PWD/postman/collections:/opt/scenario/work/collections:ro" --entrypoint sh shop-scenario:dev \
-  -c 'node --test /opt/scenario/work/runner/*.test.mjs'
+  -c 'node --test /opt/scenario/work/runner/*.test.ts'
+```
+
+Sprawdzenie typów (obraz nie ma zależności deweloperskich, więc w czystym kontenerze z `npm ci`; `node_modules` nie trafia do repozytorium):
+
+```bash
+docker run --rm -v "$PWD/postman:/src:ro" node:22.23-alpine sh -c \
+  'mkdir /w && cd /src && tar --exclude=node_modules --exclude=reports -cf - . | tar -xf - -C /w \
+   && cd /w && npm ci --no-audit --no-fund && npx tsc --noEmit -p . && node --test runner/*.test.ts'
 ```
 
 ## Pokazy
@@ -291,7 +290,7 @@ Skrypt buduje obraz `shop-scenario:dev` (jak `run.sh`) i uruchamia kolekcję `co
 
 Usługa, która nie działała przed pokazem, nie jest zatrzymywana ani uruchamiana (skrypt wypisuje `<usługa> is not running, it stays stopped`). Krok, który jej potrzebuje, może wtedy dać inny wynik — np. bez działającego Product `[R3]` nie przejdzie. Product startuje między krokami 2 i 3 bez czekania na `healthy`, więc `[R3]` mierzy cały powrót (start usługi i odświeżenie listy instancji w Gateway); na `healthy` skrypt czeka po kroku 3.
 
-Po każdym folderze `run.mjs` wypisuje swoją linię `RESULT: … report: postman/reports/…-compose-shop-resilience.json`. Ostatnia linia wyjścia to wynik całego pokazu: `RESULT: PASSED — steps 3/3` (kod 0) albo `RESULT: FAILED — steps <n>/3` (kod 1). Kod 2: brak `docker`/`curl`, błąd budowy obrazu albo niedziałające wejście sklepu. Czas: ok. 15–30 s.
+Po każdym folderze `run.ts` wypisuje swoją linię `RESULT: … report: postman/reports/…-compose-shop-resilience.json`. Ostatnia linia wyjścia to wynik całego pokazu: `RESULT: PASSED — steps 3/3` (kod 0) albo `RESULT: FAILED — steps <n>/3` (kod 1). Kod 2: brak `docker`/`curl`, błąd budowy obrazu albo niedziałające wejście sklepu. Czas: ok. 15–30 s.
 
 Przykładowe wyjście (skrócone):
 

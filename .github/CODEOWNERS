@@ -12,10 +12,8 @@
 /services/review-service/        @akrzeszewska @Michal-Jarek
 /services/product-service/       @micbanavio @Michal-Jarek
 /services/notification-service/  @micbanavio @Michal-Jarek
-
-# owner to be added
-/services/order-service/         @Michal-Jarek
-/services/shipping-service/      @Michal-Jarek
+/services/order-service/         @Piotr210203 @Michal-Jarek
+/services/shipping-service/      @Piotr210203 @Michal-Jarek
 
 /frontend/                       @Michal-Jarek
 /deploy/                         @Michal-Jarek

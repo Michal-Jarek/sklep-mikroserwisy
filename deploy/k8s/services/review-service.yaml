@@ -1,8 +1,9 @@
-# Review Service (owner: Aleksandra): product reviews in review_db (MongoDB). Variables 1:1 with
-# deploy/compose.yaml; MONGODB_URL contains the password, so it comes from Secret review-service-secret
-# (deploy/k8s/secrets.sh). The service creates its indexes at start and exits when MongoDB does not answer
-# (the pod restarts until it does), hence the 120 s startupProbe. It registers in Consul once at start
-# with the pod IP (SERVICE_ADDRESS).
+# Review Service (owner: Aleksandra): product reviews in review_db (MongoDB, collection product_reviews), asks
+# Order (found through Consul) whether the customer bought the product. Variables 1:1 with deploy/compose.yaml;
+# MONGODB_URL contains the password, so it comes from Secret review-service-secret (deploy/k8s/secrets.sh). The
+# service creates its indexes at start and exits when MongoDB does not answer (the pod restarts until it does),
+# hence the 120 s startupProbe. It registers in Consul with the pod IP (SERVICE_ADDRESS) and the pod name
+# (INSTANCE_ID) and registers again when the entry disappears.
 apiVersion: v1
 kind: Service
 metadata:
@@ -96,9 +97,9 @@ spec:
             - {name: SERVICE_PORT, value: "8088"}
             - {name: CONSUL_HOST, value: consul}
             - {name: CONSUL_PORT, value: "8500"}
-            # Address registered in Consul (decision 5). No INSTANCE_ID: the code builds the ID as
-            # "review-service-" + instance id, so the pod name would give a doubled prefix; the hostname
-            # (= pod name) it uses by default is already unique.
+            # Full instance ID = pod name (decision 9); address registered in Consul = pod IP.
+            - name: INSTANCE_ID
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
             - name: SERVICE_ADDRESS
               valueFrom: {fieldRef: {fieldPath: status.podIP}}
             - name: MONGODB_URL
@@ -123,7 +124,7 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 2
             failureThreshold: 3
-          # MongoDB ping (server selection timeout 3 s in the code).
+          # MongoDB ping (server selection timeout 1 s in the code).
           readinessProbe:
             httpGet: {path: /health/ready, port: http}
             periodSeconds: 5
