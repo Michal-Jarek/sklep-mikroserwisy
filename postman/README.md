@@ -1,15 +1,15 @@
-# Postman: scenariusz zakupu i pokazy
+# Postman: scenariusz zakupu, kolekcje usług i pokazy
 
-Kolekcja `shop-purchase` sprawdza sklep tak, jak używa go przeglądarka: przez wejście `http://127.0.0.1:8090/api/v1` (nginx frontendu → API Gateway → usługi), a w Kubernetes przez `https://shop.localhost/api/v1` (Ingress → API Gateway → usługi, sekcja „Środowisko `k8s`”). Przechodzi rejestrację, e-mail powitalny w Mailpit, logowanie, katalog, stronę produktu, stany magazynowe (ADMIN), koszyk, odmowy dostępu i zamówienia: zakup, odrzuconą płatność, przesyłkę, wysyłkę i doręczenie, anulowanie, opinię po zakupie i wycofany produkt w koszyku. Uruchamia ją newman w kontenerze, a wynik trafia do raportu JSON bez haseł i tokenów.
+Kolekcja `shop-purchase` sprawdza sklep tak, jak używa go przeglądarka: przez wejście `http://127.0.0.1:8090/api/v1` (nginx frontendu → API Gateway → usługi), a w Kubernetes przez `https://shop.localhost/api/v1` (Ingress → API Gateway → usługi, sekcja „Środowisko `k8s`”). Przechodzi rejestrację, e-mail powitalny w Mailpit, logowanie, katalog, stronę produktu, stany magazynowe (ADMIN), koszyk, odmowy dostępu i zamówienia: zakup, odrzuconą płatność, przesyłkę, wysyłkę i doręczenie, anulowanie, opinię po zakupie i wycofany produkt w koszyku. Uruchamia ją newman w kontenerze, a wynik trafia do raportu JSON bez haseł i tokenów oraz do raportu HTML w `docs/raport/newman/`.
+
+Kolekcje pojedynczych usług są w `services/<usługa>/postman/`. Każda ma trzy foldery: `start`, `direct` (usługa wprost) i `via Gateway` (przez wejście sklepu). Wszystkie 10 uruchamia jedno polecenie `bash postman/run.sh <compose|k8s> --services` — sekcja „Kolekcje usług”.
 
 Do tego dwa skrypty pokazowe: load balancing (`lb-demo.sh`) i odporność (`resilience-demo.sh`) — sekcja „Pokazy”.
-
-Kolekcje pojedynczych usług są w `services/<usługa>/postman/`.
 
 ## Wymagania
 
 - Docker (Rancher Desktop z `dockerd`, jak w [deploy/README.md](../deploy/README.md)).
-- `deploy/.env` z `bash deploy/create-secrets.sh` — najpierw ten krok, bez niego stos się nie uruchomi (`run.sh` czyta z pliku `ADMIN_PASSWORD` i opcjonalnie `ADMIN_EMAIL`, domyślnie `admin@sklep.local`).
+- `deploy/.env` z `bash deploy/create-secrets.sh` — najpierw ten krok, bez niego stos się nie uruchomi (`run.sh` czyta z pliku `ADMIN_PASSWORD` i opcjonalnie `ADMIN_EMAIL`, domyślnie `admin@sklep.local`; dla `compose --services` także `RABBITMQ_ADMIN_PASSWORD`).
 - Działający stos z profilem `full-shop` (pierwsze `--build` trwa kilka minut):
   ```bash
   docker compose -f deploy/compose.yaml --profile full-shop up -d --wait --build
@@ -24,14 +24,15 @@ Node.js na laptopie nie jest potrzebny: newman 6.2.3 jest w obrazie `shop-scenar
 Z katalogu głównego repozytorium:
 
 ```bash
-bash postman/run.sh compose            # scenariusz
-bash postman/run.sh compose --strict   # każde pominięte sprawdzenie = błąd
+bash postman/run.sh compose              # scenariusz
+bash postman/run.sh compose --strict     # każde pominięte sprawdzenie = błąd
+bash postman/run.sh compose --services   # 10 kolekcji usług (sekcja „Kolekcje usług”)
 ```
 
 Skrypt:
 1. buduje obraz `shop-scenario:dev` (`docker build -q`, przy kolejnych uruchomieniach z cache);
 2. czyta `ADMIN_PASSWORD` i `ADMIN_EMAIL` z `deploy/.env` jako tekst (bez `source`): usuwa znak `\r` (plik zapisany z końcami linii CRLF) i jedną parę cudzysłowów `"…"` albo `'…'` wokół wartości; komentarz albo tekst po wartości (`ADMIN_PASSWORD=abc # uwaga`) kończy skrypt kodem 2 z komunikatem `unsupported .env syntax for ADMIN_PASSWORD …`, bez wypisania wartości;
-3. uruchamia kontener (`--network host`, system plików tylko do odczytu, bez uprawnień) z katalogami `runner/`, `collections/` i `environments/` tylko do odczytu oraz `reports/` do zapisu;
+3. uruchamia kontener (`--network host`, system plików tylko do odczytu, bez uprawnień) z katalogami `runner/`, `collections/` i `environments/` tylko do odczytu oraz `reports/` i `docs/raport/newman/` do zapisu;
 4. przekazuje dane admina na standardowe wejście kontenera — hasła nie ma w argumentach poleceń, w zmiennych kontenera (`docker inspect`) ani w plikach i nie jest nigdzie wypisywane, także przy `bash -x postman/run.sh` (skrypt wyłącza śledzenie poleceń).
 
 Kontener z `--network host` widzi porty całego stosu na `127.0.0.1`, także bazy danych, Redis, RabbitMQ i Consul, a także adresy kontenerów w sieciach compose (usługi bezpośrednio, z pominięciem Gateway) — uruchamiaj w nim tylko kolekcje z tego repozytorium.
@@ -77,9 +78,11 @@ Czego oczekiwać:
 Na wyjściu jest raport newman (żądania i sprawdzenia `✓`/`✗`), a na końcu:
 
 ```
-RESULT: PASSED — assertions 305, failed 0, skipped checks 0, strict; report: postman/reports/20261114T184048Z-compose-shop-purchase.json
+HTML report: docs/raport/newman/compose-scenario.html
+RESULT: PASSED — assertions 304, failed 0, skipped checks 0, strict; report: postman/reports/20261115T082928Z-compose-shop-purchase.json
 ```
 
+- `HTML report: docs/raport/newman/<środowisko>-scenario.html` — raport HTML przebiegu (sekcja „Raporty HTML”).
 - `SKIPPED: <element> — <powód> (<sprawdzenia>)` — po jednej linii na każde pominięcie; od etapu 8 kolekcja niczego nie pomija (sekcja „Pominięcia i `--strict`”).
 - `hint: rate limit of the shop entrance reached, wait 60 s and run again` — gdy logowanie albo rejestracja dostały 429 `TOO_MANY_REQUESTS`.
 - `RESULT: PASSED|FAILED — …` — ostatnia linia każdego przebiegu z kodem 0 albo 1; z `--strict` dopisane `, strict`.
@@ -88,7 +91,7 @@ RESULT: PASSED — assertions 305, failed 0, skipped checks 0, strict; report: p
 |---|---|
 | `0` | wszystkie sprawdzenia zaliczone, żadne żądanie nie zakończyło się błędem połączenia (z `--strict` także 0 pominięć) |
 | `1` | co najmniej jedno sprawdzenie nie przeszło, błąd żądania albo błąd skryptu kolekcji; z `--strict` także pominięcie |
-| `2` | błąd przygotowania: zły argument, brak `deploy/.env` albo `ADMIN_PASSWORD`, nieobsługiwana składnia wartości w `deploy/.env`, brak Dockera, w `k8s` brak `kubectl`, kontekstu `rancher-desktop`, `mkcert` albo certyfikatu urzędu mkcert, zajęty port `18025`/`18500` albo nieudany `port-forward`, kontener nie wystartował (`docker run failed (<kod>)`), nie działa wejście sklepu, błąd newman, plik raportu o tej samej nazwie już istnieje (drugi przebieg w tej samej sekundzie); raport nie powstaje |
+| `2` | błąd przygotowania: zły argument, brak `deploy/.env` albo `ADMIN_PASSWORD`, nieobsługiwana składnia wartości w `deploy/.env`, brak Dockera, w `k8s` brak `kubectl`, kontekstu `rancher-desktop`, `mkcert` albo certyfikatu urzędu mkcert, zajęty port `18025`/`18500` albo nieudany `port-forward`, kontener nie wystartował (`docker run failed (<kod>)`), nie działa wejście sklepu, błąd newman, plik raportu o tej samej nazwie już istnieje (drugi przebieg w tej samej sekundzie), sekret w raporcie HTML (`secret found in the HTML report …`, sekcja „Raporty HTML”); raport nie powstaje |
 | `130` albo `143` | przebieg przerwany (Ctrl+C albo `kill`): skrypt przekazuje sygnał kontenerowi (komunikat `interrupted (SIGTERM), no report written` albo `(SIGINT)`), zamyka `port-forward` i kończy się kodem 130 (Ctrl+C) albo 143 (TERM); raport ani linia `RESULT:` nie powstają |
 
 ### Raport JSON
@@ -179,13 +182,116 @@ S90 (format błędu) i S91 (`X-Request-Id`) dotyczą odpowiedzi każdej usługi:
 
 Po teście przełącz się z powrotem na `develop` i powtórz polecenie z punktu 1, żeby w stosie znów była wersja z `develop`.
 
+## Kolekcje usług
+
+Każda z 10 kolekcji `services/<usługa>/postman/<usługa>.postman_collection.json` (format Postman v2.1) ma dokładnie trzy foldery, w tej kolejności:
+
+| Folder | Po co | Adresy | Nagłówki |
+|---|---|---|---|
+| `start` | rejestruje nowego klienta (`postman-<losowe>@sklep.local`, losowe hasło), loguje klienta i admina, zapisuje w środowisku `customerToken`, `customerId`, `customerEmail` i `adminToken`; identyczny w 10 kolekcjach | `{{gatewayUrl}}` | — |
+| `direct` | usługa wprost, z pominięciem Gateway: nagłówki, które normalnie dokłada Gateway (`X-User-Id`, `X-User-Roles`, `X-Request-Id`), są ustawione ręcznie, wywołania wewnętrzne mają rolę `SERVICE`; przypadki pozytywne, walidacja, cudze zasoby, endpointy wewnętrzne bez `SERVICE` | `{{baseUrl}}` (ta usługa), `{{<nazwa>Url}}` (inne usługi, przygotowanie danych) | bez `Authorization` |
+| `via Gateway` | ta sama usługa przez wejście sklepu z tokenami ze `start`: przypadki pozytywne, brak tokenu → 401, klient na trasie admina → 403, endpointy wewnętrzne z zewnątrz → 404, format błędu i nagłówek `X-Request-Id` | `{{gatewayUrl}}` (Notification także `{{mailpitUrl}}`) | `Authorization: Bearer {{customerToken}}` albo `{{adminToken}}`; bez logowania |
+
+Folder `direct` działa tylko w compose, z kontenera w sieci `sklep_backend`: usługi nie mają portów na laptopie, a w k8s ruch do nich wpuszcza tylko Gateway.
+
+Każdy przebieg tworzy własne dane (nowych użytkowników, w `direct` losowe `X-User-Id`, własny produkt i stan magazynowy) i na końcu je sprząta (zamówienia anulowane albo w stanie końcowym, rezerwacje zwolnione, własne produkty usunięte). Stany produktów startowych są tylko czytane, więc kolejne przebiegi dają ten sam wynik.
+
+### Polecenie
+
+```bash
+bash postman/run.sh compose --services   # faza direct, potem faza gateway
+bash postman/run.sh k8s --services       # tylko faza gateway, https://shop.localhost/api/v1
+```
+
+1. **Faza `direct`** (tylko compose): kontener w sieci `sklep_backend`, folder `direct` każdej kolekcji. `baseUrl` = `http://<usługa>:<port>`, adresy innych usług ze środowiska `compose-direct`. Na standardowe wejście kontenera trafia tylko `RABBITMQ_ADMIN_PASSWORD`; dostaje go tylko kolekcja Notification (publikacja zdarzenia przez API zarządzania RabbitMQ).
+2. **Faza `gateway`**: kontener z `--network host`, jak scenariusz. Folder `start` raz (z kolekcji `api-gateway`), potem `via Gateway` wszystkich 10 kolekcji w kolejności `api-gateway`, `user-service`, `product-service`, `inventory-service`, `cart-service`, `order-service`, `shipping-service`, `review-service`, `notification-service`, `auth-service` (ostatnia, bo wylogowuje klienta). Środowisko po każdej kolekcji (tokeny ze `start`) i jeden słoik ciasteczek (ciasteczko odświeżania klienta dla Auth) przechodzą do następnej kolekcji. Na standardowe wejście trafiają tylko `ADMIN_EMAIL` i `ADMIN_PASSWORD`; hasło admina dostaje tylko kolekcja ze `start`, następnym runner je czyści. W `k8s` Mailpit jest osiągalny przez `port-forward` na `18025`, jak w scenariuszu (port `18500` nie jest potrzebny).
+
+Kolejność faz w compose jest stała: `direct`, potem `gateway`. Faza `gateway` wykonuje się także wtedy, gdy `direct` skończyła się błędem.
+
+Przykładowe wyjście (skrócone):
+
+```
+compose direct api-gateway: requests 2, assertions 10, failed 0, skipped 0
+…
+compose direct auth-service: requests 24, assertions 103, failed 0, skipped 0
+  429 POST /auth/login (Login rate limit (429), judged by the assertions)
+report: docs/raport/newman/compose-direct-api-gateway.html
+…
+compose direct total: collections 10, requests 208, assertions 469, failed 0, skipped 0, 429 answers 1 (direct: judged by the assertions)
+compose gateway api-gateway: requests 11, assertions 56, failed 0, skipped 0
+…
+compose gateway total: collections 10, requests 95, assertions 316, failed 0, skipped 0, 429 answers 0; shop entrance: requests 94, logins 2, registrations 4
+RESULT: PASSED — compose --services, exit codes: direct 0, gateway 0
+```
+
+- Linia na kolekcję: `<środowisko> <faza> <usługa>: requests R, assertions A, failed F, skipped S`. `requests` liczy też `pm.sendRequest` ze skryptów; `failed` = nieudane asercje + błędy skryptów + żądania bez odpowiedzi; `skipped` = żądania, które nie zostały wysłane. Pod nią: `SKIPPED <element>`, `429 <metoda> <ścieżka> (<element>)` i najwyżej 20 linii `FAILED <element>: <sprawdzenie> — <komunikat>`.
+- Linia, w której jest hasło, fragment hasła albo początek tokenu JWT, jest ukryta w całości: `<hidden: the message contains a secret, a piece of it or a JWT>`.
+- `report: …` — raporty HTML, które przeszły kontrolę sekretów (sekcja „Raporty HTML”).
+- `total` fazy `gateway` podaje żądania do wejścia sklepu (z `pm.sendRequest`, bez Mailpit), logowania i rejestracje — liczby do budżetu limitów.
+- Ostatnia linia: `RESULT: PASSED|FAILED|SETUP ERROR — <środowisko> --services, exit codes: direct <kod>, gateway <kod>`.
+
+| Kod | Znaczenie (`--services`) |
+|---|---|
+| `0` | w obu fazach wszystkie sprawdzenia zaliczone, 0 pominiętych żądań, 0 odpowiedzi 429 w fazie `gateway` |
+| `1` | nieudane sprawdzenie, błąd skryptu, żądanie bez odpowiedzi, pominięte żądanie (`--services` zawsze działa ściśle, jak `--strict`) albo odpowiedź 429 w fazie `gateway` (z linią `hint: rate limit of the shop entrance reached, wait 60 s and run again`). Odpowiedź 429 w fazie `direct` pochodzi z limitu samej usługi (np. test limitu logowania Auth z własnego adresu `X-Forwarded-For`): jest liczona i wypisana, a o wyniku decydują sprawdzenia kolekcji |
+| `2` | błąd przygotowania: jak przy scenariuszu, a także brak `RABBITMQ_ADMIN_PASSWORD` w `deploy/.env`, brak sieci `sklep_backend` (stos compose nie działa), brak pliku kolekcji albo folderu w kolekcji (linia `<środowisko> <faza> <usługa>: SETUP ERROR …`), wyjątek newman, sekret w raporcie HTML. Wynik całości to gorszy z kodów obu faz |
+| `130`, `143` | przerwanie (Ctrl+C, `kill`), jak przy scenariuszu |
+
+### Budżet limitów
+
+Wejście sklepu ma limity na adres klienta: 5 logowań, 10 rejestracji i 300 żądań na 60 s, wspólne z przeglądarką (w k8s wszystkie żądania z laptopa przychodzą z jednego adresu). Jeden przebieg `--services` loguje się dokładnie 2 razy (`start`), zakłada najwyżej 4 konta i wysyła do wejścia najwyżej 140 żądań, więc dwa przebiegi pod rząd mieszczą się w limitach. Test statyczny (sekcja „Testy runnera”) pilnuje logowań (tylko w `start`) i granicy 140 żądań: liczy każde żądanie folderów `start` i `via Gateway` i każde `pm.sendRequest` w ich skryptach, a pętlę czekania — jako zadeklarowany limit prób (znacznik `// shop:budget <N>` w skrypcie). Rzeczywiste liczby żądań, logowań i rejestracji podaje linia `total` fazy `gateway`.
+
+Scenariusz (`run.sh <środowisko>`, 2 logowania i 3 rejestracje) uruchamiaj co najmniej 60 s po ostatnim przebiegu `--services`, inaczej logowanie może dostać 429.
+
+### Zmienne
+
+| Zmienna | Gdzie | Wartość | Kto używa |
+|---|---|---|---|
+| `gatewayUrl` | `environments/compose…`, `environments/k8s…` | `http://127.0.0.1:8090/api/v1`, `https://shop.localhost/api/v1` | `start`, `via Gateway` |
+| `baseUrl` | runner w fazie `direct` (w środowiskach `compose` i `k8s` to adres wejścia dla scenariusza) | `http://<usługa>:<port>` | `direct`, ta usługa |
+| `apiGatewayUrl`, `authServiceUrl`, `userServiceUrl`, `productServiceUrl`, `inventoryServiceUrl`, `cartServiceUrl`, `orderServiceUrl`, `notificationServiceUrl`, `reviewServiceUrl`, `shippingServiceUrl`, `rabbitmqUrl` | `environments/compose-direct.postman_environment.json` | `http://<usługa>:<port>` (porty 8080–8089), `http://rabbitmq:15672` | `direct`, przygotowanie danych w innych usługach |
+| `rabbitmqAdminPassword` | `compose-direct…` (pusta) i standardowe wejście runnera | — | Notification, `direct` |
+| `adminEmail`, `adminPassword` | `compose…`, `k8s…` (hasło puste) i standardowe wejście runnera | — | `start` |
+| `mailpitUrl` | `compose…`, `k8s…` | `http://127.0.0.1:8025`, `http://host.docker.internal:18025` | Notification, `via Gateway` |
+| `customerToken`, `customerId`, `customerEmail`, `adminToken` | ustawia `start` w środowisku przebiegu | — | `via Gateway` |
+
+Hasła (`adminPassword`, `rabbitmqAdminPassword`) są w plikach puste. Runner czyta je z `deploy/.env` i przekazuje kontenerowi na standardowe wejście — nie ma ich w argumentach poleceń, zmiennych kontenera ani plikach. Test statyczny sprawdza, że wartości zmiennych z `password` albo `token` w nazwie są puste we wszystkich kolekcjach i środowiskach w repozytorium.
+
+Tylko do testów `run.sh` (nie do codziennej pracy): `SHOP_ENV_FILE` (inny plik zamiast `deploy/.env`), `SHOP_SERVICES_DIR` (kopia katalogu `services/` z folderami `<usługa>/postman/`), `SHOP_BACKEND_NETWORK` (inna nazwa sieci zamiast `sklep_backend`), `SHOP_TEST_SECRET` (fałszywy sekret dla testu kontroli raportów HTML, przekazywany na standardowe wejście; nigdy prawdziwe hasło).
+
+### Kolekcje usług w aplikacji Postman
+
+1. Import → plik `services/<usługa>/postman/<usługa>.postman_collection.json` (Postman v2.1) i środowisko `postman/environments/compose.postman_environment.json`. Środowisko `k8s` wymaga ręcznego `port-forward` i zmiany `mailpitUrl` (sekcja „Aplikacja Postman”).
+2. W środowisku wpisz `adminPassword` tylko w bieżącej wartości (Current value), jak przy scenariuszu.
+3. W Collection Runner zaznacz foldery `start` i `via Gateway` (w tej kolejności) i uruchom. `start` za każdym razem zakłada nowe konto klienta; w aplikacji każda kolekcja loguje się w swoim `start` (2 logowania), więc przy limicie 5 logowań na minutę uruchamiaj najwyżej 2 kolekcje na minutę.
+
+Folder `direct` w aplikacji na laptopie nie działa: usługi nie mają portów na `127.0.0.1` (z zewnątrz jest tylko wejście sklepu), a w k8s ruch do usług wpuszcza tylko Gateway. `direct` uruchamia `bash postman/run.sh compose --services` z kontenera w sieci `sklep_backend`. Lokalne środowiska właścicieli usług (`services/*/postman/*.local.postman_environment.json`) służą do pracy z usługą uruchomioną poza stosem.
+
+## Raporty HTML
+
+Każdy przebieg `run.sh` zapisuje raport HTML w `docs/raport/newman/` (`newman-reporter-html` 1.0.5, domyślny szablon: style i skrypty w pliku, bez zasobów z internetu; bez nagłówków, treści żądań i zmiennych):
+
+| Plik | Przebieg |
+|---|---|
+| `compose-direct-<usługa>.html` | `compose --services`, faza `direct` (10 plików) |
+| `compose-gateway-<usługa>.html`, `k8s-gateway-<usługa>.html` | `--services`, faza `gateway` (po 10 plików; `start` jest w raporcie `…-gateway-api-gateway.html`) |
+| `compose-scenario.html`, `k8s-scenario.html` | scenariusz `run.sh <środowisko> [--strict]` |
+
+Kolejny przebieg nadpisuje plik o tej samej nazwie (ok. 0,3 MB na plik). Raporty trafiają do repozytorium, więc każdy powstaje najpierw w `/tmp` kontenera (w pamięci, znika z kontenerem), a runner sprawdza go przed skopiowaniem do `docs/`. Szuka:
+- wartości haseł ze standardowego wejścia i wartości zmiennych środowiska z `password` albo `token` w nazwie (stan na koniec fazy), także każdego ich fragmentu o długości 10 znaków — komunikat asercji skraca długie wartości (`expected 'eyJhbGciOiJSUzI1NiIsImtpZCI6Ij…' to equal …`) — i zapisu z encjami HTML;
+- początku tokenu JWT: `eyJ` i co najmniej 10 znaków base64url.
+
+Po trafieniu raport nie trafia do `docs/` (starszy plik o tej nazwie też jest usuwany), runner wypisuje `secret found in the HTML report docs/raport/newman/<plik> (secret values <n>, JWT-like texts <n>), the report is removed` (same liczby, bez wartości) i kończy się kodem 2. Przyczyną jest sprawdzenie, które cytuje token albo hasło — trzeba je zmienić tak, żeby sprawdzało kształt (np. `pm.expect(token).to.be.a('string')`), a nie wartość.
+
+Raport JSON scenariusza zostaje w `postman/reports/` (poza gitem), jak dotąd.
+
 ## Aplikacja Postman
 
 1. Import → pliki `postman/collections/shop-purchase.postman_collection.json` i `postman/environments/compose.postman_environment.json`.
 2. W środowisku `compose` wpisz `adminPassword` (zmienna typu `secret`, w pliku pusta) — wartość `ADMIN_PASSWORD` z `deploy/.env` — tylko w kolumnie bieżącej wartości (Current value), nigdy w wartości początkowej (Initial value). Nie zapisuj jej w pliku środowiska w repozytorium.
 3. Wybierz środowisko `compose` i uruchom kolekcję w Collection Runner (całą, w kolejności folderów).
 
-Zmienne środowiska: `baseUrl` (`http://127.0.0.1:8090/api/v1`), `mailpitUrl` (`http://127.0.0.1:8025`), `consulUrl` (`http://127.0.0.1:8500`), `adminEmail`, `adminPassword`. Środowisko `k8s` jest przygotowane dla kontenera (`host.docker.internal`); w aplikacji Postman na laptopie uruchom oba `port-forward` z sekcji „Środowisko `k8s`” ręcznie i w bieżących wartościach wpisz `mailpitUrl` = `http://127.0.0.1:18025`, `consulUrl` = `http://127.0.0.1:18500`. W aplikacji kolekcja sama tworzy nowy e-mail klienta przy każdym uruchomieniu; pominięcia zapisuje w zmiennej środowiska `skipped`. Po uruchomieniu w aplikacji tokeny i hasło klienta testowego zostają w bieżących wartościach zmiennych kolekcji — nie eksportuj ani nie udostępniaj kolekcji i środowiska z bieżącymi wartościami.
+Zmienne środowiska: `baseUrl` (`http://127.0.0.1:8090/api/v1`), `gatewayUrl` (ten sam adres, dla kolekcji usług), `mailpitUrl` (`http://127.0.0.1:8025`), `consulUrl` (`http://127.0.0.1:8500`), `adminEmail`, `adminPassword`. Środowisko `k8s` jest przygotowane dla kontenera (`host.docker.internal`); w aplikacji Postman na laptopie uruchom oba `port-forward` z sekcji „Środowisko `k8s`” ręcznie i w bieżących wartościach wpisz `mailpitUrl` = `http://127.0.0.1:18025`, `consulUrl` = `http://127.0.0.1:18500`. W aplikacji kolekcja sama tworzy nowy e-mail klienta przy każdym uruchomieniu; pominięcia zapisuje w zmiennej środowiska `skipped`. Po uruchomieniu w aplikacji tokeny i hasło klienta testowego zostają w bieżących wartościach zmiennych kolekcji — nie eksportuj ani nie udostępniaj kolekcji i środowiska z bieżącymi wartościami.
 
 Hasło admina w aplikacji Postman:
 - wartość początkowa (Initial value) trafia do eksportu i do danych konta Postman, bieżąca (Current value) zostaje na komputerze — dlatego hasło tylko w bieżącej wartości;
@@ -199,42 +305,47 @@ Kolekcja pokazu odporności (`shop-resilience`) w aplikacji: folder `product dow
 
 ```
 postman/
-  run.sh                 uruchomienie scenariusza (kontener)
+  run.sh                 uruchomienie scenariusza i kolekcji usług (--services) w kontenerze
+  test.sh                testy runnera i kolekcji (node --test) oraz sprawdzenie typów (--types)
   lb-demo.sh             pokaz load balancingu (Product ×3, 9 żądań)
   resilience-demo.sh     pokaz odporności (zatrzymany Review i Product, kolekcja shop-resilience)
-  Dockerfile, .dockerignore, package.json, package-lock.json
-                         obraz shop-scenario:dev: Node 22 i newman 6.2.3 (bez zależności deweloperskich),
-                         użytkownik node (UID 1000); "type": "module" — runner to moduły ES
+  Dockerfile, .dockerignore, .npmrc, package.json, package-lock.json
+                         obraz shop-scenario:dev: Node 22, newman 6.2.3 i newman-reporter-html 1.0.5 (bez zależności
+                         deweloperskich), użytkownik node (UID 1000); "type": "module" — runner to moduły ES.
+                         .npmrc (legacy-peer-deps): raporter deklaruje zgodność z newman 4, działa z 6.2.3
   tsconfig.json          sprawdzanie typów runnera (tsc --noEmit, strict); typescript, @types/node i @types/newman
                          są tylko w devDependencies
-  runner/run.ts          newman przez API: dane admina ze stdin, sprawdzenie wejścia, linie SKIPPED/RESULT, raport
-  runner/report.ts       budowa i zapis raportu (tylko pola z tabeli, bez nadpisywania pliku), kod wyjścia
-  runner/report.test.ts  testy jednostkowe raportu
+  runner/run.ts          scenariusz: newman przez API, dane admina ze stdin, sprawdzenie wejścia, linie SKIPPED/RESULT,
+                         raport JSON, raport HTML (--html)
+  runner/report.ts       budowa i zapis raportu JSON (tylko pola z tabeli, bez nadpisywania pliku), kod wyjścia
+  runner/services.ts     kolekcje usług: jedna faza (direct albo gateway) dla 10 kolekcji, środowisko i słoik
+                         ciasteczek przekazywane dalej, raporty HTML
+  runner/service-run.ts  logika faz bez wejścia-wyjścia: kolejność usług i folderów, argumenty, liczniki, linie, kody
+  runner/html.ts         raporter HTML, kontrola sekretów przed skopiowaniem do docs/raport/newman/, ukrywanie linii
+  runner/common.ts       wspólne: błąd przygotowania, sekrety ze stdin, pliki JSON, środowiska, sprawdzenie wejścia
+  runner/collection-check.ts
+                         reguły statyczne kolekcji usług (kształt, sprawdzenia, skrypty folderów, adresy, nagłówki,
+                         start, budżet, puste hasła, brak JWT)
   runner/collection.test.ts
-                         testy kolekcji shop-purchase: żadnego pominięcia, dokładnie 49 identyfikatorów [S<nn>]
-  collections/           kolekcje Postman (v2.1)
-  environments/          środowiska compose i k8s
+                         test statyczny: kolekcja shop-purchase (żadnego pominięcia, 49 identyfikatorów [S<nn>]),
+                         10 kolekcji usług i środowiska
+  runner/*.test.ts       testy jednostkowe pozostałych modułów
+  collections/           kolekcje scenariusza i pokazu odporności (v2.1)
+  environments/          środowiska compose, k8s i compose-direct
   reports/               raporty JSON (poza gitem)
+docs/raport/newman/      raporty HTML (w repozytorium, sekcja „Raporty HTML”)
 ```
 
 Runner jest w TypeScript i Node 22 uruchamia go wprost (usuwa same typy, bez kompilacji) — dlatego kod używa tylko składni, którą da się usunąć (`erasableSyntaxOnly`), a importy mają rozszerzenie `.ts`.
 
-Testy jednostkowe raportu i kolekcji (w obrazie, bez stosu; testy kolekcji czytają `collections/`):
+### Testy runnera
 
 ```bash
-docker build -q -t shop-scenario:dev postman
-docker run --rm -v "$PWD/postman/runner:/opt/scenario/work/runner:ro" \
-  -v "$PWD/postman/collections:/opt/scenario/work/collections:ro" --entrypoint sh shop-scenario:dev \
-  -c 'node --test /opt/scenario/work/runner/*.test.ts'
+bash postman/test.sh           # testy jednostkowe i test statyczny kolekcji, w obrazie, bez stosu i bez sieci
+bash postman/test.sh --types   # tsc --noEmit w czystym kontenerze node:22.23-alpine (npm ci, potrzebny rejestr npm)
 ```
 
-Sprawdzenie typów (obraz nie ma zależności deweloperskich, więc w czystym kontenerze z `npm ci`; `node_modules` nie trafia do repozytorium):
-
-```bash
-docker run --rm -v "$PWD/postman:/src:ro" node:22.23-alpine sh -c \
-  'mkdir /w && cd /src && tar --exclude=node_modules --exclude=reports -cf - . | tar -xf - -C /w \
-   && cd /w && npm ci --no-audit --no-fund && npx tsc --noEmit -p . && node --test runner/*.test.ts'
-```
+`test.sh` buduje obraz `shop-scenario:dev` i montuje tylko do odczytu `runner/`, `collections/`, `environments/` oraz folder `postman/` każdej usługi. Test statyczny (`runner/collection.test.ts`, reguły w `runner/collection-check.ts`) sprawdza w 10 kolekcjach usług: format v2.1; foldery `start`, `direct`, `via Gateway` w tej kolejności i nic poza nimi; brak skryptów i `auth` na poziomie kolekcji; w każdym żądaniu `pm.test` ze sprawdzeniem kodu odpowiedzi; skrypty folderów (`// shop:direct-request-id`, `// shop:error-format`); adresy zgodne z tabelą zmiennych, także w skryptach, bez dosłownych `http://`; brak `Authorization` w `direct` (poza API RabbitMQ w Notification); brak `X-User-*` w `via Gateway` (poza jednym żądaniem w kolekcji Gateway); brak `/auth/login` w `via Gateway`; brak `pm.execution.skipRequest` i `setNextRequest`; identyczny `start` (1 rejestracja, 2 logowania) w 10 kolekcjach; budżet ≤ 140 żądań do wejścia; puste wartości zmiennych z `password`/`token` w nazwie i brak tekstu w formacie JWT w kolekcjach i środowiskach. Diagnostyka (`# …` w wyjściu) podaje liczby żądań w folderach i budżet każdej kolekcji.
 
 ## Pokazy
 
@@ -350,3 +461,9 @@ curl -s 'http://127.0.0.1:8500/v1/health/service/product-service?passing=true' |
 | `docker run failed (<kod>)`, kod 2 | kontener scenariusza nie wystartował (kod 125–127: np. błąd demona Dockera albo montowania katalogu) — sprawdź `docker info` i uruchom ponownie |
 | `report postman/reports/… already exists (another run in the same second), run again`, kod 2 | dwa przebiegi uruchomione w tej samej sekundzie; raport drugiego nie powstał — uruchom go ponownie |
 | `RESULT: FAILED` przy działającym stosie | `jq -r '.failures[]' "$(ls -t postman/reports/*-shop-purchase.json \| head -1)"` pokazuje element, sprawdzenie i komunikat; usługa zatrzymana albo niezdrowa → `docker compose -f deploy/compose.yaml --profile full-shop ps` |
+| `docker network sklep_backend not found, start the stack …`, kod 2 (`--services`) | stos compose nie działa — `docker compose -f deploy/compose.yaml --profile full-shop up -d --wait` |
+| `RABBITMQ_ADMIN_PASSWORD is missing in …`, kod 2 (`compose --services`) | brak hasła RabbitMQ w `deploy/.env` — `bash deploy/create-secrets.sh` |
+| `<środowisko> <faza> <usługa>: SETUP ERROR the collection has no folder …`, kod 2 | kolekcja usługi nie ma folderu `start`, `direct` albo `via Gateway` — `bash postman/test.sh` pokazuje wszystkie odstępstwa od kształtu |
+| `secret found in the HTML report docs/raport/newman/<plik> …`, kod 2 | sprawdzenie w kolekcji cytuje token albo hasło; raport nie powstał — sekcja „Raporty HTML” |
+| `<hidden: the message contains a secret, a piece of it or a JWT>` | komunikat nieudanego sprawdzenia zawierał sekret albo jego fragment, więc nie jest wypisany; szczegóły w raporcie HTML, jeśli przeszedł kontrolę |
+| `FAILED …` w kolekcji usługi przy działającym stosie | raport `docs/raport/newman/<środowisko>-<faza>-<usługa>.html` pokazuje każde żądanie z kodem odpowiedzi i sprawdzeniami; po serii błędów zamówień odczekaj 30 s (wyłącznik w Order) i uruchom ponownie |

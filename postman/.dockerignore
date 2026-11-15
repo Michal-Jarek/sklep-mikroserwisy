@@ -1,4 +1,5 @@
-# Build context = package.json and package-lock.json only (runner, collections and reports are mounted at run time).
+# Build context = package.json, package-lock.json and .npmrc only (runner, collections and reports are mounted at run time).
 *
 !package.json
 !package-lock.json
+!.npmrc

@@ -1,8 +1,1120 @@
 {
   "info": {
-    "name": "user-service (bezpośrednio, lokalnie)",
+    "name": "user-service",
+    "description": "User Service. Folder start: new customer and admin login. Folder direct: the service directly at {{baseUrl}} (requests of the owner + negative cases). Folder via Gateway: profile and addresses of the customer from start through {{gatewayUrl}}.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
+  "item": [
+    {
+      "name": "start",
+      "description": "Identical in all 10 service collections. Registers a new customer, logs in the customer and the admin, and keeps customerToken, customerId, customerEmail and adminToken in the environment. The runner runs it once per run.",
+      "item": [
+        {
+          "name": "Register a new customer",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A new customer on every run: random e-mail and random password (24 characters; Auth needs 10-72 bytes).",
+                  "// The password lives only in a local variable of this run (pm.variables), never in the environment.",
+                  "const chars = 'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';",
+                  "const random = (n) => Array.from({ length: n }, () => chars[Math.floor(Math.random() * chars.length)]).join('');",
+                  "pm.variables.set('customerPassword', random(24));",
+                  "pm.environment.set('customerEmail', `postman-${Date.now().toString(36)}-${random(8).toLowerCase()}@sklep.local`);",
+                  "['customerToken', 'customerId', 'adminToken'].forEach((name) => pm.environment.unset(name));",
+                  "pm.request.body.update(JSON.stringify({",
+                  "  email: pm.environment.get('customerEmail'),",
+                  "  password: pm.variables.get('customerPassword'),",
+                  "  firstName: 'Postman',",
+                  "  lastName: 'Customer',",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "const account = pm.response.json();",
+                  "pm.test('account: id UUID, the generated e-mail, roles [\"CUSTOMER\"], no tokens in the body', () => {",
+                  "  pm.expect(account.id, 'id').to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);",
+                  "  pm.expect(account.email, 'email').to.eql(pm.environment.get('customerEmail'));",
+                  "  pm.expect(account.roles, 'roles').to.eql(['CUSTOMER']);",
+                  "  pm.expect('accessToken' in account, 'accessToken in the body').to.be.false;",
+                  "});",
+                  "pm.environment.set('customerId', account.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{gatewayUrl}}/auth/register",
+            "description": "New customer of this run (e-mail postman-<random>@sklep.local). The body is built in the pre-request script.",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Log in as the customer",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.request.body.update(JSON.stringify({",
+                  "  email: pm.environment.get('customerEmail'),",
+                  "  password: pm.variables.get('customerPassword'),",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Payload of a JWT (base64url). Only the claims are checked; the token is never printed or compared by value.",
+                  "const decodeBase64 = require('atob');",
+                  "const jwtClaims = (token) => {",
+                  "  const part = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');",
+                  "  return JSON.parse(decodeBase64(part + '='.repeat((4 - (part.length % 4)) % 4)));",
+                  "};",
+                  "",
+                  "            pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "            const login = pm.response.json();",
+                  "            pm.test('Bearer access token of the new customer (sub = customerId, roles [\"CUSTOMER\"])', () => {",
+                  "              pm.expect(login.tokenType, 'tokenType').to.eql('Bearer');",
+                  "              pm.expect(login.accessToken, 'accessToken').to.be.a('string');",
+                  "              pm.expect(login.accessToken.split('.').length, 'parts of the JWT').to.eql(3);",
+                  "              const claims = jwtClaims(login.accessToken);",
+                  "              pm.expect(claims.sub, 'sub').to.eql(pm.environment.get('customerId'));",
+                  "              pm.expect(claims.roles, 'roles').to.eql(['CUSTOMER']);",
+                  "            });",
+                  "            // Only the attributes are compared; the cookie value is never printed. The cookie stays in the cookie jar.",
+                  "            pm.test('Set-Cookie refresh_token: HttpOnly, Secure, SameSite=Strict, Path=/api/v1/auth', () => {",
+                  "              const parts = (pm.response.headers.get('Set-Cookie') || '').split(';').map((part) => part.trim());",
+                  "              pm.expect(/^refresh_token=[^\\s]+$/.test(parts[0]), 'refresh_token cookie').to.be.true;",
+                  "              ['HttpOnly', 'Secure', 'SameSite=Strict', 'Path=/api/v1/auth'].forEach((attribute) => {",
+                  "                pm.expect(parts.slice(1).includes(attribute), attribute).to.be.true;",
+                  "              });",
+                  "            });",
+                  "            if (typeof login.accessToken === 'string') {",
+                  "              pm.environment.set('customerToken', login.accessToken);",
+                  "            }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{gatewayUrl}}/auth/login",
+            "description": "Login 1 of 2 in a run (the Gateway allows 5 per minute per client address).",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Log in as admin",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The body is built here, so any character of the password stays valid JSON.",
+                  "pm.request.body.update(JSON.stringify({ email: pm.variables.get('adminEmail'), password: pm.variables.get('adminPassword') }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Payload of a JWT (base64url). Only the claims are checked; the token is never printed or compared by value.",
+                  "const decodeBase64 = require('atob');",
+                  "const jwtClaims = (token) => {",
+                  "  const part = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');",
+                  "  return JSON.parse(decodeBase64(part + '='.repeat((4 - (part.length % 4)) % 4)));",
+                  "};",
+                  "",
+                  "            pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "            const login = pm.response.json();",
+                  "            pm.test('Bearer access token with the role ADMIN', () => {",
+                  "              pm.expect(login.tokenType, 'tokenType').to.eql('Bearer');",
+                  "              pm.expect(login.accessToken, 'accessToken').to.be.a('string');",
+                  "              pm.expect(jwtClaims(login.accessToken).roles, 'roles').to.include('ADMIN');",
+                  "            });",
+                  "            if (typeof login.accessToken === 'string') {",
+                  "              pm.environment.set('adminToken', login.accessToken);",
+                  "            }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{gatewayUrl}}/auth/login",
+            "description": "Login 2 of 2 in a run. adminEmail and adminPassword come from the environment (the password only from the runner, never in a file). Cookie jar disabled: the refresh_token cookie of the admin must not replace the one of the customer (same path).",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "protocolProfileBehavior": {
+            "disableCookies": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "direct",
+      "description": "User Service directly at {{baseUrl}} (http://user-service:8082 in the network sklep_backend). Headers X-User-Id and X-User-Roles set by hand like the Gateway; userId is a new UUID per run (first request).",
+      "item": [
+        {
+          "name": "Utwórz profil (Auth)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{userId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "SERVICE"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/users",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": \"{{userId}}\", \"firstName\": \"Anna\", \"lastName\": \"Nowak\", \"email\": \"anna@example.com\"}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"userId\", pm.variables.replaceIn(\"{{$guid}}\"));",
+                  "pm.collectionVariables.unset(\"addressId\");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 201 lub 200 przy powtórzeniu\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "pm.test('profile with the generated id', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.id).to.eql(pm.collectionVariables.get('userId'));",
+                  "  pm.expect(body).to.include({ firstName: 'Anna', lastName: 'Nowak', email: 'anna@example.com' });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Mój profil",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{userId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ],
+            "url": "{{baseUrl}}/users/me"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test('own profile (id = X-User-Id)', () => pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get('userId')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Zmień profil",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{userId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/users/me",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"firstName\": \"Anna\", \"lastName\": \"Kowalska\"}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test('profile changed', () => pm.expect(pm.response.json()).to.include({ firstName: 'Anna', lastName: 'Kowalska' }));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Profil dla Notification",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{userId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "SERVICE"
+              }
+            ],
+            "url": "{{baseUrl}}/users/{{userId}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test('profile of the user', () => pm.expect(pm.response.json()).to.include({ id: pm.collectionVariables.get('userId'), email: 'anna@example.com' }));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Dodaj adres",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{userId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/users/me/addresses",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"street\": \"Lipowa 1\", \"city\": \"Warszawa\", \"postalCode\": \"00-001\", \"countryCode\": \"PL\"}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 201\", () => pm.response.to.have.status(201));",
+                  "if (pm.response.code === 201) pm.collectionVariables.set(\"addressId\", pm.response.json().id);",
+                  "pm.test('address with id', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.id).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);",
+                  "  pm.expect(body).to.include({ street: 'Lipowa 1', city: 'Warszawa', postalCode: '00-001', countryCode: 'PL' });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Lista adresów",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{userId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ],
+            "url": "{{baseUrl}}/users/me/addresses"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test('the list has the new address', () => pm.expect(pm.response.json().map((address) => address.id)).to.include(pm.collectionVariables.get('addressId')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Usuń adres",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{userId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ],
+            "url": "{{baseUrl}}/users/me/addresses/{{addressId}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 204\", () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "negative cases (platform)",
+          "item": [
+            {
+              "name": "Create a profile as CUSTOMER (403)",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// A second user of this run (random UUID), for the cases with another user's data.",
+                      "pm.variables.set('otherUserId', pm.variables.replaceIn('{{$guid}}'));"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('status is 403', () => pm.response.to.have.status(403));",
+                      "pm.test('error FORBIDDEN', () => pm.expect(pm.response.json().error).to.eql('FORBIDDEN'));"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "X-User-Id",
+                    "value": "{{otherUserId}}"
+                  },
+                  {
+                    "key": "X-User-Roles",
+                    "value": "CUSTOMER"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{baseUrl}}/users",
+                "description": "Internal endpoint: only the role SERVICE (Auth).",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"id\": \"{{otherUserId}}\", \"firstName\": \"Jan\", \"lastName\": \"Obcy\", \"email\": \"jan@example.com\"}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Another user's profile as CUSTOMER (403)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('status is 403', () => pm.response.to.have.status(403));",
+                      "pm.test('error FORBIDDEN', () => pm.expect(pm.response.json().error).to.eql('FORBIDDEN'));"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "X-User-Id",
+                    "value": "{{otherUserId}}"
+                  },
+                  {
+                    "key": "X-User-Roles",
+                    "value": "CUSTOMER"
+                  }
+                ],
+                "url": "{{baseUrl}}/users/{{userId}}",
+                "description": "GET /users/{id}: ADMIN or SERVICE only."
+              }
+            },
+            {
+              "name": "Profile by id as ADMIN (200)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                      "pm.test('profile of the requested user', () => pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get('userId')));"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "X-User-Id",
+                    "value": "{{otherUserId}}"
+                  },
+                  {
+                    "key": "X-User-Roles",
+                    "value": "ADMIN"
+                  }
+                ],
+                "url": "{{baseUrl}}/users/{{userId}}"
+              }
+            },
+            {
+              "name": "Update the profile with an empty first name (400)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                      "pm.test('error VALIDATION_ERROR', () => pm.expect(pm.response.json().error).to.eql('VALIDATION_ERROR'));"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "PUT",
+                "header": [
+                  {
+                    "key": "X-User-Id",
+                    "value": "{{userId}}"
+                  },
+                  {
+                    "key": "X-User-Roles",
+                    "value": "CUSTOMER"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{baseUrl}}/users/me",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"firstName\": \"\", \"lastName\": \"Kowalska\"}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Add an address with a lower-case country code (400)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                      "pm.test('error VALIDATION_ERROR', () => pm.expect(pm.response.json().error).to.eql('VALIDATION_ERROR'));"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "X-User-Id",
+                    "value": "{{userId}}"
+                  },
+                  {
+                    "key": "X-User-Roles",
+                    "value": "CUSTOMER"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{baseUrl}}/users/me/addresses",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"street\": \"Lipowa 1\", \"city\": \"Warszawa\", \"postalCode\": \"00-001\", \"countryCode\": \"pl\"}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Add an address for the other-user case (201)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                      "const body = pm.response.json();",
+                      "pm.test('address with id', () => pm.expect(body.id).to.be.a('string').and.not.empty);",
+                      "pm.variables.set('foreignAddressId', body.id);"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "X-User-Id",
+                    "value": "{{userId}}"
+                  },
+                  {
+                    "key": "X-User-Roles",
+                    "value": "CUSTOMER"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{baseUrl}}/users/me/addresses",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"street\": \"Polna 2\", \"city\": \"Kraków\", \"postalCode\": \"30-001\", \"countryCode\": \"PL\"}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Delete another user's address (404)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('status is 404', () => pm.response.to.have.status(404));",
+                      "pm.test('error NOT_FOUND', () => pm.expect(pm.response.json().error).to.eql('NOT_FOUND'));"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  {
+                    "key": "X-User-Id",
+                    "value": "{{otherUserId}}"
+                  },
+                  {
+                    "key": "X-User-Roles",
+                    "value": "CUSTOMER"
+                  }
+                ],
+                "url": "{{baseUrl}}/users/me/addresses/{{foreignAddressId}}",
+                "description": "KONTRAKT: another user's or a missing address gives 404 (does not reveal that it exists)."
+              }
+            },
+            {
+              "name": "Delete the address as the owner (204)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('status is 204', () => pm.response.to.have.status(204));"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  {
+                    "key": "X-User-Id",
+                    "value": "{{userId}}"
+                  },
+                  {
+                    "key": "X-User-Roles",
+                    "value": "CUSTOMER"
+                  }
+                ],
+                "url": "{{baseUrl}}/users/me/addresses/{{foreignAddressId}}",
+                "description": "The address survived the other user's attempt."
+              }
+            }
+          ]
+        }
+      ],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// shop:direct-request-id",
+              "// A new X-Request-Id for every request (the Gateway sets it in production); kept when the request sets its own.",
+              "const sent = pm.request.headers.get('X-Request-Id');",
+              "if (!sent) {",
+              "  pm.request.headers.upsert({ key: 'X-Request-Id', value: pm.variables.replaceIn('{{$guid}}') });",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// shop:error-format",
+              "// Every error of a service: {status (= HTTP code), error, message, requestId = the sent X-Request-Id}.",
+              "// Not for Mailpit and the RabbitMQ management API (other formats).",
+              "const url = pm.variables.replaceIn(pm.request.url.toString());",
+              "const external = ['mailpitUrl', 'rabbitmqUrl'].some((name) => {",
+              "  const base = pm.variables.get(name);",
+              "  return Boolean(base) && url.startsWith(base);",
+              "});",
+              "if (!external && pm.response.code >= 400) {",
+              "  pm.test(`error ${pm.response.code} in the team format, requestId = sent X-Request-Id`, () => {",
+              "    const body = pm.response.json();",
+              "    pm.expect(body.status, 'status').to.eql(pm.response.code);",
+              "    pm.expect(body.error, 'error').to.be.a('string').and.not.empty;",
+              "    pm.expect(body.message, 'message').to.be.a('string').and.not.empty;",
+              "    pm.expect(body.requestId, 'requestId').to.eql(pm.variables.replaceIn(pm.request.headers.get('X-Request-Id')));",
+              "  });",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "via Gateway",
+      "description": "User Service through the shop entrance ({{gatewayUrl}}) as the customer and the admin from start. The address added here is deleted at the end.",
+      "item": [
+        {
+          "name": "Own profile (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('answered by User Service (X-Instance-Id user-service-...)', () => pm.expect(pm.response.headers.get('X-Instance-Id')).to.match(/^user-service-/));",
+                  "pm.test('profile of the customer from start', () => pm.expect(pm.response.json()).to.include({ id: pm.environment.get('customerId'), email: pm.environment.get('customerEmail') }));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{gatewayUrl}}/users/me"
+          }
+        },
+        {
+          "name": "Update own profile (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('profile with the sent names', () => pm.expect(pm.response.json()).to.include({ id: pm.environment.get('customerId'), firstName: 'Postman', lastName: 'Customer' }));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{gatewayUrl}}/users/me",
+            "description": "Sets the same names as the registration in start, so other collections see an unchanged profile.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"firstName\": \"Postman\", \"lastName\": \"Customer\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Add an address (201)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test('address with id', () => {",
+                  "  pm.expect(body.id).to.be.a('string').and.not.empty;",
+                  "  pm.expect(body).to.include({ street: 'Lipowa 1/2', countryCode: 'PL' });",
+                  "});",
+                  "pm.variables.set('addressId', body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{gatewayUrl}}/users/me/addresses",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"street\": \"Lipowa 1/2\", \"city\": \"Warszawa\", \"postalCode\": \"00-001\", \"countryCode\": \"PL\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "List own addresses (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('the list has the new address', () => pm.expect(pm.response.json().map((address) => address.id)).to.include(pm.variables.get('addressId')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{gatewayUrl}}/users/me/addresses"
+          }
+        },
+        {
+          "name": "Delete the address (204)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{gatewayUrl}}/users/me/addresses/{{addressId}}",
+            "description": "Leaves the customer from start without the address of this run."
+          }
+        },
+        {
+          "name": "Own profile without a token (401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('error UNAUTHORIZED', () => pm.expect(pm.response.json().error).to.eql('UNAUTHORIZED'));",
+                  "pm.test('answered by the Gateway (no X-Instance-Id)', () => pm.expect(pm.response.headers.has('X-Instance-Id')).to.be.false);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{gatewayUrl}}/users/me"
+          }
+        },
+        {
+          "name": "Profile by id as CUSTOMER (403)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 403', () => pm.response.to.have.status(403));",
+                  "pm.test('error FORBIDDEN', () => pm.expect(pm.response.json().error).to.eql('FORBIDDEN'));",
+                  "pm.test('answered by the Gateway (no X-Instance-Id)', () => pm.expect(pm.response.headers.has('X-Instance-Id')).to.be.false);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{gatewayUrl}}/users/{{customerId}}",
+            "description": "GET /users/* requires the role ADMIN in the Gateway, even for the own id."
+          }
+        },
+        {
+          "name": "Profile by id as ADMIN (200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('answered by User Service (X-Instance-Id user-service-...)', () => pm.expect(pm.response.headers.get('X-Instance-Id')).to.match(/^user-service-/));",
+                  "pm.test('profile of the customer from start', () => pm.expect(pm.response.json().id).to.eql(pm.environment.get('customerId')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{gatewayUrl}}/users/{{customerId}}"
+          }
+        },
+        {
+          "name": "Internal endpoint POST /users (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 404', () => pm.response.to.have.status(404));",
+                  "pm.test('error NOT_FOUND', () => pm.expect(pm.response.json().error).to.eql('NOT_FOUND'));",
+                  "pm.test('answered by the Gateway (no X-Instance-Id)', () => pm.expect(pm.response.headers.has('X-Instance-Id')).to.be.false);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{gatewayUrl}}/users",
+            "description": "Internal endpoint (SERVICE): blocked from outside like an unknown route, even for ADMIN.",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// shop:error-format",
+              "// Every answer through the Gateway has X-Request-Id; every error: {status (= HTTP code), error, message,",
+              "// requestId = X-Request-Id of the answer}. Not for Mailpit (other format).",
+              "const url = pm.variables.replaceIn(pm.request.url.toString());",
+              "const external = ['mailpitUrl', 'rabbitmqUrl'].some((name) => {",
+              "  const base = pm.variables.get(name);",
+              "  return Boolean(base) && url.startsWith(base);",
+              "});",
+              "if (!external) {",
+              "  pm.test('X-Request-Id header is set', () => pm.expect(pm.response.headers.get('X-Request-Id')).to.be.a('string').and.not.empty);",
+              "  if (pm.response.code >= 400) {",
+              "    pm.test(`error ${pm.response.code} in the team format, requestId = X-Request-Id`, () => {",
+              "      const body = pm.response.json();",
+              "      pm.expect(body.status, 'status').to.eql(pm.response.code);",
+              "      pm.expect(body.error, 'error').to.be.a('string').and.not.empty;",
+              "      pm.expect(body.message, 'message').to.be.a('string').and.not.empty;",
+              "      pm.expect(body.requestId, 'requestId').to.eql(pm.response.headers.get('X-Request-Id'));",
+              "    });",
+              "  }",
+              "}"
+            ]
+          }
+        }
+      ]
+    }
+  ],
   "variable": [
     {
       "key": "baseUrl",
@@ -15,267 +1127,6 @@
     {
       "key": "addressId",
       "value": ""
-    }
-  ],
-  "item": [
-    {
-      "name": "Utwórz profil (Auth)",
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "X-User-Id",
-            "value": "{{userId}}"
-          },
-          {
-            "key": "X-User-Roles",
-            "value": "SERVICE"
-          },
-          {
-            "key": "X-Request-Id",
-            "value": "postman-demo"
-          },
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "url": "{{baseUrl}}/users",
-        "body": {
-          "mode": "raw",
-          "raw": "{\"id\": \"{{userId}}\", \"firstName\": \"Anna\", \"lastName\": \"Nowak\", \"email\": \"anna@example.com\"}"
-        }
-      },
-      "event": [
-        {
-          "listen": "prerequest",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.collectionVariables.set(\"userId\", pm.variables.replaceIn(\"{{$guid}}\"));",
-              "pm.collectionVariables.unset(\"addressId\");"
-            ]
-          }
-        },
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test(\"Status 201 lub 200 przy powtórzeniu\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));"
-            ]
-          }
-        }
-      ]
-    },
-    {
-      "name": "Mój profil",
-      "request": {
-        "method": "GET",
-        "header": [
-          {
-            "key": "X-User-Id",
-            "value": "{{userId}}"
-          },
-          {
-            "key": "X-User-Roles",
-            "value": "CUSTOMER"
-          },
-          {
-            "key": "X-Request-Id",
-            "value": "postman-demo"
-          }
-        ],
-        "url": "{{baseUrl}}/users/me"
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test(\"Status 200\", () => pm.response.to.have.status(200));"
-            ]
-          }
-        }
-      ]
-    },
-    {
-      "name": "Zmień profil",
-      "request": {
-        "method": "PUT",
-        "header": [
-          {
-            "key": "X-User-Id",
-            "value": "{{userId}}"
-          },
-          {
-            "key": "X-User-Roles",
-            "value": "CUSTOMER"
-          },
-          {
-            "key": "X-Request-Id",
-            "value": "postman-demo"
-          },
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "url": "{{baseUrl}}/users/me",
-        "body": {
-          "mode": "raw",
-          "raw": "{\"firstName\": \"Anna\", \"lastName\": \"Kowalska\"}"
-        }
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test(\"Status 200\", () => pm.response.to.have.status(200));"
-            ]
-          }
-        }
-      ]
-    },
-    {
-      "name": "Profil dla Notification",
-      "request": {
-        "method": "GET",
-        "header": [
-          {
-            "key": "X-User-Id",
-            "value": "{{userId}}"
-          },
-          {
-            "key": "X-User-Roles",
-            "value": "SERVICE"
-          },
-          {
-            "key": "X-Request-Id",
-            "value": "postman-demo"
-          }
-        ],
-        "url": "{{baseUrl}}/users/{{userId}}"
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test(\"Status 200\", () => pm.response.to.have.status(200));"
-            ]
-          }
-        }
-      ]
-    },
-    {
-      "name": "Dodaj adres",
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "X-User-Id",
-            "value": "{{userId}}"
-          },
-          {
-            "key": "X-User-Roles",
-            "value": "CUSTOMER"
-          },
-          {
-            "key": "X-Request-Id",
-            "value": "postman-demo"
-          },
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "url": "{{baseUrl}}/users/me/addresses",
-        "body": {
-          "mode": "raw",
-          "raw": "{\"street\": \"Lipowa 1\", \"city\": \"Warszawa\", \"postalCode\": \"00-001\", \"countryCode\": \"PL\"}"
-        }
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test(\"Status 201\", () => pm.response.to.have.status(201));",
-              "if (pm.response.code === 201) pm.collectionVariables.set(\"addressId\", pm.response.json().id);"
-            ]
-          }
-        }
-      ]
-    },
-    {
-      "name": "Lista adresów",
-      "request": {
-        "method": "GET",
-        "header": [
-          {
-            "key": "X-User-Id",
-            "value": "{{userId}}"
-          },
-          {
-            "key": "X-User-Roles",
-            "value": "CUSTOMER"
-          },
-          {
-            "key": "X-Request-Id",
-            "value": "postman-demo"
-          }
-        ],
-        "url": "{{baseUrl}}/users/me/addresses"
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test(\"Status 200\", () => pm.response.to.have.status(200));"
-            ]
-          }
-        }
-      ]
-    },
-    {
-      "name": "Usuń adres",
-      "request": {
-        "method": "DELETE",
-        "header": [
-          {
-            "key": "X-User-Id",
-            "value": "{{userId}}"
-          },
-          {
-            "key": "X-User-Roles",
-            "value": "CUSTOMER"
-          },
-          {
-            "key": "X-Request-Id",
-            "value": "postman-demo"
-          }
-        ],
-        "url": "{{baseUrl}}/users/me/addresses/{{addressId}}"
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test(\"Status 204\", () => pm.response.to.have.status(204));"
-            ]
-          }
-        }
-      ]
     }
   ]
 }

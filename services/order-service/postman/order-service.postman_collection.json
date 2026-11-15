@@ -1,574 +1,1714 @@
 {
- "info": {
-  "name": "Order Service",
-  "description": "Żądania bezpośrednio do order-service z nagłówkami, które ustawia Gateway (X-User-Id, X-User-Roles, X-Request-Id). Każdy przebieg tworzy nowe zamówienia z nowym Idempotency-Key. Wymaga Cart, Product, Inventory i Shipping (prawdziwych albo atrap) z produktem w koszyku klienta userId.",
-  "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
- },
- "variable": [
-  {
-   "key": "baseUrl",
-   "value": "http://localhost:8086"
+  "info": {
+    "name": "Order Service",
+    "description": "Żądania bezpośrednio do order-service z nagłówkami, które ustawia Gateway (X-User-Id, X-User-Roles, X-Request-Id). Każdy przebieg tworzy nowe zamówienia z nowym Idempotency-Key. Wymaga Cart, Product, Inventory i Shipping (prawdziwych albo atrap) z produktem w koszyku klienta userId.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
-  {
-   "key": "userId",
-   "value": "11111111-1111-4111-8111-111111111111"
-  },
-  {
-   "key": "otherUserId",
-   "value": "22222222-2222-4222-8222-222222222222"
-  },
-  {
-   "key": "checkoutKey",
-   "value": ""
-  },
-  {
-   "key": "orderId",
-   "value": ""
-  },
-  {
-   "key": "productId",
-   "value": ""
-  }
- ],
- "item": [
-  {
-   "name": "Złóż zamówienie (PAID)",
-   "event": [
+  "variable": [
     {
-     "listen": "prerequest",
-     "script": {
-      "type": "text/javascript",
-      "exec": [
-       "pm.collectionVariables.set('checkoutKey', pm.variables.replaceIn('{{$guid}}'));"
-      ]
-     }
+      "key": "baseUrl",
+      "value": "http://localhost:8086"
     },
     {
-     "listen": "test",
-     "script": {
-      "type": "text/javascript",
-      "exec": [
-       "pm.test('201 PAID', () => { pm.response.to.have.status(201); pm.expect(pm.response.json().status).to.eql('PAID'); });",
-       "const order = pm.response.json();",
-       "pm.test('kwoty tekstem, waluta PLN, pozycje', () => { pm.expect(order.total).to.match(/^[0-9]+\\.[0-9]{2}$/); pm.expect(order.currency).to.eql('PLN'); pm.expect(order.items.length).to.be.above(0); pm.expect(order.userId).to.eql(pm.variables.get('userId')); });",
-       "pm.test('bez numeru karty w odpowiedzi', () => pm.expect(pm.response.text()).not.to.include('4111111111111111'));",
-       "pm.collectionVariables.set('orderId', order.id);",
-       "pm.collectionVariables.set('productId', order.items[0].productId);"
-      ]
-     }
-    }
-   ],
-   "request": {
-    "method": "POST",
-    "header": [
-     {
-      "key": "X-User-Id",
-      "value": "{{userId}}"
-     },
-     {
-      "key": "X-User-Roles",
-      "value": "CUSTOMER"
-     },
-     {
-      "key": "X-Request-Id",
-      "value": "postman-order-{{$randomInt}}"
-     },
-     {
-      "key": "Idempotency-Key",
-      "value": "{{checkoutKey}}"
-     },
-     {
-      "key": "Content-Type",
-      "value": "application/json"
-     }
-    ],
-    "url": "{{baseUrl}}/orders",
-    "body": {
-     "mode": "raw",
-     "raw": "{\n  \"shippingMethod\": \"COURIER\",\n  \"shippingAddress\": {\n    \"firstName\": \"Anna\",\n    \"lastName\": \"Nowak\",\n    \"street\": \"ul. Prosta 1/2\",\n    \"postalCode\": \"00-001\",\n    \"city\": \"Warszawa\",\n    \"countryCode\": \"PL\"\n  },\n  \"payment\": {\n    \"cardNumber\": \"4111111111111111\"\n  }\n}"
-    }
-   }
-  },
-  {
-   "name": "Ten sam klucz → to samo zamówienie",
-   "event": [
-    {
-     "listen": "test",
-     "script": {
-      "type": "text/javascript",
-      "exec": [
-       "pm.test('201 i to samo id', () => { pm.response.to.have.status(201); pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get('orderId')); });"
-      ]
-     }
-    }
-   ],
-   "request": {
-    "method": "POST",
-    "header": [
-     {
-      "key": "X-User-Id",
-      "value": "{{userId}}"
-     },
-     {
-      "key": "X-User-Roles",
-      "value": "CUSTOMER"
-     },
-     {
-      "key": "X-Request-Id",
-      "value": "postman-order-{{$randomInt}}"
-     },
-     {
-      "key": "Idempotency-Key",
-      "value": "{{checkoutKey}}"
-     },
-     {
-      "key": "Content-Type",
-      "value": "application/json"
-     }
-    ],
-    "url": "{{baseUrl}}/orders",
-    "body": {
-     "mode": "raw",
-     "raw": "{\n  \"shippingMethod\": \"COURIER\",\n  \"shippingAddress\": {\n    \"firstName\": \"Anna\",\n    \"lastName\": \"Nowak\",\n    \"street\": \"ul. Prosta 1/2\",\n    \"postalCode\": \"00-001\",\n    \"city\": \"Warszawa\",\n    \"countryCode\": \"PL\"\n  },\n  \"payment\": {\n    \"cardNumber\": \"4111111111111111\"\n  }\n}"
-    }
-   }
-  },
-  {
-   "name": "Ten sam klucz, inny adres → 409 CONFLICT",
-   "event": [
-    {
-     "listen": "test",
-     "script": {
-      "type": "text/javascript",
-      "exec": [
-       "pm.test('409 CONFLICT', () => { pm.response.to.have.status(409); pm.expect(pm.response.json().error).to.eql('CONFLICT'); pm.expect(pm.response.json().requestId).to.be.a('string'); });"
-      ]
-     }
-    }
-   ],
-   "request": {
-    "method": "POST",
-    "header": [
-     {
-      "key": "X-User-Id",
-      "value": "{{userId}}"
-     },
-     {
-      "key": "X-User-Roles",
-      "value": "CUSTOMER"
-     },
-     {
-      "key": "X-Request-Id",
-      "value": "postman-order-{{$randomInt}}"
-     },
-     {
-      "key": "Idempotency-Key",
-      "value": "{{checkoutKey}}"
-     },
-     {
-      "key": "Content-Type",
-      "value": "application/json"
-     }
-    ],
-    "url": "{{baseUrl}}/orders",
-    "body": {
-     "mode": "raw",
-     "raw": "{\n  \"shippingMethod\": \"COURIER\",\n  \"shippingAddress\": {\n    \"firstName\": \"Anna\",\n    \"lastName\": \"Nowak\",\n    \"street\": \"ul. Prosta 1/2\",\n    \"postalCode\": \"00-001\",\n    \"city\": \"Kraków\",\n    \"countryCode\": \"PL\"\n  },\n  \"payment\": {\n    \"cardNumber\": \"4111111111111111\"\n  }\n}"
-    }
-   }
-  },
-  {
-   "name": "Szczegóły zamówienia",
-   "event": [
-    {
-     "listen": "test",
-     "script": {
-      "type": "text/javascript",
-      "exec": [
-       "pm.test('200 i to samo zamówienie', () => { pm.response.to.have.status(200); const o = pm.response.json(); pm.expect(o.id).to.eql(pm.collectionVariables.get('orderId')); pm.expect(o.status).to.eql('PAID'); pm.expect(o).to.have.property('itemsTotal'); });"
-      ]
-     }
-    }
-   ],
-   "request": {
-    "method": "GET",
-    "header": [
-     {
-      "key": "X-User-Id",
-      "value": "{{userId}}"
-     },
-     {
-      "key": "X-User-Roles",
-      "value": "CUSTOMER"
-     },
-     {
-      "key": "X-Request-Id",
-      "value": "postman-order-{{$randomInt}}"
-     }
-    ],
-    "url": "{{baseUrl}}/orders/{{orderId}}"
-   }
-  },
-  {
-   "name": "Lista własnych zamówień",
-   "event": [
-    {
-     "listen": "test",
-     "script": {
-      "type": "text/javascript",
-      "exec": [
-       "pm.test('200 i zamówienie na liście', () => { pm.response.to.have.status(200); const ids = pm.response.json().items.map(o => o.id); pm.expect(ids).to.include(pm.collectionVariables.get('orderId')); });"
-      ]
-     }
-    }
-   ],
-   "request": {
-    "method": "GET",
-    "header": [
-     {
-      "key": "X-User-Id",
-      "value": "{{userId}}"
-     },
-     {
-      "key": "X-User-Roles",
-      "value": "CUSTOMER"
-     },
-     {
-      "key": "X-Request-Id",
-      "value": "postman-order-{{$randomInt}}"
-     }
-    ],
-    "url": "{{baseUrl}}/orders?page=1&size=100"
-   }
-  },
-  {
-   "name": "Cudze zamówienie → 404",
-   "event": [
-    {
-     "listen": "test",
-     "script": {
-      "type": "text/javascript",
-      "exec": [
-       "pm.test('404 NOT_FOUND', () => { pm.response.to.have.status(404); pm.expect(pm.response.json().error).to.eql('NOT_FOUND'); });"
-      ]
-     }
-    }
-   ],
-   "request": {
-    "method": "GET",
-    "header": [
-     {
-      "key": "X-User-Id",
-      "value": "{{otherUserId}}"
-     },
-     {
-      "key": "X-User-Roles",
-      "value": "CUSTOMER"
-     },
-     {
-      "key": "X-Request-Id",
-      "value": "postman-order-{{$randomInt}}"
-     }
-    ],
-    "url": "{{baseUrl}}/orders/{{orderId}}"
-   }
-  },
-  {
-   "name": "Potwierdzenie zakupu dla Review (SERVICE)",
-   "event": [
-    {
-     "listen": "test",
-     "script": {
-      "type": "text/javascript",
-      "exec": [
-       "pm.test('200 purchased: true', () => { pm.response.to.have.status(200); pm.expect(pm.response.json()).to.eql({purchased: true}); });"
-      ]
-     }
-    }
-   ],
-   "request": {
-    "method": "GET",
-    "header": [
-     {
-      "key": "X-User-Id",
-      "value": "{{userId}}"
-     },
-     {
-      "key": "X-User-Roles",
-      "value": "SERVICE"
-     },
-     {
-      "key": "X-Request-Id",
-      "value": "postman-order-{{$randomInt}}"
-     }
-    ],
-    "url": "{{baseUrl}}/orders/purchased?userId={{userId}}&productId={{productId}}"
-   }
-  },
-  {
-   "name": "Potwierdzenie zakupu bez SERVICE → 403",
-   "event": [
-    {
-     "listen": "test",
-     "script": {
-      "type": "text/javascript",
-      "exec": [
-       "pm.test('403 FORBIDDEN', () => { pm.response.to.have.status(403); pm.expect(pm.response.json().error).to.eql('FORBIDDEN'); });"
-      ]
-     }
-    }
-   ],
-   "request": {
-    "method": "GET",
-    "header": [
-     {
-      "key": "X-User-Id",
-      "value": "{{userId}}"
-     },
-     {
-      "key": "X-User-Roles",
-      "value": "CUSTOMER"
-     },
-     {
-      "key": "X-Request-Id",
-      "value": "postman-order-{{$randomInt}}"
-     }
-    ],
-    "url": "{{baseUrl}}/orders/purchased?userId={{userId}}&productId={{productId}}"
-   }
-  },
-  {
-   "name": "Anuluj zamówienie",
-   "event": [
-    {
-     "listen": "test",
-     "script": {
-      "type": "text/javascript",
-      "exec": [
-       "pm.test('200 CANCELLED', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().status).to.eql('CANCELLED'); });"
-      ]
-     }
-    }
-   ],
-   "request": {
-    "method": "POST",
-    "header": [
-     {
-      "key": "X-User-Id",
-      "value": "{{userId}}"
-     },
-     {
-      "key": "X-User-Roles",
-      "value": "CUSTOMER"
-     },
-     {
-      "key": "X-Request-Id",
-      "value": "postman-order-{{$randomInt}}"
-     }
-    ],
-    "url": "{{baseUrl}}/orders/{{orderId}}/cancel"
-   }
-  },
-  {
-   "name": "Anuluj ponownie → 409 ORDER_NOT_CANCELLABLE",
-   "event": [
-    {
-     "listen": "test",
-     "script": {
-      "type": "text/javascript",
-      "exec": [
-       "pm.test('409 ORDER_NOT_CANCELLABLE', () => { pm.response.to.have.status(409); pm.expect(pm.response.json().error).to.eql('ORDER_NOT_CANCELLABLE'); });"
-      ]
-     }
-    }
-   ],
-   "request": {
-    "method": "POST",
-    "header": [
-     {
-      "key": "X-User-Id",
-      "value": "{{userId}}"
-     },
-     {
-      "key": "X-User-Roles",
-      "value": "CUSTOMER"
-     },
-     {
-      "key": "X-Request-Id",
-      "value": "postman-order-{{$randomInt}}"
-     }
-    ],
-    "url": "{{baseUrl}}/orders/{{orderId}}/cancel"
-   }
-  },
-  {
-   "name": "Płatność odrzucona (karta kończąca się na 0)",
-   "event": [
-    {
-     "listen": "prerequest",
-     "script": {
-      "type": "text/javascript",
-      "exec": [
-       "pm.collectionVariables.set('checkoutKey', pm.variables.replaceIn('{{$guid}}'));"
-      ]
-     }
+      "key": "userId",
+      "value": "11111111-1111-4111-8111-111111111111"
     },
     {
-     "listen": "test",
-     "script": {
-      "type": "text/javascript",
-      "exec": [
-       "pm.test('201 PAYMENT_FAILED', () => { pm.response.to.have.status(201); pm.expect(pm.response.json().status).to.eql('PAYMENT_FAILED'); });"
-      ]
-     }
-    }
-   ],
-   "request": {
-    "method": "POST",
-    "header": [
-     {
-      "key": "X-User-Id",
-      "value": "{{userId}}"
-     },
-     {
-      "key": "X-User-Roles",
-      "value": "CUSTOMER"
-     },
-     {
-      "key": "X-Request-Id",
-      "value": "postman-order-{{$randomInt}}"
-     },
-     {
-      "key": "Idempotency-Key",
-      "value": "{{checkoutKey}}"
-     },
-     {
-      "key": "Content-Type",
-      "value": "application/json"
-     }
-    ],
-    "url": "{{baseUrl}}/orders",
-    "body": {
-     "mode": "raw",
-     "raw": "{\n  \"shippingMethod\": \"COURIER\",\n  \"shippingAddress\": {\n    \"firstName\": \"Anna\",\n    \"lastName\": \"Nowak\",\n    \"street\": \"ul. Prosta 1/2\",\n    \"postalCode\": \"00-001\",\n    \"city\": \"Warszawa\",\n    \"countryCode\": \"PL\"\n  },\n  \"payment\": {\n    \"cardNumber\": \"4111111111111110\"\n  }\n}"
-    }
-   }
-  },
-  {
-   "name": "Zły Idempotency-Key → 400",
-   "event": [
-    {
-     "listen": "test",
-     "script": {
-      "type": "text/javascript",
-      "exec": [
-       "pm.test('400 VALIDATION_ERROR', () => { pm.response.to.have.status(400); pm.expect(pm.response.json().error).to.eql('VALIDATION_ERROR'); });"
-      ]
-     }
-    }
-   ],
-   "request": {
-    "method": "POST",
-    "header": [
-     {
-      "key": "X-User-Id",
-      "value": "{{userId}}"
-     },
-     {
-      "key": "X-User-Roles",
-      "value": "CUSTOMER"
-     },
-     {
-      "key": "X-Request-Id",
-      "value": "postman-order-{{$randomInt}}"
-     },
-     {
-      "key": "Idempotency-Key",
-      "value": "not-a-uuid"
-     },
-     {
-      "key": "Content-Type",
-      "value": "application/json"
-     }
-    ],
-    "url": "{{baseUrl}}/orders",
-    "body": {
-     "mode": "raw",
-     "raw": "{\n  \"shippingMethod\": \"COURIER\",\n  \"shippingAddress\": {\n    \"firstName\": \"Anna\",\n    \"lastName\": \"Nowak\",\n    \"street\": \"ul. Prosta 1/2\",\n    \"postalCode\": \"00-001\",\n    \"city\": \"Warszawa\",\n    \"countryCode\": \"PL\"\n  },\n  \"payment\": {\n    \"cardNumber\": \"4111111111111111\"\n  }\n}"
-    }
-   }
-  },
-  {
-   "name": "Nieznane pole payment.cvv → 400",
-   "event": [
-    {
-     "listen": "prerequest",
-     "script": {
-      "type": "text/javascript",
-      "exec": [
-       "pm.collectionVariables.set('checkoutKey', pm.variables.replaceIn('{{$guid}}'));"
-      ]
-     }
+      "key": "otherUserId",
+      "value": "22222222-2222-4222-8222-222222222222"
     },
     {
-     "listen": "test",
-     "script": {
-      "type": "text/javascript",
-      "exec": [
-       "pm.test('400 VALIDATION_ERROR', () => { pm.response.to.have.status(400); pm.expect(pm.response.json().error).to.eql('VALIDATION_ERROR'); });"
-      ]
-     }
-    }
-   ],
-   "request": {
-    "method": "POST",
-    "header": [
-     {
-      "key": "X-User-Id",
-      "value": "{{userId}}"
-     },
-     {
-      "key": "X-User-Roles",
-      "value": "CUSTOMER"
-     },
-     {
-      "key": "X-Request-Id",
-      "value": "postman-order-{{$randomInt}}"
-     },
-     {
-      "key": "Idempotency-Key",
-      "value": "{{checkoutKey}}"
-     },
-     {
-      "key": "Content-Type",
-      "value": "application/json"
-     }
-    ],
-    "url": "{{baseUrl}}/orders",
-    "body": {
-     "mode": "raw",
-     "raw": "{\n  \"shippingMethod\": \"COURIER\",\n  \"shippingAddress\": {\n    \"firstName\": \"Anna\",\n    \"lastName\": \"Nowak\",\n    \"street\": \"ul. Prosta 1/2\",\n    \"postalCode\": \"00-001\",\n    \"city\": \"Warszawa\",\n    \"countryCode\": \"PL\"\n  },\n  \"payment\": {\n    \"cardNumber\": \"4111111111111111\",\n    \"cvv\": \"123\"\n  }\n}"
-    }
-   }
-  },
-  {
-   "name": "Bez nagłówków Gateway → 401",
-   "event": [
+      "key": "checkoutKey",
+      "value": ""
+    },
     {
-     "listen": "test",
-     "script": {
-      "type": "text/javascript",
-      "exec": [
-       "pm.test('401 UNAUTHORIZED', () => { pm.response.to.have.status(401); pm.expect(pm.response.json().error).to.eql('UNAUTHORIZED'); });"
-      ]
-     }
+      "key": "orderId",
+      "value": ""
+    },
+    {
+      "key": "productId",
+      "value": ""
     }
-   ],
-   "request": {
-    "method": "GET",
-    "header": [],
-    "url": "{{baseUrl}}/orders"
-   }
-  }
- ]
+  ],
+  "item": [
+    {
+      "name": "start",
+      "description": "Identical in all 10 service collections. Registers a new customer, logs in the customer and the admin, and keeps customerToken, customerId, customerEmail and adminToken in the environment. The runner runs it once per run.",
+      "item": [
+        {
+          "name": "Register a new customer",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A new customer on every run: random e-mail and random password (24 characters; Auth needs 10-72 bytes).",
+                  "// The password lives only in a local variable of this run (pm.variables), never in the environment.",
+                  "const chars = 'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';",
+                  "const random = (n) => Array.from({ length: n }, () => chars[Math.floor(Math.random() * chars.length)]).join('');",
+                  "pm.variables.set('customerPassword', random(24));",
+                  "pm.environment.set('customerEmail', `postman-${Date.now().toString(36)}-${random(8).toLowerCase()}@sklep.local`);",
+                  "['customerToken', 'customerId', 'adminToken'].forEach((name) => pm.environment.unset(name));",
+                  "pm.request.body.update(JSON.stringify({",
+                  "  email: pm.environment.get('customerEmail'),",
+                  "  password: pm.variables.get('customerPassword'),",
+                  "  firstName: 'Postman',",
+                  "  lastName: 'Customer',",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "const account = pm.response.json();",
+                  "pm.test('account: id UUID, the generated e-mail, roles [\"CUSTOMER\"], no tokens in the body', () => {",
+                  "  pm.expect(account.id, 'id').to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);",
+                  "  pm.expect(account.email, 'email').to.eql(pm.environment.get('customerEmail'));",
+                  "  pm.expect(account.roles, 'roles').to.eql(['CUSTOMER']);",
+                  "  pm.expect('accessToken' in account, 'accessToken in the body').to.be.false;",
+                  "});",
+                  "pm.environment.set('customerId', account.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{gatewayUrl}}/auth/register",
+            "description": "New customer of this run (e-mail postman-<random>@sklep.local). The body is built in the pre-request script.",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Log in as the customer",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.request.body.update(JSON.stringify({",
+                  "  email: pm.environment.get('customerEmail'),",
+                  "  password: pm.variables.get('customerPassword'),",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Payload of a JWT (base64url). Only the claims are checked; the token is never printed or compared by value.",
+                  "const decodeBase64 = require('atob');",
+                  "const jwtClaims = (token) => {",
+                  "  const part = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');",
+                  "  return JSON.parse(decodeBase64(part + '='.repeat((4 - (part.length % 4)) % 4)));",
+                  "};",
+                  "",
+                  "            pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "            const login = pm.response.json();",
+                  "            pm.test('Bearer access token of the new customer (sub = customerId, roles [\"CUSTOMER\"])', () => {",
+                  "              pm.expect(login.tokenType, 'tokenType').to.eql('Bearer');",
+                  "              pm.expect(login.accessToken, 'accessToken').to.be.a('string');",
+                  "              pm.expect(login.accessToken.split('.').length, 'parts of the JWT').to.eql(3);",
+                  "              const claims = jwtClaims(login.accessToken);",
+                  "              pm.expect(claims.sub, 'sub').to.eql(pm.environment.get('customerId'));",
+                  "              pm.expect(claims.roles, 'roles').to.eql(['CUSTOMER']);",
+                  "            });",
+                  "            // Only the attributes are compared; the cookie value is never printed. The cookie stays in the cookie jar.",
+                  "            pm.test('Set-Cookie refresh_token: HttpOnly, Secure, SameSite=Strict, Path=/api/v1/auth', () => {",
+                  "              const parts = (pm.response.headers.get('Set-Cookie') || '').split(';').map((part) => part.trim());",
+                  "              pm.expect(/^refresh_token=[^\\s]+$/.test(parts[0]), 'refresh_token cookie').to.be.true;",
+                  "              ['HttpOnly', 'Secure', 'SameSite=Strict', 'Path=/api/v1/auth'].forEach((attribute) => {",
+                  "                pm.expect(parts.slice(1).includes(attribute), attribute).to.be.true;",
+                  "              });",
+                  "            });",
+                  "            if (typeof login.accessToken === 'string') {",
+                  "              pm.environment.set('customerToken', login.accessToken);",
+                  "            }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{gatewayUrl}}/auth/login",
+            "description": "Login 1 of 2 in a run (the Gateway allows 5 per minute per client address).",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Log in as admin",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The body is built here, so any character of the password stays valid JSON.",
+                  "pm.request.body.update(JSON.stringify({ email: pm.variables.get('adminEmail'), password: pm.variables.get('adminPassword') }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Payload of a JWT (base64url). Only the claims are checked; the token is never printed or compared by value.",
+                  "const decodeBase64 = require('atob');",
+                  "const jwtClaims = (token) => {",
+                  "  const part = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');",
+                  "  return JSON.parse(decodeBase64(part + '='.repeat((4 - (part.length % 4)) % 4)));",
+                  "};",
+                  "",
+                  "            pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "            const login = pm.response.json();",
+                  "            pm.test('Bearer access token with the role ADMIN', () => {",
+                  "              pm.expect(login.tokenType, 'tokenType').to.eql('Bearer');",
+                  "              pm.expect(login.accessToken, 'accessToken').to.be.a('string');",
+                  "              pm.expect(jwtClaims(login.accessToken).roles, 'roles').to.include('ADMIN');",
+                  "            });",
+                  "            if (typeof login.accessToken === 'string') {",
+                  "              pm.environment.set('adminToken', login.accessToken);",
+                  "            }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{gatewayUrl}}/auth/login",
+            "description": "Login 2 of 2 in a run. adminEmail and adminPassword come from the environment (the password only from the runner, never in a file). Cookie jar disabled: the refresh_token cookie of the admin must not replace the one of the customer (same path).",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "protocolProfileBehavior": {
+            "disableCookies": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "direct",
+      "description": "Straight to the service in the compose network sklep_backend (runner only): headers X-User-Id, X-User-Roles set by hand, as the Gateway does. Data of other services prepared in the same run through {{<name>Url}}; cleaned up at the end.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// shop:direct-request-id",
+              "// A new X-Request-Id for every request (the Gateway sets it in production); kept when the request sets its own.",
+              "const sent = pm.request.headers.get('X-Request-Id');",
+              "if (!sent) {",
+              "  pm.request.headers.upsert({ key: 'X-Request-Id', value: pm.variables.replaceIn('{{$guid}}') });",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// shop:error-format",
+              "// Every error of a service: {status (= HTTP code), error, message, requestId = the sent X-Request-Id}.",
+              "// Not for Mailpit and the RabbitMQ management API (other formats).",
+              "const url = pm.variables.replaceIn(pm.request.url.toString());",
+              "const external = ['mailpitUrl', 'rabbitmqUrl'].some((name) => {",
+              "  const base = pm.variables.get(name);",
+              "  return Boolean(base) && url.startsWith(base);",
+              "});",
+              "if (!external && pm.response.code >= 400) {",
+              "  pm.test(`error ${pm.response.code} in the team format, requestId = sent X-Request-Id`, () => {",
+              "    const body = pm.response.json();",
+              "    pm.expect(body.status, 'status').to.eql(pm.response.code);",
+              "    pm.expect(body.error, 'error').to.be.a('string').and.not.empty;",
+              "    pm.expect(body.message, 'message').to.be.a('string').and.not.empty;",
+              "    pm.expect(body.requestId, 'requestId').to.eql(pm.variables.replaceIn(pm.request.headers.get('X-Request-Id')));",
+              "  });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "Setup: customer profile (User, SERVICE)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// New user ids and a run id for every run of this folder (fixed ids would meet the data of the",
+                  "// previous run).",
+                  "pm.variables.set('userId', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('userId', pm.variables.get('userId'));",
+                  "pm.variables.set('otherUserId', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('otherUserId', pm.variables.get('otherUserId'));",
+                  "pm.variables.set('adminUserId', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.variables.set('runId', Date.now().toString(36));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Notification reads the e-mail address of order and shipment events from User: without a profile",
+                  "// the events of this run would end in notification.dlq.",
+                  "pm.test('profile created in User: 201', () => pm.response.to.have.status(201));",
+                  "pm.test('profile id = the user id of this run', () => pm.expect(pm.response.json().id).to.eql(pm.variables.get('userId')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{userId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "SERVICE"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{userServiceUrl}}/users",
+            "description": "Internal POST /users of User (role SERVICE, as Auth does after a registration).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": \"{{userId}}\", \"firstName\": \"Postman\", \"lastName\": \"Customer\", \"email\": \"postman-{{userId}}@sklep.local\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Setup: own product (Product, ADMIN)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('own product created: 201', () => pm.response.to.have.status(201));",
+                  "const product = pm.response.code === 201 ? pm.response.json() : {};",
+                  "pm.test('product: id UUID, price \"12.50\" PLN', () => {",
+                  "  pm.expect(product.id, 'id').to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);",
+                  "  pm.expect(product.price, 'price').to.eql('12.50');",
+                  "  pm.expect(product.currency, 'currency').to.eql('PLN');",
+                  "});",
+                  "pm.variables.set('orderProductId', product.id);",
+                  "console.log('own product of this run: ' + product.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{adminUserId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "ADMIN"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{productServiceUrl}}/products",
+            "description": "Own product of this run (Product, ADMIN); the seed products are only read.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Postman order-service {{runId}}\", \"description\": \"Created and deleted by the order-service collection\", \"price\": \"12.50\", \"currency\": \"PLN\", \"categoryId\": \"c0000000-0000-4000-8000-000000000001\", \"imageUrl\": null}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Setup: stock of own product (Inventory, ADMIN)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stock set: 200', () => pm.response.to.have.status(200));",
+                  "pm.test('quantity 5, nothing reserved', () => {",
+                  "  const stock = pm.response.json();",
+                  "  pm.expect(stock.quantity, 'quantity').to.eql(5);",
+                  "  pm.expect(stock.reserved, 'reserved').to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{adminUserId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "ADMIN"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{inventoryServiceUrl}}/inventory/{{orderProductId}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"quantity\": 5}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Setup: add own product to the cart (Cart)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('product added to the cart: 200', () => pm.response.to.have.status(200));",
+                  "pm.test('cart lines and the stock check', () => {",
+                  "  const cart = pm.response.json();",
+                  "  pm.expect(cart.items.map((line) => [line.productId, line.quantity]), 'lines').to.eql([[pm.variables.get('orderProductId'), 2]]);",
+                  "  pm.expect(cart.inventoryChecked, 'inventoryChecked').to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{userId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{cartServiceUrl}}/cart/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"productId\": \"{{orderProductId}}\", \"quantity\": 2}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Złóż zamówienie (PAID)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('checkoutKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 PAID', () => { pm.response.to.have.status(201); pm.expect(pm.response.json().status).to.eql('PAID'); });",
+                  "const order = pm.response.json();",
+                  "pm.test('kwoty tekstem, waluta PLN, pozycje', () => { pm.expect(order.total).to.match(/^[0-9]+\\.[0-9]{2}$/); pm.expect(order.currency).to.eql('PLN'); pm.expect(order.items.length).to.be.above(0); pm.expect(order.userId).to.eql(pm.variables.get('userId')); });",
+                  "pm.test('bez numeru karty w odpowiedzi', () => pm.expect(pm.response.text()).not.to.include('4111111111111111'));",
+                  "pm.collectionVariables.set('orderId', order.id);",
+                  "pm.collectionVariables.set('productId', order.items[0].productId);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{userId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "postman-order-{{$randomInt}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{checkoutKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"shippingMethod\": \"COURIER\",\n  \"shippingAddress\": {\n    \"firstName\": \"Anna\",\n    \"lastName\": \"Nowak\",\n    \"street\": \"ul. Prosta 1/2\",\n    \"postalCode\": \"00-001\",\n    \"city\": \"Warszawa\",\n    \"countryCode\": \"PL\"\n  },\n  \"payment\": {\n    \"cardNumber\": \"4111111111111111\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "Ten sam klucz → to samo zamówienie",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 i to samo id', () => { pm.response.to.have.status(201); pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get('orderId')); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{userId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "postman-order-{{$randomInt}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{checkoutKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"shippingMethod\": \"COURIER\",\n  \"shippingAddress\": {\n    \"firstName\": \"Anna\",\n    \"lastName\": \"Nowak\",\n    \"street\": \"ul. Prosta 1/2\",\n    \"postalCode\": \"00-001\",\n    \"city\": \"Warszawa\",\n    \"countryCode\": \"PL\"\n  },\n  \"payment\": {\n    \"cardNumber\": \"4111111111111111\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "Ten sam klucz, inny adres → 409 CONFLICT",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 CONFLICT', () => { pm.response.to.have.status(409); pm.expect(pm.response.json().error).to.eql('CONFLICT'); pm.expect(pm.response.json().requestId).to.be.a('string'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{userId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "postman-order-{{$randomInt}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{checkoutKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"shippingMethod\": \"COURIER\",\n  \"shippingAddress\": {\n    \"firstName\": \"Anna\",\n    \"lastName\": \"Nowak\",\n    \"street\": \"ul. Prosta 1/2\",\n    \"postalCode\": \"00-001\",\n    \"city\": \"Kraków\",\n    \"countryCode\": \"PL\"\n  },\n  \"payment\": {\n    \"cardNumber\": \"4111111111111111\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "Szczegóły zamówienia",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 i to samo zamówienie', () => { pm.response.to.have.status(200); const o = pm.response.json(); pm.expect(o.id).to.eql(pm.collectionVariables.get('orderId')); pm.expect(o.status).to.eql('PAID'); pm.expect(o).to.have.property('itemsTotal'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{userId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "postman-order-{{$randomInt}}"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/{{orderId}}"
+          }
+        },
+        {
+          "name": "Lista własnych zamówień",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 i zamówienie na liście', () => { pm.response.to.have.status(200); const ids = pm.response.json().items.map(o => o.id); pm.expect(ids).to.include(pm.collectionVariables.get('orderId')); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{userId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "postman-order-{{$randomInt}}"
+              }
+            ],
+            "url": "{{baseUrl}}/orders?page=1&size=100"
+          }
+        },
+        {
+          "name": "Cudze zamówienie → 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 NOT_FOUND', () => { pm.response.to.have.status(404); pm.expect(pm.response.json().error).to.eql('NOT_FOUND'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{otherUserId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "postman-order-{{$randomInt}}"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/{{orderId}}"
+          }
+        },
+        {
+          "name": "Potwierdzenie zakupu dla Review (SERVICE)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 purchased: true', () => { pm.response.to.have.status(200); pm.expect(pm.response.json()).to.eql({purchased: true}); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{userId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "SERVICE"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "postman-order-{{$randomInt}}"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/purchased?userId={{userId}}&productId={{productId}}"
+          }
+        },
+        {
+          "name": "Potwierdzenie zakupu bez SERVICE → 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403 FORBIDDEN', () => { pm.response.to.have.status(403); pm.expect(pm.response.json().error).to.eql('FORBIDDEN'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{userId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "postman-order-{{$randomInt}}"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/purchased?userId={{userId}}&productId={{productId}}"
+          }
+        },
+        {
+          "name": "Anuluj zamówienie",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 CANCELLED', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().status).to.eql('CANCELLED'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{userId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "postman-order-{{$randomInt}}"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/{{orderId}}/cancel"
+          }
+        },
+        {
+          "name": "Anuluj ponownie → 409 ORDER_NOT_CANCELLABLE",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 ORDER_NOT_CANCELLABLE', () => { pm.response.to.have.status(409); pm.expect(pm.response.json().error).to.eql('ORDER_NOT_CANCELLABLE'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{userId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "postman-order-{{$randomInt}}"
+              }
+            ],
+            "url": "{{baseUrl}}/orders/{{orderId}}/cancel"
+          }
+        },
+        {
+          "name": "Setup: add own product to the cart again (Cart)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('product added to the cart: 200', () => pm.response.to.have.status(200));",
+                  "pm.test('cart lines and the stock check', () => {",
+                  "  const cart = pm.response.json();",
+                  "  pm.expect(cart.items.map((line) => [line.productId, line.quantity]), 'lines').to.eql([[pm.variables.get('orderProductId'), 1]]);",
+                  "  pm.expect(cart.inventoryChecked, 'inventoryChecked').to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{userId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{cartServiceUrl}}/cart/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"productId\": \"{{orderProductId}}\", \"quantity\": 1}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Płatność odrzucona (karta kończąca się na 0)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('checkoutKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 PAYMENT_FAILED', () => { pm.response.to.have.status(201); pm.expect(pm.response.json().status).to.eql('PAYMENT_FAILED'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{userId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "postman-order-{{$randomInt}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{checkoutKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"shippingMethod\": \"COURIER\",\n  \"shippingAddress\": {\n    \"firstName\": \"Anna\",\n    \"lastName\": \"Nowak\",\n    \"street\": \"ul. Prosta 1/2\",\n    \"postalCode\": \"00-001\",\n    \"city\": \"Warszawa\",\n    \"countryCode\": \"PL\"\n  },\n  \"payment\": {\n    \"cardNumber\": \"4111111111111110\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "Zły Idempotency-Key → 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 VALIDATION_ERROR', () => { pm.response.to.have.status(400); pm.expect(pm.response.json().error).to.eql('VALIDATION_ERROR'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{userId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "postman-order-{{$randomInt}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "not-a-uuid"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"shippingMethod\": \"COURIER\",\n  \"shippingAddress\": {\n    \"firstName\": \"Anna\",\n    \"lastName\": \"Nowak\",\n    \"street\": \"ul. Prosta 1/2\",\n    \"postalCode\": \"00-001\",\n    \"city\": \"Warszawa\",\n    \"countryCode\": \"PL\"\n  },\n  \"payment\": {\n    \"cardNumber\": \"4111111111111111\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "Nieznane pole payment.cvv → 400",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('checkoutKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 VALIDATION_ERROR', () => { pm.response.to.have.status(400); pm.expect(pm.response.json().error).to.eql('VALIDATION_ERROR'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{userId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "postman-order-{{$randomInt}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{checkoutKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"shippingMethod\": \"COURIER\",\n  \"shippingAddress\": {\n    \"firstName\": \"Anna\",\n    \"lastName\": \"Nowak\",\n    \"street\": \"ul. Prosta 1/2\",\n    \"postalCode\": \"00-001\",\n    \"city\": \"Warszawa\",\n    \"countryCode\": \"PL\"\n  },\n  \"payment\": {\n    \"cardNumber\": \"4111111111111111\",\n    \"cvv\": \"123\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "Bez nagłówków Gateway → 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 UNAUTHORIZED', () => { pm.response.to.have.status(401); pm.expect(pm.response.json().error).to.eql('UNAUTHORIZED'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/orders"
+          }
+        },
+        {
+          "name": "Cleanup: empty the cart after the declined payment (Cart, SERVICE)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cart cleared: 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{userId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "SERVICE"
+              }
+            ],
+            "url": "{{cartServiceUrl}}/cart/{{userId}}"
+          }
+        },
+        {
+          "name": "Cleanup: delete own product (Product, ADMIN)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('own product deleted: 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{adminUserId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "ADMIN"
+              }
+            ],
+            "url": "{{productServiceUrl}}/products/{{orderProductId}}"
+          }
+        },
+        {
+          "name": "Cleanup: own product is gone (Product)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('deleted product: 404 NOT_FOUND', () => {",
+                  "  pm.response.to.have.status(404);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('NOT_FOUND');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{productServiceUrl}}/products/{{orderProductId}}"
+          }
+        },
+        {
+          "name": "Cleanup: no stock reserved for own product (Inventory)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The cancelled order frees its reservation through the event order.cancelled",
+                  "// (Inventory), so the stock may need a moment.",
+                  "// Asked again every 1 s, at most 10 more times (no fixed sleep).",
+                  "const MAX_TRIES = 10;",
+                  "const again = () => ({ url: pm.variables.replaceIn('{{inventoryServiceUrl}}/inventory/{{orderProductId}}'), method: 'GET', header: [{ key: 'X-Request-Id', value: pm.variables.replaceIn('{{$guid}}') }] });",
+                  "const ready = (res) => Boolean(res) && res.code === 200 && res.json().reserved === 0;",
+                  "const check = (res) => {",
+                  "  const stock = res && res.code === 200 ? res.json() : {};",
+                  "  pm.test('stock of own product: 200, reserved 0, quantity 5', () => {",
+                  "    pm.expect(res && res.code, 'status').to.eql(200);",
+                  "    pm.expect(stock.reserved, 'reserved').to.eql(0);",
+                  "    pm.expect(stock.quantity, 'quantity').to.eql(5);",
+                  "  });",
+                  "};",
+                  "pm.test('first answer: 200', () => pm.response.to.have.status(200));",
+                  "const wait = (tries, res) => {",
+                  "  if (ready(res) || tries >= MAX_TRIES) {",
+                  "    check(res);",
+                  "    return;",
+                  "  }",
+                  "  setTimeout(() => pm.sendRequest(again(), (error, next) => wait(tries + 1, error ? null : next)), 1000);",
+                  "};",
+                  "wait(0, pm.response);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{inventoryServiceUrl}}/inventory/{{orderProductId}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "via Gateway",
+      "description": "Through the shop entrance {{gatewayUrl}} with the tokens of the folder start (compose and k8s). Own product and stock made by ADMIN; the cart of the start customer is left empty.",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// shop:error-format",
+              "// Every answer through the Gateway has X-Request-Id; every error: {status (= HTTP code), error, message,",
+              "// requestId = X-Request-Id of the answer}. Not for Mailpit (other format).",
+              "const url = pm.variables.replaceIn(pm.request.url.toString());",
+              "const external = ['mailpitUrl', 'rabbitmqUrl'].some((name) => {",
+              "  const base = pm.variables.get(name);",
+              "  return Boolean(base) && url.startsWith(base);",
+              "});",
+              "if (!external) {",
+              "  pm.test('X-Request-Id header is set', () => pm.expect(pm.response.headers.get('X-Request-Id')).to.be.a('string').and.not.empty);",
+              "  if (pm.response.code >= 400) {",
+              "    pm.test(`error ${pm.response.code} in the team format, requestId = X-Request-Id`, () => {",
+              "      const body = pm.response.json();",
+              "      pm.expect(body.status, 'status').to.eql(pm.response.code);",
+              "      pm.expect(body.error, 'error').to.be.a('string').and.not.empty;",
+              "      pm.expect(body.message, 'message').to.be.a('string').and.not.empty;",
+              "      pm.expect(body.requestId, 'requestId').to.eql(pm.response.headers.get('X-Request-Id'));",
+              "    });",
+              "  }",
+              "}"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "Create own product (ADMIN)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('own product created by ADMIN: 201', () => pm.response.to.have.status(201));",
+                  "const product = pm.response.code === 201 ? pm.response.json() : {};",
+                  "pm.test('product: id UUID, price \"12.50\" PLN', () => {",
+                  "  pm.expect(product.id, 'id').to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);",
+                  "  pm.expect(product.price, 'price').to.eql('12.50');",
+                  "});",
+                  "pm.variables.set('orderProductId', product.id);",
+                  "console.log('own product of this run: ' + product.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{gatewayUrl}}/products",
+            "description": "Own product of this run; the seed products are only read.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Postman order-service {{$timestamp}}\", \"description\": \"Created and deleted by the order-service collection\", \"price\": \"12.50\", \"currency\": \"PLN\", \"categoryId\": \"c0000000-0000-4000-8000-000000000001\", \"imageUrl\": null}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Set stock of own product (ADMIN)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stock set by ADMIN: 200', () => pm.response.to.have.status(200));",
+                  "pm.test('quantity 5, nothing reserved', () => {",
+                  "  pm.expect(pm.response.json().quantity, 'quantity').to.eql(5);",
+                  "  pm.expect(pm.response.json().reserved, 'reserved').to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{gatewayUrl}}/inventory/{{orderProductId}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"quantity\": 5}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Add own product to the cart",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cart = pm.response.code === 200 ? pm.response.json() : { items: [] };",
+                  "pm.test('own product added to the cart: 200', () => pm.response.to.have.status(200));",
+                  "pm.test('2 x own product in the cart, stock checked', () => {",
+                  "  const own = cart.items.filter((line) => line.productId === pm.variables.get('orderProductId'));",
+                  "  pm.expect(own.map((line) => line.quantity), 'quantity').to.eql([2]);",
+                  "  pm.expect(cart.inventoryChecked, 'inventoryChecked').to.eql(true);",
+                  "});",
+                  "// shop:budget 2",
+                  "// The cart of the start customer is shared by the collections of one run and should be empty here. Lines of",
+                  "// other products (left by a failed run) are removed: at most MAX_STALE requests.",
+                  "const MAX_STALE = 2;",
+                  "const stale = cart.items.filter((line) => line.productId !== pm.variables.get('orderProductId'));",
+                  "pm.test('at most ' + MAX_STALE + ' stale lines in the cart', () => pm.expect(stale.length).to.be.at.most(MAX_STALE));",
+                  "stale.slice(0, MAX_STALE).forEach((line) => pm.sendRequest({",
+                  "  url: pm.variables.replaceIn('{{gatewayUrl}}/cart/items/' + line.productId),",
+                  "  method: 'DELETE',",
+                  "  header: [{ key: 'Authorization', value: pm.variables.replaceIn('Bearer {{customerToken}}') }],",
+                  "}, (error, res) => pm.test('stale cart line removed: 204', () => pm.expect(error ? null : res.code).to.eql(204))));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{gatewayUrl}}/cart/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"productId\": \"{{orderProductId}}\", \"quantity\": 2}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Buy the cart (card accepted, Idempotency-Key)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A new Idempotency-Key for every purchase of every run.",
+                  "pm.variables.set('orderIdKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const order = pm.response.code === 201 ? pm.response.json() : { items: [] };",
+                  "pm.test('purchase: 201 PAID', () => {",
+                  "  pm.response.to.have.status(201);",
+                  "  pm.expect(order.status, 'status').to.eql('PAID');",
+                  "  pm.expect(order.userId, 'userId').to.eql(pm.environment.get('customerId'));",
+                  "  pm.expect(order.items.map((line) => [line.productId, line.quantity]), 'lines').to.eql([[pm.variables.get('orderProductId'), 2]]);",
+                  "});",
+                  "pm.variables.set('orderId', order.id);",
+                  "console.log('order of this run: ' + order.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{orderIdKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{gatewayUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"shippingMethod\": \"COURIER\", \"shippingAddress\": {\"firstName\": \"Postman\", \"lastName\": \"Customer\", \"street\": \"ul. Testowa 1\", \"postalCode\": \"00-001\", \"city\": \"Warszawa\", \"countryCode\": \"PL\"}, \"payment\": {\"cardNumber\": \"4111111111111111\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Get the order",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('own order: 200 PAID', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "  const order = pm.response.json();",
+                  "  pm.expect(order.id, 'id').to.eql(pm.variables.get('orderId'));",
+                  "  pm.expect(order.status, 'status').to.eql('PAID');",
+                  "  pm.expect(order.total, 'total').to.match(/^[0-9]+\\.[0-9]{2}$/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{gatewayUrl}}/orders/{{orderId}}"
+          }
+        },
+        {
+          "name": "List own orders",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200, the order is on the list: PAID, 1 line', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "  const order = pm.response.json().items.find((one) => one.id === pm.variables.get('orderId')) || {};",
+                  "  pm.expect(order.status, 'status').to.eql('PAID');",
+                  "  pm.expect(order.itemCount, 'itemCount').to.eql(1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{gatewayUrl}}/orders?page=1&size=100"
+          }
+        },
+        {
+          "name": "Cancel the order",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('order cancelled: 200 CANCELLED', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().status, 'status').to.eql('CANCELLED');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{gatewayUrl}}/orders/{{orderId}}/cancel"
+          }
+        },
+        {
+          "name": "Add own product to the cart again",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The paid order emptied the cart, so only this line is there.",
+                  "pm.test('1 x own product in the cart: 200', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "  const lines = pm.response.json().items.map((line) => [line.productId, line.quantity]);",
+                  "  pm.expect(lines, 'lines').to.eql([[pm.variables.get('orderProductId'), 1]]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{gatewayUrl}}/cart/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"productId\": \"{{orderProductId}}\", \"quantity\": 1}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Buy the cart (card declined)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A new Idempotency-Key for every purchase of every run.",
+                  "pm.variables.set('declinedOrderIdKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const order = pm.response.code === 201 ? pm.response.json() : { items: [] };",
+                  "pm.test('purchase: 201 PAYMENT_FAILED', () => {",
+                  "  pm.response.to.have.status(201);",
+                  "  pm.expect(order.status, 'status').to.eql('PAYMENT_FAILED');",
+                  "  pm.expect(order.userId, 'userId').to.eql(pm.environment.get('customerId'));",
+                  "});",
+                  "pm.variables.set('declinedOrderId', order.id);",
+                  "console.log('order of this run: ' + order.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{declinedOrderIdKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{gatewayUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"shippingMethod\": \"COURIER\", \"shippingAddress\": {\"firstName\": \"Postman\", \"lastName\": \"Customer\", \"street\": \"ul. Testowa 1\", \"postalCode\": \"00-001\", \"city\": \"Warszawa\", \"countryCode\": \"PL\"}, \"payment\": {\"cardNumber\": \"4111111111111110\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Empty the cart after the declined payment",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A declined payment keeps the cart; the start customer's cart is shared, so it is emptied here.",
+                  "pm.test('line removed: 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{gatewayUrl}}/cart/items/{{orderProductId}}"
+          }
+        },
+        {
+          "name": "Orders without a token → 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 UNAUTHORIZED', () => {",
+                  "  pm.response.to.have.status(401);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('UNAUTHORIZED');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{gatewayUrl}}/orders"
+          }
+        },
+        {
+          "name": "Internal GET /orders/purchased from outside → 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The Gateway has no route to the internal endpoint of Review.",
+                  "pm.test('404 NOT_FOUND', () => {",
+                  "  pm.response.to.have.status(404);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('NOT_FOUND');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{gatewayUrl}}/orders/purchased?userId={{customerId}}&productId={{orderProductId}}"
+          }
+        },
+        {
+          "name": "Delete own product (ADMIN)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('own product deleted by ADMIN: 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{gatewayUrl}}/products/{{orderProductId}}"
+          }
+        }
+      ]
+    }
+  ]
 }
