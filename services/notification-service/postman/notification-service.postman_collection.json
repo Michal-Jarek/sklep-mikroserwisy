@@ -4,417 +4,6 @@
     "description": "Notification Service (port 8087) bez Gateway. Folder „Powitanie” wysyła testowe zdarzenie do RabbitMQ i sprawdza e-mail w Mailpit oraz historię klienta. Uzupełnij w środowisku zmienną rabbitmqAdminPassword (RABBITMQ_ADMIN_PASSWORD z deploy/.env) — tylko lokalnie, nie w repo.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
-  "item": [
-    {
-      "name": "Zdrowie",
-      "item": [
-        {
-          "name": "GET /health/live",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/health/live",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "health",
-                "live"
-              ]
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('200 UP', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().status).to.eql('UP'); });"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "GET /health/ready",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/health/ready",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "health",
-                "ready"
-              ]
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('200 UP (MongoDB works, consumer runs)', () => pm.response.to.have.status(200));",
-                  "pm.test('X-Instance-Id header', () => pm.response.to.have.header('X-Instance-Id'));"
-                ]
-              }
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "name": "Powitanie: zdarzenie → e-mail → historia",
-      "item": [
-        {
-          "name": "Opublikuj user.registered (panel RabbitMQ)",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{rabbitmqUrl}}/api/exchanges/%2F/shop.events/publish",
-              "host": [
-                "{{rabbitmqUrl}}"
-              ],
-              "path": [
-                "api",
-                "exchanges",
-                "%2F",
-                "shop.events",
-                "publish"
-              ]
-            },
-            "description": "Wysyła testowe zdarzenie do exchange shop.events przez HTTP API RabbitMQ (konto admin, hasło RABBITMQ_ADMIN_PASSWORD z deploy/.env w zmiennej środowiska rabbitmqAdminPassword).",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"routing_key\": \"user.registered\",\n  \"payload\": {{envelope}},\n  \"payload_encoding\": \"string\",\n  \"properties\": {\"content_type\": \"application/json\", \"delivery_mode\": 2, \"message_id\": \"{{eventId}}\", \"type\": \"user.registered\"}\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            },
-            "auth": {
-              "type": "basic",
-              "basic": [
-                {
-                  "key": "username",
-                  "value": "admin",
-                  "type": "string"
-                },
-                {
-                  "key": "password",
-                  "value": "{{rabbitmqAdminPassword}}",
-                  "type": "string"
-                }
-              ]
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('200', () => pm.response.to.have.status(200));",
-                  "pm.test('RabbitMQ routed the event to a queue', () => pm.expect(pm.response.json().routed).to.be.true);"
-                ]
-              }
-            },
-            {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// New eventId every run: the service skips an eventId it has already handled (idempotency).",
-                  "const eventId = pm.variables.replaceIn('{{$guid}}').toLowerCase();",
-                  "pm.collectionVariables.set('eventId', eventId);",
-                  "const payload = { userId: pm.collectionVariables.get('customerUserId'), email: 'klient+' + eventId.slice(0, 8) + '@example.com', firstName: 'Anna' };",
-                  "const envelope = {",
-                  "  eventId, type: 'user.registered', version: 1,",
-                  "  occurredAt: new Date().toISOString(), requestId: 'postman-' + Date.now(), payload",
-                  "};",
-                  "// RabbitMQ HTTP API takes the message body as a JSON string: encoded twice.",
-                  "pm.collectionVariables.set('envelope', JSON.stringify(JSON.stringify(envelope)));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Mailpit: przyszedł e-mail powitalny",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{mailpitUrl}}/api/v1/messages?limit=20",
-              "host": [
-                "{{mailpitUrl}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "messages"
-              ],
-              "query": [
-                {
-                  "key": "limit",
-                  "value": "20"
-                }
-              ]
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('200', () => pm.response.to.have.status(200));",
-                  "const messages = pm.response.json().messages || [];",
-                  "const to = 'klient+' + pm.collectionVariables.get('eventId').slice(0, 8) + '@example.com';",
-                  "pm.test('the welcome e-mail is in Mailpit', () => pm.expect(messages.some(m => (m.To || []).some(t => t.Address === to))).to.be.true);"
-                ]
-              }
-            },
-            {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// The consumer needs a moment to take the event and send the e-mail.",
-                  "setTimeout(() => {}, 2000);"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "GET /notifications/me: wpis w historii klienta",
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "X-User-Id",
-                "value": "{{customerUserId}}"
-              },
-              {
-                "key": "X-User-Roles",
-                "value": "CUSTOMER"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/notifications/me",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "notifications",
-                "me"
-              ]
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('200', () => pm.response.to.have.status(200));",
-                  "const body = pm.response.json();",
-                  "pm.test('page with items, page, size, total', () => pm.expect(body).to.have.keys('items','page','size','total'));",
-                  "pm.test('newest entry is the welcome e-mail', () => { pm.expect(body.items[0].type).to.eql('user.registered'); pm.expect(body.items[0].subject).to.eql('Witamy w sklepie'); });"
-                ]
-              }
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "name": "Zamówienie (wymaga User Service)",
-      "item": [
-        {
-          "name": "Opublikuj order.created",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{rabbitmqUrl}}/api/exchanges/%2F/shop.events/publish",
-              "host": [
-                "{{rabbitmqUrl}}"
-              ],
-              "path": [
-                "api",
-                "exchanges",
-                "%2F",
-                "shop.events",
-                "publish"
-              ]
-            },
-            "description": "Adres e-mail klienta Notification pobiera z User Service (GET /users/{userId}). Bez działającego User Service i profilu klienta zdarzenie po 3 próbach (ok. 35 s) trafia do notification.dlq — to też jest poprawne zachowanie.",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"routing_key\": \"order.created\",\n  \"payload\": {{envelope}},\n  \"payload_encoding\": \"string\",\n  \"properties\": {\"content_type\": \"application/json\", \"delivery_mode\": 2, \"message_id\": \"{{eventId}}\", \"type\": \"order.created\"}\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            },
-            "auth": {
-              "type": "basic",
-              "basic": [
-                {
-                  "key": "username",
-                  "value": "admin",
-                  "type": "string"
-                },
-                {
-                  "key": "password",
-                  "value": "{{rabbitmqAdminPassword}}",
-                  "type": "string"
-                }
-              ]
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('200', () => pm.response.to.have.status(200));",
-                  "pm.test('RabbitMQ routed the event to a queue', () => pm.expect(pm.response.json().routed).to.be.true);"
-                ]
-              }
-            },
-            {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// New eventId every run: the service skips an eventId it has already handled (idempotency).",
-                  "const eventId = pm.variables.replaceIn('{{$guid}}').toLowerCase();",
-                  "pm.collectionVariables.set('eventId', eventId);",
-                  "const payload = { orderId: pm.variables.replaceIn('{{$guid}}').toLowerCase(), userId: pm.collectionVariables.get('customerUserId'), items: [{ productId: 'a0000000-0000-4000-8000-000000000001', name: 'Kubek ceramiczny', quantity: 2, unitPrice: '19.99' }], total: '54.97', currency: 'PLN', shippingMethod: 'COURIER', shippingCost: '14.99', shippingAddress: { firstName: 'Jan', lastName: 'Kowalski', street: 'ul. Testowa 1', postalCode: '00-001', city: 'Warszawa', countryCode: 'PL' } };",
-                  "const envelope = {",
-                  "  eventId, type: 'order.created', version: 1,",
-                  "  occurredAt: new Date().toISOString(), requestId: 'postman-' + Date.now(), payload",
-                  "};",
-                  "// RabbitMQ HTTP API takes the message body as a JSON string: encoded twice.",
-                  "pm.collectionVariables.set('envelope', JSON.stringify(JSON.stringify(envelope)));"
-                ]
-              }
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "name": "Błędy",
-      "item": [
-        {
-          "name": "GET /notifications/me bez logowania — 401",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/notifications/me",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "notifications",
-                "me"
-              ]
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 401', () => pm.response.to.have.status(401));",
-                  "pm.test('error UNAUTHORIZED in the team format', () => { const b = pm.response.json(); pm.expect(b.error).to.eql('UNAUTHORIZED'); pm.expect(b).to.have.keys('status','error','message','requestId'); });"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "GET /notifications/me?size=101 — 400",
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "X-User-Id",
-                "value": "{{customerUserId}}"
-              },
-              {
-                "key": "X-User-Roles",
-                "value": "CUSTOMER"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/notifications/me?size=101",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "notifications",
-                "me"
-              ],
-              "query": [
-                {
-                  "key": "size",
-                  "value": "101"
-                }
-              ]
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 400', () => pm.response.to.have.status(400));",
-                  "pm.test('error VALIDATION_ERROR', () => pm.expect(pm.response.json().error).to.eql('VALIDATION_ERROR'));"
-                ]
-              }
-            }
-          ]
-        }
-      ]
-    }
-  ],
-  "event": [
-    {
-      "listen": "prerequest",
-      "script": {
-        "type": "text/javascript",
-        "exec": [
-          "pm.request.headers.upsert({key: 'X-Request-Id', value: 'postman-' + Date.now()});"
-        ]
-      }
-    }
-  ],
   "variable": [
     {
       "key": "customerUserId",
@@ -427,6 +16,1248 @@
     {
       "key": "envelope",
       "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "start",
+      "description": "Identical in all 10 service collections. Registers a new customer, logs in the customer and the admin, and keeps customerToken, customerId, customerEmail and adminToken in the environment. The runner runs it once per run.",
+      "item": [
+        {
+          "name": "Register a new customer",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A new customer on every run: random e-mail and random password (24 characters; Auth needs 10-72 bytes).",
+                  "// The password lives only in a local variable of this run (pm.variables), never in the environment.",
+                  "const chars = 'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';",
+                  "const random = (n) => Array.from({ length: n }, () => chars[Math.floor(Math.random() * chars.length)]).join('');",
+                  "pm.variables.set('customerPassword', random(24));",
+                  "pm.environment.set('customerEmail', `postman-${Date.now().toString(36)}-${random(8).toLowerCase()}@sklep.local`);",
+                  "['customerToken', 'customerId', 'adminToken'].forEach((name) => pm.environment.unset(name));",
+                  "pm.request.body.update(JSON.stringify({",
+                  "  email: pm.environment.get('customerEmail'),",
+                  "  password: pm.variables.get('customerPassword'),",
+                  "  firstName: 'Postman',",
+                  "  lastName: 'Customer',",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "const account = pm.response.json();",
+                  "pm.test('account: id UUID, the generated e-mail, roles [\"CUSTOMER\"], no tokens in the body', () => {",
+                  "  pm.expect(account.id, 'id').to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);",
+                  "  pm.expect(account.email, 'email').to.eql(pm.environment.get('customerEmail'));",
+                  "  pm.expect(account.roles, 'roles').to.eql(['CUSTOMER']);",
+                  "  pm.expect('accessToken' in account, 'accessToken in the body').to.be.false;",
+                  "});",
+                  "pm.environment.set('customerId', account.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{gatewayUrl}}/auth/register",
+            "description": "New customer of this run (e-mail postman-<random>@sklep.local). The body is built in the pre-request script.",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Log in as the customer",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.request.body.update(JSON.stringify({",
+                  "  email: pm.environment.get('customerEmail'),",
+                  "  password: pm.variables.get('customerPassword'),",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Payload of a JWT (base64url). Only the claims are checked; the token is never printed or compared by value.",
+                  "const decodeBase64 = require('atob');",
+                  "const jwtClaims = (token) => {",
+                  "  const part = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');",
+                  "  return JSON.parse(decodeBase64(part + '='.repeat((4 - (part.length % 4)) % 4)));",
+                  "};",
+                  "",
+                  "            pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "            const login = pm.response.json();",
+                  "            pm.test('Bearer access token of the new customer (sub = customerId, roles [\"CUSTOMER\"])', () => {",
+                  "              pm.expect(login.tokenType, 'tokenType').to.eql('Bearer');",
+                  "              pm.expect(login.accessToken, 'accessToken').to.be.a('string');",
+                  "              pm.expect(login.accessToken.split('.').length, 'parts of the JWT').to.eql(3);",
+                  "              const claims = jwtClaims(login.accessToken);",
+                  "              pm.expect(claims.sub, 'sub').to.eql(pm.environment.get('customerId'));",
+                  "              pm.expect(claims.roles, 'roles').to.eql(['CUSTOMER']);",
+                  "            });",
+                  "            // Only the attributes are compared; the cookie value is never printed. The cookie stays in the cookie jar.",
+                  "            pm.test('Set-Cookie refresh_token: HttpOnly, Secure, SameSite=Strict, Path=/api/v1/auth', () => {",
+                  "              const parts = (pm.response.headers.get('Set-Cookie') || '').split(';').map((part) => part.trim());",
+                  "              pm.expect(/^refresh_token=[^\\s]+$/.test(parts[0]), 'refresh_token cookie').to.be.true;",
+                  "              ['HttpOnly', 'Secure', 'SameSite=Strict', 'Path=/api/v1/auth'].forEach((attribute) => {",
+                  "                pm.expect(parts.slice(1).includes(attribute), attribute).to.be.true;",
+                  "              });",
+                  "            });",
+                  "            if (typeof login.accessToken === 'string') {",
+                  "              pm.environment.set('customerToken', login.accessToken);",
+                  "            }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{gatewayUrl}}/auth/login",
+            "description": "Login 1 of 2 in a run (the Gateway allows 5 per minute per client address).",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Log in as admin",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The body is built here, so any character of the password stays valid JSON.",
+                  "pm.request.body.update(JSON.stringify({ email: pm.variables.get('adminEmail'), password: pm.variables.get('adminPassword') }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Payload of a JWT (base64url). Only the claims are checked; the token is never printed or compared by value.",
+                  "const decodeBase64 = require('atob');",
+                  "const jwtClaims = (token) => {",
+                  "  const part = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');",
+                  "  return JSON.parse(decodeBase64(part + '='.repeat((4 - (part.length % 4)) % 4)));",
+                  "};",
+                  "",
+                  "            pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "            const login = pm.response.json();",
+                  "            pm.test('Bearer access token with the role ADMIN', () => {",
+                  "              pm.expect(login.tokenType, 'tokenType').to.eql('Bearer');",
+                  "              pm.expect(login.accessToken, 'accessToken').to.be.a('string');",
+                  "              pm.expect(jwtClaims(login.accessToken).roles, 'roles').to.include('ADMIN');",
+                  "            });",
+                  "            if (typeof login.accessToken === 'string') {",
+                  "              pm.environment.set('adminToken', login.accessToken);",
+                  "            }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{gatewayUrl}}/auth/login",
+            "description": "Login 2 of 2 in a run. adminEmail and adminPassword come from the environment (the password only from the runner, never in a file). Cookie jar disabled: the refresh_token cookie of the admin must not replace the one of the customer (same path).",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "protocolProfileBehavior": {
+            "disableCookies": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "direct",
+      "description": "Straight to the service in the compose network sklep_backend (runner only): headers X-User-Id, X-User-Roles set by hand, as the Gateway does. Data of other services prepared in the same run through {{<name>Url}}; cleaned up at the end.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// shop:direct-request-id",
+              "// A new X-Request-Id for every request (the Gateway sets it in production); kept when the request sets its own.",
+              "const sent = pm.request.headers.get('X-Request-Id');",
+              "if (!sent) {",
+              "  pm.request.headers.upsert({ key: 'X-Request-Id', value: pm.variables.replaceIn('{{$guid}}') });",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// shop:error-format",
+              "// Every error of a service: {status (= HTTP code), error, message, requestId = the sent X-Request-Id}.",
+              "// Not for Mailpit and the RabbitMQ management API (other formats).",
+              "const url = pm.variables.replaceIn(pm.request.url.toString());",
+              "const external = ['mailpitUrl', 'rabbitmqUrl'].some((name) => {",
+              "  const base = pm.variables.get(name);",
+              "  return Boolean(base) && url.startsWith(base);",
+              "});",
+              "if (!external && pm.response.code >= 400) {",
+              "  pm.test(`error ${pm.response.code} in the team format, requestId = sent X-Request-Id`, () => {",
+              "    const body = pm.response.json();",
+              "    pm.expect(body.status, 'status').to.eql(pm.response.code);",
+              "    pm.expect(body.error, 'error').to.be.a('string').and.not.empty;",
+              "    pm.expect(body.message, 'message').to.be.a('string').and.not.empty;",
+              "    pm.expect(body.requestId, 'requestId').to.eql(pm.variables.replaceIn(pm.request.headers.get('X-Request-Id')));",
+              "  });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "Setup: customer profile (User, SERVICE)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// New user ids and a run id for every run of this folder (fixed ids would meet the data of the",
+                  "// previous run).",
+                  "pm.variables.set('customerUserId', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('customerUserId', pm.variables.get('customerUserId'));",
+                  "pm.variables.set('otherUserId', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.variables.set('adminUserId', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.variables.set('runId', Date.now().toString(36));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Notification reads the e-mail address of order and shipment events from User: without a profile",
+                  "// the events of this run would end in notification.dlq.",
+                  "pm.test('profile created in User: 201', () => pm.response.to.have.status(201));",
+                  "pm.test('profile id = the user id of this run', () => pm.expect(pm.response.json().id).to.eql(pm.variables.get('customerUserId')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{customerUserId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "SERVICE"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{userServiceUrl}}/users",
+            "description": "Internal POST /users of User (role SERVICE, as Auth does after a registration).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": \"{{customerUserId}}\", \"firstName\": \"Postman\", \"lastName\": \"Customer\", \"email\": \"postman-{{customerUserId}}@sklep.local\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Zdrowie",
+          "item": [
+            {
+              "name": "GET /health/live",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/health/live",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "health",
+                    "live"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('200 UP', () => { pm.response.to.have.status(200); pm.expect(pm.response.json().status).to.eql('UP'); });"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "GET /health/ready",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/health/ready",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "health",
+                    "ready"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('200 UP (MongoDB works, consumer runs)', () => pm.response.to.have.status(200));",
+                      "pm.test('X-Instance-Id header', () => pm.response.to.have.header('X-Instance-Id'));"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "Powitanie: zdarzenie → e-mail → historia",
+          "item": [
+            {
+              "name": "Opublikuj user.registered (panel RabbitMQ)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": {
+                  "raw": "{{rabbitmqUrl}}/api/exchanges/%2F/shop.events/publish",
+                  "host": [
+                    "{{rabbitmqUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "exchanges",
+                    "%2F",
+                    "shop.events",
+                    "publish"
+                  ]
+                },
+                "description": "Wysyła testowe zdarzenie do exchange shop.events przez HTTP API RabbitMQ (konto admin, hasło RABBITMQ_ADMIN_PASSWORD z deploy/.env w zmiennej środowiska rabbitmqAdminPassword).",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"routing_key\": \"user.registered\",\n  \"payload\": {{envelope}},\n  \"payload_encoding\": \"string\",\n  \"properties\": {\"content_type\": \"application/json\", \"delivery_mode\": 2, \"message_id\": \"{{eventId}}\", \"type\": \"user.registered\"}\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "auth": {
+                  "type": "basic",
+                  "basic": [
+                    {
+                      "key": "username",
+                      "value": "admin",
+                      "type": "string"
+                    },
+                    {
+                      "key": "password",
+                      "value": "{{rabbitmqAdminPassword}}",
+                      "type": "string"
+                    }
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('200', () => pm.response.to.have.status(200));",
+                      "pm.test('RabbitMQ routed the event to a queue', () => pm.expect(pm.response.json().routed).to.be.true);"
+                    ]
+                  }
+                },
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// New eventId every run: the service skips an eventId it has already handled (idempotency).",
+                      "const eventId = pm.variables.replaceIn('{{$guid}}').toLowerCase();",
+                      "pm.collectionVariables.set('eventId', eventId);",
+                      "const payload = { userId: pm.collectionVariables.get('customerUserId'), email: 'klient+' + eventId.slice(0, 8) + '@example.com', firstName: 'Anna' };",
+                      "const envelope = {",
+                      "  eventId, type: 'user.registered', version: 1,",
+                      "  occurredAt: new Date().toISOString(), requestId: 'postman-' + Date.now(), payload",
+                      "};",
+                      "// RabbitMQ HTTP API takes the message body as a JSON string: encoded twice.",
+                      "pm.collectionVariables.set('envelope', JSON.stringify(JSON.stringify(envelope)));"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "Wait for the welcome entry in the history",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Notification takes user.registered from notification.q in the background.",
+                      "// Asked again every 1 s, at most 15 more times (no fixed sleep).",
+                      "const MAX_TRIES = 15;",
+                      "const again = () => ({ url: pm.variables.replaceIn('{{baseUrl}}/notifications/me?size=100'), method: 'GET', header: [{ key: 'X-User-Id', value: pm.variables.get('customerUserId') }, { key: 'X-User-Roles', value: 'CUSTOMER' }, { key: 'X-Request-Id', value: pm.variables.replaceIn('{{$guid}}') }] });",
+                      "const ready = (res) => Boolean(res) && res.code === 200 && res.json().items.some((entry) => entry.type === 'user.registered');",
+                      "const check = (res) => {",
+                      "  const entries = res && res.code === 200 ? res.json().items : [];",
+                      "  const entry = entries.find((one) => one.type === 'user.registered') || {};",
+                      "  pm.test('history has the e-mail of user.registered: \"Witamy w sklepie\"', () => {",
+                      "    pm.expect(res && res.code, 'status').to.eql(200);",
+                      "    pm.expect(entry.subject, 'subject').to.eql('Witamy w sklepie');",
+                      "    pm.expect(entry.id, 'id').to.be.a('string').and.not.empty;",
+                      "  });",
+                      "  pm.variables.set('entries', JSON.stringify(entries.map((one) => one.id)));",
+                      "};",
+                      "pm.test('first answer: 200', () => pm.response.to.have.status(200));",
+                      "const wait = (tries, res) => {",
+                      "  if (ready(res) || tries >= MAX_TRIES) {",
+                      "    check(res);",
+                      "    return;",
+                      "  }",
+                      "  setTimeout(() => pm.sendRequest(again(), (error, next) => wait(tries + 1, error ? null : next)), 1000);",
+                      "};",
+                      "wait(0, pm.response);"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "X-User-Id",
+                    "value": "{{customerUserId}}"
+                  },
+                  {
+                    "key": "X-User-Roles",
+                    "value": "CUSTOMER"
+                  }
+                ],
+                "url": "{{baseUrl}}/notifications/me?size=100"
+              }
+            },
+            {
+              "name": "GET /notifications/me: wpis w historii klienta",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "X-User-Id",
+                    "value": "{{customerUserId}}"
+                  },
+                  {
+                    "key": "X-User-Roles",
+                    "value": "CUSTOMER"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/notifications/me",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "notifications",
+                    "me"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('200', () => pm.response.to.have.status(200));",
+                      "const body = pm.response.json();",
+                      "pm.test('page with items, page, size, total', () => pm.expect(body).to.have.keys('items','page','size','total'));",
+                      "pm.test('newest entry is the welcome e-mail', () => { pm.expect(body.items[0].type).to.eql('user.registered'); pm.expect(body.items[0].subject).to.eql('Witamy w sklepie'); });"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "Zamówienie (wymaga User Service)",
+          "item": [
+            {
+              "name": "Setup: own product (Product, ADMIN)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('own product created: 201', () => pm.response.to.have.status(201));",
+                      "const product = pm.response.code === 201 ? pm.response.json() : {};",
+                      "pm.test('product: id UUID, price \"12.50\" PLN', () => {",
+                      "  pm.expect(product.id, 'id').to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);",
+                      "  pm.expect(product.price, 'price').to.eql('12.50');",
+                      "  pm.expect(product.currency, 'currency').to.eql('PLN');",
+                      "});",
+                      "pm.variables.set('notifProductId', product.id);",
+                      "console.log('own product of this run: ' + product.id);"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "X-User-Id",
+                    "value": "{{adminUserId}}"
+                  },
+                  {
+                    "key": "X-User-Roles",
+                    "value": "ADMIN"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{productServiceUrl}}/products",
+                "description": "Own product of this run (Product, ADMIN); the seed products are only read.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"name\": \"Postman notification-service {{runId}}\", \"description\": \"Created and deleted by the notification-service collection\", \"price\": \"12.50\", \"currency\": \"PLN\", \"categoryId\": \"c0000000-0000-4000-8000-000000000001\", \"imageUrl\": null}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Setup: stock of own product (Inventory, ADMIN)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('stock set: 200', () => pm.response.to.have.status(200));",
+                      "pm.test('quantity 5, nothing reserved', () => {",
+                      "  const stock = pm.response.json();",
+                      "  pm.expect(stock.quantity, 'quantity').to.eql(5);",
+                      "  pm.expect(stock.reserved, 'reserved').to.eql(0);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "PUT",
+                "header": [
+                  {
+                    "key": "X-User-Id",
+                    "value": "{{adminUserId}}"
+                  },
+                  {
+                    "key": "X-User-Roles",
+                    "value": "ADMIN"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{inventoryServiceUrl}}/inventory/{{notifProductId}}",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"quantity\": 5}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Setup: add own product to the cart (Cart)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('product added to the cart: 200', () => pm.response.to.have.status(200));",
+                      "pm.test('cart lines and the stock check', () => {",
+                      "  const cart = pm.response.json();",
+                      "  pm.expect(cart.items.map((line) => [line.productId, line.quantity]), 'lines').to.eql([[pm.variables.get('notifProductId'), 1]]);",
+                      "  pm.expect(cart.inventoryChecked, 'inventoryChecked').to.eql(true);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "X-User-Id",
+                    "value": "{{customerUserId}}"
+                  },
+                  {
+                    "key": "X-User-Roles",
+                    "value": "CUSTOMER"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{cartServiceUrl}}/cart/items",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"productId\": \"{{notifProductId}}\", \"quantity\": 1}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "Buy the cart (Order)",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.variables.set('realOrderIdKey', pm.variables.replaceIn('{{$guid}}'));"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const order = pm.response.code === 201 ? pm.response.json() : {};",
+                      "pm.test('order: 201 PAID', () => {",
+                      "  pm.response.to.have.status(201);",
+                      "  pm.expect(order.status, 'status').to.eql('PAID');",
+                      "  pm.expect(order.userId, 'userId').to.eql(pm.variables.get('customerUserId'));",
+                      "});",
+                      "pm.variables.set('realOrderId', order.id);",
+                      "console.log('order of this run: ' + order.id);"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "X-User-Id",
+                    "value": "{{customerUserId}}"
+                  },
+                  {
+                    "key": "X-User-Roles",
+                    "value": "CUSTOMER"
+                  },
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "{{realOrderIdKey}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{orderServiceUrl}}/orders",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"shippingMethod\": \"COURIER\", \"shippingAddress\": {\"firstName\": \"Postman\", \"lastName\": \"Customer\", \"street\": \"ul. Testowa 1\", \"postalCode\": \"00-001\", \"city\": \"Warszawa\", \"countryCode\": \"PL\"}, \"payment\": {\"cardNumber\": \"4111111111111111\"}}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "name": "History has the order confirmation",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Notification takes order.created from notification.q in the background.",
+                      "// Asked again every 1 s, at most 15 more times (no fixed sleep).",
+                      "const MAX_TRIES = 15;",
+                      "const again = () => ({ url: pm.variables.replaceIn('{{baseUrl}}/notifications/me?size=100'), method: 'GET', header: [{ key: 'X-User-Id', value: pm.variables.get('customerUserId') }, { key: 'X-User-Roles', value: 'CUSTOMER' }, { key: 'X-Request-Id', value: pm.variables.replaceIn('{{$guid}}') }] });",
+                      "const ready = (res) => Boolean(res) && res.code === 200 && res.json().items.some((entry) => entry.type === 'order.created');",
+                      "const check = (res) => {",
+                      "  const entries = res && res.code === 200 ? res.json().items : [];",
+                      "  const entry = entries.find((one) => one.type === 'order.created') || {};",
+                      "  pm.test('history has the e-mail of order.created: \"Potwierdzenie zamówienia\"', () => {",
+                      "    pm.expect(res && res.code, 'status').to.eql(200);",
+                      "    pm.expect(entry.subject, 'subject').to.eql('Potwierdzenie zamówienia');",
+                      "    pm.expect(entry.id, 'id').to.be.a('string').and.not.empty;",
+                      "  });",
+                      "  pm.variables.set('entries', JSON.stringify(entries.map((one) => one.id)));",
+                      "};",
+                      "pm.test('first answer: 200', () => pm.response.to.have.status(200));",
+                      "const wait = (tries, res) => {",
+                      "  if (ready(res) || tries >= MAX_TRIES) {",
+                      "    check(res);",
+                      "    return;",
+                      "  }",
+                      "  setTimeout(() => pm.sendRequest(again(), (error, next) => wait(tries + 1, error ? null : next)), 1000);",
+                      "};",
+                      "wait(0, pm.response);"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "X-User-Id",
+                    "value": "{{customerUserId}}"
+                  },
+                  {
+                    "key": "X-User-Roles",
+                    "value": "CUSTOMER"
+                  }
+                ],
+                "url": "{{baseUrl}}/notifications/me?size=100"
+              }
+            },
+            {
+              "name": "Cancel the order (Order)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('order cancelled: 200 CANCELLED', () => {",
+                      "  pm.response.to.have.status(200);",
+                      "  pm.expect(pm.response.json().status, 'status').to.eql('CANCELLED');",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "X-User-Id",
+                    "value": "{{customerUserId}}"
+                  },
+                  {
+                    "key": "X-User-Roles",
+                    "value": "CUSTOMER"
+                  }
+                ],
+                "url": "{{orderServiceUrl}}/orders/{{realOrderId}}/cancel"
+              }
+            },
+            {
+              "name": "History has the cancellation",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Notification takes order.cancelled from notification.q in the background.",
+                      "// Asked again every 1 s, at most 15 more times (no fixed sleep).",
+                      "const MAX_TRIES = 15;",
+                      "const again = () => ({ url: pm.variables.replaceIn('{{baseUrl}}/notifications/me?size=100'), method: 'GET', header: [{ key: 'X-User-Id', value: pm.variables.get('customerUserId') }, { key: 'X-User-Roles', value: 'CUSTOMER' }, { key: 'X-Request-Id', value: pm.variables.replaceIn('{{$guid}}') }] });",
+                      "const ready = (res) => Boolean(res) && res.code === 200 && res.json().items.some((entry) => entry.type === 'order.cancelled');",
+                      "const check = (res) => {",
+                      "  const entries = res && res.code === 200 ? res.json().items : [];",
+                      "  const entry = entries.find((one) => one.type === 'order.cancelled') || {};",
+                      "  pm.test('history has the e-mail of order.cancelled: \"Zamówienie anulowane\"', () => {",
+                      "    pm.expect(res && res.code, 'status').to.eql(200);",
+                      "    pm.expect(entry.subject, 'subject').to.eql('Zamówienie anulowane');",
+                      "    pm.expect(entry.id, 'id').to.be.a('string').and.not.empty;",
+                      "  });",
+                      "  pm.variables.set('entries', JSON.stringify(entries.map((one) => one.id)));",
+                      "};",
+                      "pm.test('first answer: 200', () => pm.response.to.have.status(200));",
+                      "const wait = (tries, res) => {",
+                      "  if (ready(res) || tries >= MAX_TRIES) {",
+                      "    check(res);",
+                      "    return;",
+                      "  }",
+                      "  setTimeout(() => pm.sendRequest(again(), (error, next) => wait(tries + 1, error ? null : next)), 1000);",
+                      "};",
+                      "wait(0, pm.response);"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "X-User-Id",
+                    "value": "{{customerUserId}}"
+                  },
+                  {
+                    "key": "X-User-Roles",
+                    "value": "CUSTOMER"
+                  }
+                ],
+                "url": "{{baseUrl}}/notifications/me?size=100"
+              }
+            },
+            {
+              "name": "History of another customer has none of these entries",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('200, empty history of a new customer, no entry of the customer of this run', () => {",
+                      "  pm.response.to.have.status(200);",
+                      "  const page = pm.response.json();",
+                      "  const own = JSON.parse(pm.variables.get('entries') || '[]');",
+                      "  pm.expect(own.length, 'entries of the customer').to.be.above(0);",
+                      "  pm.expect(page.items.filter((entry) => own.includes(entry.id)), 'shared entries').to.eql([]);",
+                      "  pm.expect(page.total, 'total').to.eql(0);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "X-User-Id",
+                    "value": "{{otherUserId}}"
+                  },
+                  {
+                    "key": "X-User-Roles",
+                    "value": "CUSTOMER"
+                  }
+                ],
+                "url": "{{baseUrl}}/notifications/me?size=100"
+              }
+            },
+            {
+              "name": "Cleanup: delete own product (Product, ADMIN)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('own product deleted: 204', () => pm.response.to.have.status(204));"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  {
+                    "key": "X-User-Id",
+                    "value": "{{adminUserId}}"
+                  },
+                  {
+                    "key": "X-User-Roles",
+                    "value": "ADMIN"
+                  }
+                ],
+                "url": "{{productServiceUrl}}/products/{{notifProductId}}"
+              }
+            },
+            {
+              "name": "Cleanup: own product is gone (Product)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('deleted product: 404 NOT_FOUND', () => {",
+                      "  pm.response.to.have.status(404);",
+                      "  pm.expect(pm.response.json().error, 'error').to.eql('NOT_FOUND');",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{productServiceUrl}}/products/{{notifProductId}}"
+              }
+            },
+            {
+              "name": "Cleanup: no stock reserved for own product (Inventory)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// The cancelled order frees its reservation through the event order.cancelled",
+                      "// (Inventory), so the stock may need a moment.",
+                      "// Asked again every 1 s, at most 10 more times (no fixed sleep).",
+                      "const MAX_TRIES = 10;",
+                      "const again = () => ({ url: pm.variables.replaceIn('{{inventoryServiceUrl}}/inventory/{{notifProductId}}'), method: 'GET', header: [{ key: 'X-Request-Id', value: pm.variables.replaceIn('{{$guid}}') }] });",
+                      "const ready = (res) => Boolean(res) && res.code === 200 && res.json().reserved === 0;",
+                      "const check = (res) => {",
+                      "  const stock = res && res.code === 200 ? res.json() : {};",
+                      "  pm.test('stock of own product: 200, reserved 0, quantity 5', () => {",
+                      "    pm.expect(res && res.code, 'status').to.eql(200);",
+                      "    pm.expect(stock.reserved, 'reserved').to.eql(0);",
+                      "    pm.expect(stock.quantity, 'quantity').to.eql(5);",
+                      "  });",
+                      "};",
+                      "pm.test('first answer: 200', () => pm.response.to.have.status(200));",
+                      "const wait = (tries, res) => {",
+                      "  if (ready(res) || tries >= MAX_TRIES) {",
+                      "    check(res);",
+                      "    return;",
+                      "  }",
+                      "  setTimeout(() => pm.sendRequest(again(), (error, next) => wait(tries + 1, error ? null : next)), 1000);",
+                      "};",
+                      "wait(0, pm.response);"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": "{{inventoryServiceUrl}}/inventory/{{notifProductId}}"
+              }
+            }
+          ],
+          "description": "A real order through Order (stage 10a, Z2): the events order.created and order.cancelled come from the services, nothing is published by hand."
+        },
+        {
+          "name": "Błędy",
+          "item": [
+            {
+              "name": "GET /notifications/me bez logowania — 401",
+              "request": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/notifications/me",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "notifications",
+                    "me"
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('status 401', () => pm.response.to.have.status(401));",
+                      "pm.test('error UNAUTHORIZED in the team format', () => { const b = pm.response.json(); pm.expect(b.error).to.eql('UNAUTHORIZED'); pm.expect(b).to.have.keys('status','error','message','requestId'); });"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "GET /notifications/me?size=101 — 400",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "X-User-Id",
+                    "value": "{{customerUserId}}"
+                  },
+                  {
+                    "key": "X-User-Roles",
+                    "value": "CUSTOMER"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/notifications/me?size=101",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "notifications",
+                    "me"
+                  ],
+                  "query": [
+                    {
+                      "key": "size",
+                      "value": "101"
+                    }
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('status 400', () => pm.response.to.have.status(400));",
+                      "pm.test('error VALIDATION_ERROR', () => pm.expect(pm.response.json().error).to.eql('VALIDATION_ERROR'));"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "via Gateway",
+      "description": "Through the shop entrance {{gatewayUrl}} with the tokens of the folder start (compose and k8s). Own product and stock made by ADMIN; the cart of the start customer is left empty.",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// shop:error-format",
+              "// Every answer through the Gateway has X-Request-Id; every error: {status (= HTTP code), error, message,",
+              "// requestId = X-Request-Id of the answer}. Not for Mailpit (other format).",
+              "const url = pm.variables.replaceIn(pm.request.url.toString());",
+              "const external = ['mailpitUrl', 'rabbitmqUrl'].some((name) => {",
+              "  const base = pm.variables.get(name);",
+              "  return Boolean(base) && url.startsWith(base);",
+              "});",
+              "if (!external) {",
+              "  pm.test('X-Request-Id header is set', () => pm.expect(pm.response.headers.get('X-Request-Id')).to.be.a('string').and.not.empty);",
+              "  if (pm.response.code >= 400) {",
+              "    pm.test(`error ${pm.response.code} in the team format, requestId = X-Request-Id`, () => {",
+              "      const body = pm.response.json();",
+              "      pm.expect(body.status, 'status').to.eql(pm.response.code);",
+              "      pm.expect(body.error, 'error').to.be.a('string').and.not.empty;",
+              "      pm.expect(body.message, 'message').to.be.a('string').and.not.empty;",
+              "      pm.expect(body.requestId, 'requestId').to.eql(pm.response.headers.get('X-Request-Id'));",
+              "    });",
+              "  }",
+              "}"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "Mailpit: przyszedł e-mail powitalny",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{mailpitUrl}}/api/v1/search?query=to:{{customerEmail}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// shop:budget 5",
+                  "// The e-mail comes from Notification after the event user.registered of the registration in start.",
+                  "// Asked again every 1 s, at most 5 more times (no fixed sleep).",
+                  "const MAX_TRIES = 5;",
+                  "const again = () => ({ url: pm.variables.replaceIn('{{mailpitUrl}}/api/v1/search?query=to:{{customerEmail}}'), method: 'GET' });",
+                  "const ready = (res) => Boolean(res) && res.code === 200 && res.json().messages.some((message) => message.Subject === 'Witamy w sklepie');",
+                  "const check = (res) => {",
+                  "  const messages = res && res.code === 200 ? res.json().messages : [];",
+                  "  pm.test('the welcome e-mail of the start customer is in Mailpit (exactly 1)', () => {",
+                  "    pm.expect(res && res.code, 'status').to.eql(200);",
+                  "    pm.expect(messages.filter((message) => message.Subject === 'Witamy w sklepie').length, 'e-mails').to.eql(1);",
+                  "  });",
+                  "};",
+                  "pm.test('first answer: 200', () => pm.response.to.have.status(200));",
+                  "const wait = (tries, res) => {",
+                  "  if (ready(res) || tries >= MAX_TRIES) {",
+                  "    check(res);",
+                  "    return;",
+                  "  }",
+                  "  setTimeout(() => pm.sendRequest(again(), (error, next) => wait(tries + 1, error ? null : next)), 1000);",
+                  "};",
+                  "wait(0, pm.response);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Welcome entry in GET /notifications/me",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// shop:budget 3",
+                  "// The history entry is written together with the e-mail.",
+                  "// Asked again every 1 s, at most 3 more times (no fixed sleep).",
+                  "const MAX_TRIES = 3;",
+                  "const again = () => ({ url: pm.variables.replaceIn('{{gatewayUrl}}/notifications/me?size=100'), method: 'GET', header: [{ key: 'Authorization', value: pm.variables.replaceIn('Bearer {{customerToken}}') }] });",
+                  "const ready = (res) => Boolean(res) && res.code === 200 && res.json().items.some((entry) => entry.type === 'user.registered');",
+                  "const check = (res) => {",
+                  "  const page = res && res.code === 200 ? res.json() : { items: [] };",
+                  "  pm.test('own history: 200, one welcome entry \"Witamy w sklepie\"', () => {",
+                  "    pm.expect(res && res.code, 'status').to.eql(200);",
+                  "    const welcome = page.items.filter((entry) => entry.type === 'user.registered');",
+                  "    pm.expect(welcome.map((entry) => entry.subject), 'welcome entries').to.eql(['Witamy w sklepie']);",
+                  "  });",
+                  "};",
+                  "pm.test('first answer: 200', () => pm.response.to.have.status(200));",
+                  "const wait = (tries, res) => {",
+                  "  if (ready(res) || tries >= MAX_TRIES) {",
+                  "    check(res);",
+                  "    return;",
+                  "  }",
+                  "  setTimeout(() => pm.sendRequest(again(), (error, next) => wait(tries + 1, error ? null : next)), 1000);",
+                  "};",
+                  "wait(0, pm.response);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{gatewayUrl}}/notifications/me?size=100"
+          }
+        },
+        {
+          "name": "Notifications without a token → 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 UNAUTHORIZED', () => {",
+                  "  pm.response.to.have.status(401);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('UNAUTHORIZED');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{gatewayUrl}}/notifications/me"
+          }
+        }
+      ]
     }
   ]
 }

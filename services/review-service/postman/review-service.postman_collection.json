@@ -25,841 +25,2090 @@
   ],
   "item": [
     {
-      "name": "Health live",
-      "event": [
+      "name": "start",
+      "description": "Identical in all 10 service collections. Registers a new customer, logs in the customer and the admin, and keeps customerToken, customerId, customerEmail and adminToken in the environment. The runner runs it once per run.",
+      "item": [
         {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('status 200', function () { pm.response.to.have.status(200); });",
-              "pm.test('status UP', function () { const j = pm.response.json(); pm.expect(j.status === 'UP').to.be.true; });"
-            ]
+          "name": "Register a new customer",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A new customer on every run: random e-mail and random password (24 characters; Auth needs 10-72 bytes).",
+                  "// The password lives only in a local variable of this run (pm.variables), never in the environment.",
+                  "const chars = 'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';",
+                  "const random = (n) => Array.from({ length: n }, () => chars[Math.floor(Math.random() * chars.length)]).join('');",
+                  "pm.variables.set('customerPassword', random(24));",
+                  "pm.environment.set('customerEmail', `postman-${Date.now().toString(36)}-${random(8).toLowerCase()}@sklep.local`);",
+                  "['customerToken', 'customerId', 'adminToken'].forEach((name) => pm.environment.unset(name));",
+                  "pm.request.body.update(JSON.stringify({",
+                  "  email: pm.environment.get('customerEmail'),",
+                  "  password: pm.variables.get('customerPassword'),",
+                  "  firstName: 'Postman',",
+                  "  lastName: 'Customer',",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "const account = pm.response.json();",
+                  "pm.test('account: id UUID, the generated e-mail, roles [\"CUSTOMER\"], no tokens in the body', () => {",
+                  "  pm.expect(account.id, 'id').to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);",
+                  "  pm.expect(account.email, 'email').to.eql(pm.environment.get('customerEmail'));",
+                  "  pm.expect(account.roles, 'roles').to.eql(['CUSTOMER']);",
+                  "  pm.expect('accessToken' in account, 'accessToken in the body').to.be.false;",
+                  "});",
+                  "pm.environment.set('customerId', account.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{gatewayUrl}}/auth/register",
+            "description": "New customer of this run (e-mail postman-<random>@sklep.local). The body is built in the pre-request script.",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
           }
         },
+        {
+          "name": "Log in as the customer",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.request.body.update(JSON.stringify({",
+                  "  email: pm.environment.get('customerEmail'),",
+                  "  password: pm.variables.get('customerPassword'),",
+                  "}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Payload of a JWT (base64url). Only the claims are checked; the token is never printed or compared by value.",
+                  "const decodeBase64 = require('atob');",
+                  "const jwtClaims = (token) => {",
+                  "  const part = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');",
+                  "  return JSON.parse(decodeBase64(part + '='.repeat((4 - (part.length % 4)) % 4)));",
+                  "};",
+                  "",
+                  "            pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "            const login = pm.response.json();",
+                  "            pm.test('Bearer access token of the new customer (sub = customerId, roles [\"CUSTOMER\"])', () => {",
+                  "              pm.expect(login.tokenType, 'tokenType').to.eql('Bearer');",
+                  "              pm.expect(login.accessToken, 'accessToken').to.be.a('string');",
+                  "              pm.expect(login.accessToken.split('.').length, 'parts of the JWT').to.eql(3);",
+                  "              const claims = jwtClaims(login.accessToken);",
+                  "              pm.expect(claims.sub, 'sub').to.eql(pm.environment.get('customerId'));",
+                  "              pm.expect(claims.roles, 'roles').to.eql(['CUSTOMER']);",
+                  "            });",
+                  "            // Only the attributes are compared; the cookie value is never printed. The cookie stays in the cookie jar.",
+                  "            pm.test('Set-Cookie refresh_token: HttpOnly, Secure, SameSite=Strict, Path=/api/v1/auth', () => {",
+                  "              const parts = (pm.response.headers.get('Set-Cookie') || '').split(';').map((part) => part.trim());",
+                  "              pm.expect(/^refresh_token=[^\\s]+$/.test(parts[0]), 'refresh_token cookie').to.be.true;",
+                  "              ['HttpOnly', 'Secure', 'SameSite=Strict', 'Path=/api/v1/auth'].forEach((attribute) => {",
+                  "                pm.expect(parts.slice(1).includes(attribute), attribute).to.be.true;",
+                  "              });",
+                  "            });",
+                  "            if (typeof login.accessToken === 'string') {",
+                  "              pm.environment.set('customerToken', login.accessToken);",
+                  "            }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{gatewayUrl}}/auth/login",
+            "description": "Login 1 of 2 in a run (the Gateway allows 5 per minute per client address).",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Log in as admin",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The body is built here, so any character of the password stays valid JSON.",
+                  "pm.request.body.update(JSON.stringify({ email: pm.variables.get('adminEmail'), password: pm.variables.get('adminPassword') }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Payload of a JWT (base64url). Only the claims are checked; the token is never printed or compared by value.",
+                  "const decodeBase64 = require('atob');",
+                  "const jwtClaims = (token) => {",
+                  "  const part = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');",
+                  "  return JSON.parse(decodeBase64(part + '='.repeat((4 - (part.length % 4)) % 4)));",
+                  "};",
+                  "",
+                  "            pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "            const login = pm.response.json();",
+                  "            pm.test('Bearer access token with the role ADMIN', () => {",
+                  "              pm.expect(login.tokenType, 'tokenType').to.eql('Bearer');",
+                  "              pm.expect(login.accessToken, 'accessToken').to.be.a('string');",
+                  "              pm.expect(jwtClaims(login.accessToken).roles, 'roles').to.include('ADMIN');",
+                  "            });",
+                  "            if (typeof login.accessToken === 'string') {",
+                  "              pm.environment.set('adminToken', login.accessToken);",
+                  "            }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{gatewayUrl}}/auth/login",
+            "description": "Login 2 of 2 in a run. adminEmail and adminPassword come from the environment (the password only from the runner, never in a file). Cookie jar disabled: the refresh_token cookie of the admin must not replace the one of the customer (same path).",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "protocolProfileBehavior": {
+            "disableCookies": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "direct",
+      "description": "Straight to the service in the compose network sklep_backend (runner only): headers X-User-Id, X-User-Roles set by hand, as the Gateway does. Data of other services prepared in the same run through {{<name>Url}}; cleaned up at the end.",
+      "event": [
         {
           "listen": "prerequest",
           "script": {
             "type": "text/javascript",
             "exec": [
-              "pm.collectionVariables.set('productId', pm.variables.replaceIn('{{$guid}}'));"
+              "// shop:direct-request-id",
+              "// A new X-Request-Id for every request (the Gateway sets it in production); kept when the request sets its own.",
+              "const sent = pm.request.headers.get('X-Request-Id');",
+              "if (!sent) {",
+              "  pm.request.headers.upsert({ key: 'X-Request-Id', value: pm.variables.replaceIn('{{$guid}}') });",
+              "}"
             ]
           }
-        }
-      ],
-      "request": {
-        "method": "GET",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "url": {
-          "raw": "{{baseUrl}}/health/live",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "health",
-            "live"
-          ]
-        }
-      }
-    },
-    {
-      "name": "Health ready",
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('status 200', function () { pm.response.to.have.status(200); });",
-              "pm.test('MongoDB dostępny', function () { const j = pm.response.json(); pm.expect(j.status === 'UP').to.be.true; });"
-            ]
-          }
-        }
-      ],
-      "request": {
-        "method": "GET",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "url": {
-          "raw": "{{baseUrl}}/health/ready",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "health",
-            "ready"
-          ]
-        }
-      }
-    },
-    {
-      "name": "GET /reviews bez productId -> 400",
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('status 400', function () { pm.response.to.have.status(400); });",
-              "pm.test('format błędu zespołu', function () { const j = pm.response.json(); pm.expect(j.error === 'VALIDATION_ERROR' && 'requestId' in j).to.be.true; });"
-            ]
-          }
-        }
-      ],
-      "request": {
-        "method": "GET",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "url": {
-          "raw": "{{baseUrl}}/reviews",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "reviews"
-          ]
-        }
-      }
-    },
-    {
-      "name": "POST bez uwierzytelnienia -> 401",
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('status 401', function () { pm.response.to.have.status(401); });"
-            ]
-          }
-        }
-      ],
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "url": {
-          "raw": "{{baseUrl}}/reviews",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "reviews"
-          ]
         },
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"productId\": \"{{productId}}\",\n  \"rating\": 4,\n  \"comment\": \"Dobry produkt, polecam\"\n}",
-          "options": {
-            "raw": {
-              "language": "json"
-            }
-          }
-        }
-      }
-    },
-    {
-      "name": "POST rating=6 -> 400",
-      "event": [
         {
           "listen": "test",
           "script": {
             "type": "text/javascript",
             "exec": [
-              "pm.test('status 400', function () { pm.response.to.have.status(400); });"
+              "// shop:error-format",
+              "// Every error of a service: {status (= HTTP code), error, message, requestId = the sent X-Request-Id}.",
+              "// Not for Mailpit and the RabbitMQ management API (other formats).",
+              "const url = pm.variables.replaceIn(pm.request.url.toString());",
+              "const external = ['mailpitUrl', 'rabbitmqUrl'].some((name) => {",
+              "  const base = pm.variables.get(name);",
+              "  return Boolean(base) && url.startsWith(base);",
+              "});",
+              "if (!external && pm.response.code >= 400) {",
+              "  pm.test(`error ${pm.response.code} in the team format, requestId = sent X-Request-Id`, () => {",
+              "    const body = pm.response.json();",
+              "    pm.expect(body.status, 'status').to.eql(pm.response.code);",
+              "    pm.expect(body.error, 'error').to.be.a('string').and.not.empty;",
+              "    pm.expect(body.message, 'message').to.be.a('string').and.not.empty;",
+              "    pm.expect(body.requestId, 'requestId').to.eql(pm.variables.replaceIn(pm.request.headers.get('X-Request-Id')));",
+              "  });",
+              "}"
             ]
           }
         }
       ],
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          },
-          {
-            "key": "X-User-Id",
-            "value": "5c9d1a7e-3b2f-4e8a-b6d4-1f0e9a8c7b65"
-          },
-          {
-            "key": "X-User-Roles",
-            "value": "CUSTOMER"
-          }
-        ],
-        "url": {
-          "raw": "{{baseUrl}}/reviews",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "reviews"
-          ]
-        },
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"productId\": \"{{productId}}\",\n  \"rating\": 6,\n  \"comment\": \"Dobry produkt, polecam\"\n}",
-          "options": {
-            "raw": {
-              "language": "json"
-            }
-          }
-        }
-      }
-    },
-    {
-      "name": "GET /reviews?productId=not-a-uuid -> 400",
-      "event": [
+      "item": [
         {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('status 400', function () { pm.response.to.have.status(400); });",
-              "pm.test('VALIDATION_ERROR z requestId', function () { const j = pm.response.json(); pm.expect(j.error === 'VALIDATION_ERROR' && typeof j.requestId === 'string').to.be.true; });"
-            ]
-          }
-        }
-      ],
-      "request": {
-        "method": "GET",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "url": {
-          "raw": "{{baseUrl}}/reviews?productId=not-a-uuid",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "reviews"
-          ],
-          "query": [
+          "name": "Setup: buyer profile (User, SERVICE)",
+          "event": [
             {
-              "key": "productId",
-              "value": "not-a-uuid"
-            }
-          ]
-        }
-      }
-    },
-    {
-      "name": "GET summary z productId liczbą -> 400",
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('status 400', function () { pm.response.to.have.status(400); });",
-              "pm.test('VALIDATION_ERROR z requestId', function () { const j = pm.response.json(); pm.expect(j.error === 'VALIDATION_ERROR' && typeof j.requestId === 'string').to.be.true; });"
-            ]
-          }
-        }
-      ],
-      "request": {
-        "method": "GET",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "url": {
-          "raw": "{{baseUrl}}/reviews/summary/12",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "reviews",
-            "summary",
-            "12"
-          ]
-        }
-      }
-    },
-    {
-      "name": "POST nieznane pole -> 400",
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('status 400', function () { pm.response.to.have.status(400); });",
-              "pm.test('VALIDATION_ERROR z requestId', function () { const j = pm.response.json(); pm.expect(j.error === 'VALIDATION_ERROR' && typeof j.requestId === 'string').to.be.true; });"
-            ]
-          }
-        }
-      ],
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          },
-          {
-            "key": "X-User-Id",
-            "value": "5c9d1a7e-3b2f-4e8a-b6d4-1f0e9a8c7b65"
-          },
-          {
-            "key": "X-User-Roles",
-            "value": "CUSTOMER"
-          }
-        ],
-        "url": {
-          "raw": "{{baseUrl}}/reviews",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "reviews"
-          ]
-        },
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"productId\": \"{{productId}}\",\n  \"rating\": 4,\n  \"userId\": \"6e1f2a3b-4c5d-4e6f-8a7b-9c0d1e2f3a4b\"\n}"
-        }
-      }
-    },
-    {
-      "name": "POST opinia kupującego -> 201",
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('status 201', function () { pm.response.to.have.status(201); });",
-              "pm.test('autor i ocena', function () { const j = pm.response.json(); pm.expect(j.rating === 4 && j.userId === '5c9d1a7e-3b2f-4e8a-b6d4-1f0e9a8c7b65').to.be.true; });",
-              "pm.test('id i productId to UUID', function () { const j = pm.response.json(); const re = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/; pm.expect(re.test(j.id) && j.productId === pm.collectionVariables.get('productId')).to.be.true; });",
-              "pm.collectionVariables.set('reviewId', pm.response.json().id);"
-            ]
-          }
-        }
-      ],
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          },
-          {
-            "key": "X-User-Id",
-            "value": "5c9d1a7e-3b2f-4e8a-b6d4-1f0e9a8c7b65"
-          },
-          {
-            "key": "X-User-Roles",
-            "value": "CUSTOMER"
-          }
-        ],
-        "url": {
-          "raw": "{{baseUrl}}/reviews",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "reviews"
-          ]
-        },
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"productId\": \"{{productId}}\",\n  \"rating\": 4,\n  \"comment\": \"Dobry produkt, polecam\"\n}",
-          "options": {
-            "raw": {
-              "language": "json"
-            }
-          }
-        }
-      }
-    },
-    {
-      "name": "POST druga opinia tego samego użytkownika -> 409",
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('status 409', function () { pm.response.to.have.status(409); });",
-              "pm.test('CONFLICT', function () { const j = pm.response.json(); pm.expect(j.error === 'CONFLICT').to.be.true; });"
-            ]
-          }
-        }
-      ],
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          },
-          {
-            "key": "X-User-Id",
-            "value": "5c9d1a7e-3b2f-4e8a-b6d4-1f0e9a8c7b65"
-          },
-          {
-            "key": "X-User-Roles",
-            "value": "CUSTOMER"
-          }
-        ],
-        "url": {
-          "raw": "{{baseUrl}}/reviews",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "reviews"
-          ]
-        },
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"productId\": \"{{productId}}\",\n  \"rating\": 4,\n  \"comment\": \"Dobry produkt, polecam\"\n}",
-          "options": {
-            "raw": {
-              "language": "json"
-            }
-          }
-        }
-      }
-    },
-    {
-      "name": "POST opinia drugiego użytkownika -> 201",
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('status 201', function () { pm.response.to.have.status(201); });",
-              "pm.collectionVariables.set('reviewId2', pm.response.json().id);"
-            ]
-          }
-        }
-      ],
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          },
-          {
-            "key": "X-User-Id",
-            "value": "6e1f2a3b-4c5d-4e6f-8a7b-9c0d1e2f3a4b"
-          },
-          {
-            "key": "X-User-Roles",
-            "value": "CUSTOMER"
-          }
-        ],
-        "url": {
-          "raw": "{{baseUrl}}/reviews",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "reviews"
-          ]
-        },
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"productId\": \"{{productId}}\",\n  \"rating\": 5,\n  \"comment\": \"Dobry produkt, polecam\"\n}",
-          "options": {
-            "raw": {
-              "language": "json"
-            }
-          }
-        }
-      }
-    },
-    {
-      "name": "POST opinia o niekupionym produkcie -> 403",
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('status 403', function () { pm.response.to.have.status(403); });",
-              "pm.test('FORBIDDEN (wymaga atrapy/Ordera: 99999999-9999-4999-8999-999999999999 = nie kupił)', function () { const j = pm.response.json(); pm.expect(j.error === 'FORBIDDEN').to.be.true; });"
-            ]
-          }
-        }
-      ],
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          },
-          {
-            "key": "X-User-Id",
-            "value": "5c9d1a7e-3b2f-4e8a-b6d4-1f0e9a8c7b65"
-          },
-          {
-            "key": "X-User-Roles",
-            "value": "CUSTOMER"
-          }
-        ],
-        "url": {
-          "raw": "{{baseUrl}}/reviews",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "reviews"
-          ]
-        },
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"productId\": \"99999999-9999-4999-8999-999999999999\",\n  \"rating\": 4,\n  \"comment\": \"Dobry produkt, polecam\"\n}",
-          "options": {
-            "raw": {
-              "language": "json"
-            }
-          }
-        }
-      }
-    },
-    {
-      "name": "GET /reviews?productId -> 200",
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('status 200', function () { pm.response.to.have.status(200); });",
-              "pm.test('dwie opinie', function () { const j = pm.response.json(); pm.expect(j.total === 2 && j.items.length === 2).to.be.true; });",
-              "pm.test('najnowsza pierwsza', function () { const j = pm.response.json(); pm.expect(j.items[0].rating === 5).to.be.true; });"
-            ]
-          }
-        }
-      ],
-      "request": {
-        "method": "GET",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "url": {
-          "raw": "{{baseUrl}}/reviews?productId={{productId}}",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "reviews"
-          ],
-          "query": [
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// New user ids and a run id for every run of this folder (fixed ids would meet the data of the",
+                  "// previous run).",
+                  "pm.variables.set('buyerId', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.variables.set('secondBuyerId', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.variables.set('adminUserId', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.variables.set('runId', Date.now().toString(36));"
+                ]
+              }
+            },
             {
-              "key": "productId",
-              "value": "{{productId}}"
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Notification reads the e-mail address of order and shipment events from User: without a profile",
+                  "// the events of this run would end in notification.dlq.",
+                  "pm.test('profile created in User: 201', () => pm.response.to.have.status(201));",
+                  "pm.test('profile id = the user id of this run', () => pm.expect(pm.response.json().id).to.eql(pm.variables.get('buyerId')));"
+                ]
+              }
             }
-          ]
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{buyerId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "SERVICE"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{userServiceUrl}}/users",
+            "description": "Internal POST /users of User (role SERVICE, as Auth does after a registration).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": \"{{buyerId}}\", \"firstName\": \"Postman\", \"lastName\": \"Customer\", \"email\": \"postman-{{buyerId}}@sklep.local\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Setup: second buyer profile (User, SERVICE)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Notification reads the e-mail address of order and shipment events from User: without a profile",
+                  "// the events of this run would end in notification.dlq.",
+                  "pm.test('profile created in User: 201', () => pm.response.to.have.status(201));",
+                  "pm.test('profile id = the user id of this run', () => pm.expect(pm.response.json().id).to.eql(pm.variables.get('secondBuyerId')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{secondBuyerId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "SERVICE"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{userServiceUrl}}/users",
+            "description": "Internal POST /users of User (role SERVICE, as Auth does after a registration).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": \"{{secondBuyerId}}\", \"firstName\": \"Postman\", \"lastName\": \"Customer\", \"email\": \"postman-{{secondBuyerId}}@sklep.local\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Setup: own product (Product, ADMIN)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('own product created: 201', () => pm.response.to.have.status(201));",
+                  "const product = pm.response.code === 201 ? pm.response.json() : {};",
+                  "pm.test('product: id UUID, price \"12.50\" PLN', () => {",
+                  "  pm.expect(product.id, 'id').to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);",
+                  "  pm.expect(product.price, 'price').to.eql('12.50');",
+                  "  pm.expect(product.currency, 'currency').to.eql('PLN');",
+                  "});",
+                  "pm.variables.set('productId', product.id);",
+                  "pm.collectionVariables.set('productId', pm.variables.get('productId'));",
+                  "console.log('own product of this run: ' + product.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{adminUserId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "ADMIN"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{productServiceUrl}}/products",
+            "description": "Own product of this run (Product, ADMIN); the seed products are only read.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Postman review-service {{runId}}\", \"description\": \"Created and deleted by the review-service collection\", \"price\": \"12.50\", \"currency\": \"PLN\", \"categoryId\": \"c0000000-0000-4000-8000-000000000001\", \"imageUrl\": null}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Setup: stock of own product (Inventory, ADMIN)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stock set: 200', () => pm.response.to.have.status(200));",
+                  "pm.test('quantity 5, nothing reserved', () => {",
+                  "  const stock = pm.response.json();",
+                  "  pm.expect(stock.quantity, 'quantity').to.eql(5);",
+                  "  pm.expect(stock.reserved, 'reserved').to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{adminUserId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "ADMIN"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{inventoryServiceUrl}}/inventory/{{productId}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"quantity\": 5}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Setup: buyer adds own product to the cart (Cart)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('product added to the cart: 200', () => pm.response.to.have.status(200));",
+                  "pm.test('cart lines and the stock check', () => {",
+                  "  const cart = pm.response.json();",
+                  "  pm.expect(cart.items.map((line) => [line.productId, line.quantity]), 'lines').to.eql([[pm.variables.get('productId'), 1]]);",
+                  "  pm.expect(cart.inventoryChecked, 'inventoryChecked').to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{buyerId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{cartServiceUrl}}/cart/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"productId\": \"{{productId}}\", \"quantity\": 1}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Setup: buyer buys the cart (Order)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('buyerOrderIdKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const order = pm.response.code === 201 ? pm.response.json() : {};",
+                  "pm.test('order: 201 PAID', () => {",
+                  "  pm.response.to.have.status(201);",
+                  "  pm.expect(order.status, 'status').to.eql('PAID');",
+                  "  pm.expect(order.userId, 'userId').to.eql(pm.variables.get('buyerId'));",
+                  "});",
+                  "pm.variables.set('buyerOrderId', order.id);",
+                  "console.log('order of this run: ' + order.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{buyerId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{buyerOrderIdKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{orderServiceUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"shippingMethod\": \"COURIER\", \"shippingAddress\": {\"firstName\": \"Postman\", \"lastName\": \"Customer\", \"street\": \"ul. Testowa 1\", \"postalCode\": \"00-001\", \"city\": \"Warszawa\", \"countryCode\": \"PL\"}, \"payment\": {\"cardNumber\": \"4111111111111111\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Setup: second buyer adds own product to the cart (Cart)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('product added to the cart: 200', () => pm.response.to.have.status(200));",
+                  "pm.test('cart lines and the stock check', () => {",
+                  "  const cart = pm.response.json();",
+                  "  pm.expect(cart.items.map((line) => [line.productId, line.quantity]), 'lines').to.eql([[pm.variables.get('productId'), 1]]);",
+                  "  pm.expect(cart.inventoryChecked, 'inventoryChecked').to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{secondBuyerId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{cartServiceUrl}}/cart/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"productId\": \"{{productId}}\", \"quantity\": 1}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Setup: second buyer buys the cart (Order)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('secondOrderIdKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const order = pm.response.code === 201 ? pm.response.json() : {};",
+                  "pm.test('order: 201 PAID', () => {",
+                  "  pm.response.to.have.status(201);",
+                  "  pm.expect(order.status, 'status').to.eql('PAID');",
+                  "  pm.expect(order.userId, 'userId').to.eql(pm.variables.get('secondBuyerId'));",
+                  "});",
+                  "pm.variables.set('secondOrderId', order.id);",
+                  "console.log('order of this run: ' + order.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{secondBuyerId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{secondOrderIdKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{orderServiceUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"shippingMethod\": \"COURIER\", \"shippingAddress\": {\"firstName\": \"Postman\", \"lastName\": \"Customer\", \"street\": \"ul. Testowa 1\", \"postalCode\": \"00-001\", \"city\": \"Warszawa\", \"countryCode\": \"PL\"}, \"payment\": {\"cardNumber\": \"4111111111111111\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Health live",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('status UP', function () { const j = pm.response.json(); pm.expect(j.status === 'UP').to.be.true; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/health/live",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health",
+                "live"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Health ready",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('MongoDB dostępny', function () { const j = pm.response.json(); pm.expect(j.status === 'UP').to.be.true; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/health/ready",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health",
+                "ready"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /reviews bez productId -> 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', function () { pm.response.to.have.status(400); });",
+                  "pm.test('format błędu zespołu', function () { const j = pm.response.json(); pm.expect(j.error === 'VALIDATION_ERROR' && 'requestId' in j).to.be.true; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/reviews",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "reviews"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST bez uwierzytelnienia -> 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 401', function () { pm.response.to.have.status(401); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/reviews",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "reviews"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"productId\": \"{{productId}}\",\n  \"rating\": 4,\n  \"comment\": \"Dobry produkt, polecam\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "POST rating=6 -> 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', function () { pm.response.to.have.status(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-User-Id",
+                "value": "{{buyerId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/reviews",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "reviews"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"productId\": \"{{productId}}\",\n  \"rating\": 6,\n  \"comment\": \"Dobry produkt, polecam\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "GET /reviews?productId=not-a-uuid -> 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', function () { pm.response.to.have.status(400); });",
+                  "pm.test('VALIDATION_ERROR z requestId', function () { const j = pm.response.json(); pm.expect(j.error === 'VALIDATION_ERROR' && typeof j.requestId === 'string').to.be.true; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/reviews?productId=not-a-uuid",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "reviews"
+              ],
+              "query": [
+                {
+                  "key": "productId",
+                  "value": "not-a-uuid"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET summary z productId liczbą -> 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', function () { pm.response.to.have.status(400); });",
+                  "pm.test('VALIDATION_ERROR z requestId', function () { const j = pm.response.json(); pm.expect(j.error === 'VALIDATION_ERROR' && typeof j.requestId === 'string').to.be.true; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/reviews/summary/12",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "reviews",
+                "summary",
+                "12"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST nieznane pole -> 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', function () { pm.response.to.have.status(400); });",
+                  "pm.test('VALIDATION_ERROR z requestId', function () { const j = pm.response.json(); pm.expect(j.error === 'VALIDATION_ERROR' && typeof j.requestId === 'string').to.be.true; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-User-Id",
+                "value": "{{buyerId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/reviews",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "reviews"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"productId\": \"{{productId}}\",\n  \"rating\": 4,\n  \"userId\": \"6e1f2a3b-4c5d-4e6f-8a7b-9c0d1e2f3a4b\"\n}"
+            }
+          }
+        },
+        {
+          "name": "POST opinia kupującego -> 201",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', function () { pm.response.to.have.status(201); });",
+                  "pm.test('autor i ocena', function () { const j = pm.response.json(); pm.expect(j.rating === 4 && j.userId === pm.variables.get('buyerId')).to.be.true; });",
+                  "pm.test('id i productId to UUID', function () { const j = pm.response.json(); const re = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/; pm.expect(re.test(j.id) && j.productId === pm.collectionVariables.get('productId')).to.be.true; });",
+                  "pm.collectionVariables.set('reviewId', pm.response.json().id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-User-Id",
+                "value": "{{buyerId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/reviews",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "reviews"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"productId\": \"{{productId}}\",\n  \"rating\": 4,\n  \"comment\": \"Dobry produkt, polecam\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "POST druga opinia tego samego użytkownika -> 409",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', function () { pm.response.to.have.status(409); });",
+                  "pm.test('CONFLICT', function () { const j = pm.response.json(); pm.expect(j.error === 'CONFLICT').to.be.true; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-User-Id",
+                "value": "{{buyerId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/reviews",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "reviews"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"productId\": \"{{productId}}\",\n  \"rating\": 4,\n  \"comment\": \"Dobry produkt, polecam\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "POST opinia drugiego użytkownika -> 201",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', function () { pm.response.to.have.status(201); });",
+                  "pm.collectionVariables.set('reviewId2', pm.response.json().id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-User-Id",
+                "value": "{{secondBuyerId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/reviews",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "reviews"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"productId\": \"{{productId}}\",\n  \"rating\": 5,\n  \"comment\": \"Dobry produkt, polecam\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "POST opinia o niekupionym produkcie -> 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 403', function () { pm.response.to.have.status(403); });",
+                  "pm.test('FORBIDDEN (wymaga atrapy/Ordera: 99999999-9999-4999-8999-999999999999 = nie kupił)', function () { const j = pm.response.json(); pm.expect(j.error === 'FORBIDDEN').to.be.true; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-User-Id",
+                "value": "{{buyerId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/reviews",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "reviews"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"productId\": \"99999999-9999-4999-8999-999999999999\",\n  \"rating\": 4,\n  \"comment\": \"Dobry produkt, polecam\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "GET /reviews?productId -> 200",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('dwie opinie', function () { const j = pm.response.json(); pm.expect(j.total === 2 && j.items.length === 2).to.be.true; });",
+                  "pm.test('najnowsza pierwsza', function () { const j = pm.response.json(); pm.expect(j.items[0].rating === 5).to.be.true; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/reviews?productId={{productId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "reviews"
+              ],
+              "query": [
+                {
+                  "key": "productId",
+                  "value": "{{productId}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET summary -> 200",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('średnia 4.5 z 2 opinii', function () { const j = pm.response.json(); pm.expect(j.reviewCount === 2 && j.averageRating === 4.5).to.be.true; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/reviews/summary/{{productId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "reviews",
+                "summary",
+                "{{productId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "DELETE cudzej opinii -> 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 403', function () { pm.response.to.have.status(403); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-User-Id",
+                "value": "{{secondBuyerId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/reviews/{{reviewId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "reviews",
+                "{{reviewId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "DELETE własnej opinii -> 204",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 204', function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-User-Id",
+                "value": "{{buyerId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/reviews/{{reviewId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "reviews",
+                "{{reviewId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "DELETE jako ADMIN -> 204",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 204', function () { pm.response.to.have.status(204); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-User-Id",
+                "value": "{{adminUserId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "ADMIN"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/reviews/{{reviewId2}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "reviews",
+                "{{reviewId2}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "DELETE nieistniejącej -> 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 404', function () { pm.response.to.have.status(404); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-User-Id",
+                "value": "{{adminUserId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "ADMIN"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/reviews/{{reviewId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "reviews",
+                "{{reviewId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "DELETE /reviews/not-a-uuid -> 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', function () { pm.response.to.have.status(400); });",
+                  "pm.test('VALIDATION_ERROR z requestId', function () { const j = pm.response.json(); pm.expect(j.error === 'VALIDATION_ERROR' && typeof j.requestId === 'string').to.be.true; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-User-Id",
+                "value": "{{buyerId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/reviews/not-a-uuid",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "reviews",
+                "not-a-uuid"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET summary po usunięciu -> brak oceny",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('brak opinii, ocena null', function () { const j = pm.response.json(); pm.expect(j.reviewCount === 0 && j.averageRating === null).to.be.true; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/reviews/summary/{{productId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "reviews",
+                "summary",
+                "{{productId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Cleanup: cancel the buyer's order (Order)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('order cancelled: 200 CANCELLED', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().status, 'status').to.eql('CANCELLED');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{buyerId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ],
+            "url": "{{orderServiceUrl}}/orders/{{buyerOrderId}}/cancel"
+          }
+        },
+        {
+          "name": "Cleanup: cancel the second buyer's order (Order)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('order cancelled: 200 CANCELLED', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().status, 'status').to.eql('CANCELLED');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{secondBuyerId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "CUSTOMER"
+              }
+            ],
+            "url": "{{orderServiceUrl}}/orders/{{secondOrderId}}/cancel"
+          }
+        },
+        {
+          "name": "Cleanup: delete own product (Product, ADMIN)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('own product deleted: 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "X-User-Id",
+                "value": "{{adminUserId}}"
+              },
+              {
+                "key": "X-User-Roles",
+                "value": "ADMIN"
+              }
+            ],
+            "url": "{{productServiceUrl}}/products/{{productId}}"
+          }
+        },
+        {
+          "name": "Cleanup: own product is gone (Product)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('deleted product: 404 NOT_FOUND', () => {",
+                  "  pm.response.to.have.status(404);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('NOT_FOUND');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{productServiceUrl}}/products/{{productId}}"
+          }
+        },
+        {
+          "name": "Cleanup: no stock reserved for own product (Inventory)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The cancelled orders free their reservations through the event order.cancelled",
+                  "// (Inventory), so the stock may need a moment.",
+                  "// Asked again every 1 s, at most 10 more times (no fixed sleep).",
+                  "const MAX_TRIES = 10;",
+                  "const again = () => ({ url: pm.variables.replaceIn('{{inventoryServiceUrl}}/inventory/{{productId}}'), method: 'GET', header: [{ key: 'X-Request-Id', value: pm.variables.replaceIn('{{$guid}}') }] });",
+                  "const ready = (res) => Boolean(res) && res.code === 200 && res.json().reserved === 0;",
+                  "const check = (res) => {",
+                  "  const stock = res && res.code === 200 ? res.json() : {};",
+                  "  pm.test('stock of own product: 200, reserved 0, quantity 5', () => {",
+                  "    pm.expect(res && res.code, 'status').to.eql(200);",
+                  "    pm.expect(stock.reserved, 'reserved').to.eql(0);",
+                  "    pm.expect(stock.quantity, 'quantity').to.eql(5);",
+                  "  });",
+                  "};",
+                  "pm.test('first answer: 200', () => pm.response.to.have.status(200));",
+                  "const wait = (tries, res) => {",
+                  "  if (ready(res) || tries >= MAX_TRIES) {",
+                  "    check(res);",
+                  "    return;",
+                  "  }",
+                  "  setTimeout(() => pm.sendRequest(again(), (error, next) => wait(tries + 1, error ? null : next)), 1000);",
+                  "};",
+                  "wait(0, pm.response);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{inventoryServiceUrl}}/inventory/{{productId}}"
+          }
         }
-      }
+      ]
     },
     {
-      "name": "GET summary -> 200",
+      "name": "via Gateway",
+      "description": "Through the shop entrance {{gatewayUrl}} with the tokens of the folder start (compose and k8s). Own product and stock made by ADMIN; the cart of the start customer is left empty.",
       "event": [
         {
           "listen": "test",
           "script": {
             "type": "text/javascript",
             "exec": [
-              "pm.test('status 200', function () { pm.response.to.have.status(200); });",
-              "pm.test('średnia 4.5 z 2 opinii', function () { const j = pm.response.json(); pm.expect(j.reviewCount === 2 && j.averageRating === 4.5).to.be.true; });"
+              "// shop:error-format",
+              "// Every answer through the Gateway has X-Request-Id; every error: {status (= HTTP code), error, message,",
+              "// requestId = X-Request-Id of the answer}. Not for Mailpit (other format).",
+              "const url = pm.variables.replaceIn(pm.request.url.toString());",
+              "const external = ['mailpitUrl', 'rabbitmqUrl'].some((name) => {",
+              "  const base = pm.variables.get(name);",
+              "  return Boolean(base) && url.startsWith(base);",
+              "});",
+              "if (!external) {",
+              "  pm.test('X-Request-Id header is set', () => pm.expect(pm.response.headers.get('X-Request-Id')).to.be.a('string').and.not.empty);",
+              "  if (pm.response.code >= 400) {",
+              "    pm.test(`error ${pm.response.code} in the team format, requestId = X-Request-Id`, () => {",
+              "      const body = pm.response.json();",
+              "      pm.expect(body.status, 'status').to.eql(pm.response.code);",
+              "      pm.expect(body.error, 'error').to.be.a('string').and.not.empty;",
+              "      pm.expect(body.message, 'message').to.be.a('string').and.not.empty;",
+              "      pm.expect(body.requestId, 'requestId').to.eql(pm.response.headers.get('X-Request-Id'));",
+              "    });",
+              "  }",
+              "}"
             ]
           }
         }
       ],
-      "request": {
-        "method": "GET",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "url": {
-          "raw": "{{baseUrl}}/reviews/summary/{{productId}}",
-          "host": [
-            "{{baseUrl}}"
-          ],
-          "path": [
-            "reviews",
-            "summary",
-            "{{productId}}"
-          ]
-        }
-      }
-    },
-    {
-      "name": "DELETE cudzej opinii -> 403",
-      "event": [
+      "item": [
         {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('status 403', function () { pm.response.to.have.status(403); });"
-            ]
-          }
-        }
-      ],
-      "request": {
-        "method": "DELETE",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          },
-          {
-            "key": "X-User-Id",
-            "value": "6e1f2a3b-4c5d-4e6f-8a7b-9c0d1e2f3a4b"
-          },
-          {
-            "key": "X-User-Roles",
-            "value": "CUSTOMER"
-          }
-        ],
-        "url": {
-          "raw": "{{baseUrl}}/reviews/{{reviewId}}",
-          "host": [
-            "{{baseUrl}}"
+          "name": "Create own product (ADMIN)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('own product created by ADMIN: 201', () => pm.response.to.have.status(201));",
+                  "const product = pm.response.code === 201 ? pm.response.json() : {};",
+                  "pm.test('product: id UUID, price \"12.50\" PLN', () => {",
+                  "  pm.expect(product.id, 'id').to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);",
+                  "  pm.expect(product.price, 'price').to.eql('12.50');",
+                  "});",
+                  "pm.variables.set('reviewProductId', product.id);",
+                  "console.log('own product of this run: ' + product.id);"
+                ]
+              }
+            }
           ],
-          "path": [
-            "reviews",
-            "{{reviewId}}"
-          ]
-        }
-      }
-    },
-    {
-      "name": "DELETE własnej opinii -> 204",
-      "event": [
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{gatewayUrl}}/products",
+            "description": "Own product of this run; the seed products are only read.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Postman review-service {{$timestamp}}\", \"description\": \"Created and deleted by the review-service collection\", \"price\": \"12.50\", \"currency\": \"PLN\", \"categoryId\": \"c0000000-0000-4000-8000-000000000001\", \"imageUrl\": null}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
         {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('status 204', function () { pm.response.to.have.status(204); });"
-            ]
-          }
-        }
-      ],
-      "request": {
-        "method": "DELETE",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          },
-          {
-            "key": "X-User-Id",
-            "value": "5c9d1a7e-3b2f-4e8a-b6d4-1f0e9a8c7b65"
-          },
-          {
-            "key": "X-User-Roles",
-            "value": "CUSTOMER"
-          }
-        ],
-        "url": {
-          "raw": "{{baseUrl}}/reviews/{{reviewId}}",
-          "host": [
-            "{{baseUrl}}"
+          "name": "Set stock of own product (ADMIN)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stock set by ADMIN: 200', () => pm.response.to.have.status(200));",
+                  "pm.test('quantity 5, nothing reserved', () => {",
+                  "  pm.expect(pm.response.json().quantity, 'quantity').to.eql(5);",
+                  "  pm.expect(pm.response.json().reserved, 'reserved').to.eql(0);",
+                  "});"
+                ]
+              }
+            }
           ],
-          "path": [
-            "reviews",
-            "{{reviewId}}"
-          ]
-        }
-      }
-    },
-    {
-      "name": "DELETE jako ADMIN -> 204",
-      "event": [
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{gatewayUrl}}/inventory/{{reviewProductId}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"quantity\": 5}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
         {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('status 204', function () { pm.response.to.have.status(204); });"
-            ]
-          }
-        }
-      ],
-      "request": {
-        "method": "DELETE",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          },
-          {
-            "key": "X-User-Id",
-            "value": "0b5f5c1e-7f43-4b3c-9d2e-8a4b6a1c2d3e"
-          },
-          {
-            "key": "X-User-Roles",
-            "value": "ADMIN"
-          }
-        ],
-        "url": {
-          "raw": "{{baseUrl}}/reviews/{{reviewId2}}",
-          "host": [
-            "{{baseUrl}}"
+          "name": "Add own product to the cart",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const cart = pm.response.code === 200 ? pm.response.json() : { items: [] };",
+                  "pm.test('own product added to the cart: 200', () => pm.response.to.have.status(200));",
+                  "pm.test('1 x own product in the cart, stock checked', () => {",
+                  "  const own = cart.items.filter((line) => line.productId === pm.variables.get('reviewProductId'));",
+                  "  pm.expect(own.map((line) => line.quantity), 'quantity').to.eql([1]);",
+                  "  pm.expect(cart.inventoryChecked, 'inventoryChecked').to.eql(true);",
+                  "});",
+                  "// shop:budget 2",
+                  "// The cart of the start customer is shared by the collections of one run and should be empty here. Lines of",
+                  "// other products (left by a failed run) are removed: at most MAX_STALE requests.",
+                  "const MAX_STALE = 2;",
+                  "const stale = cart.items.filter((line) => line.productId !== pm.variables.get('reviewProductId'));",
+                  "pm.test('at most ' + MAX_STALE + ' stale lines in the cart', () => pm.expect(stale.length).to.be.at.most(MAX_STALE));",
+                  "stale.slice(0, MAX_STALE).forEach((line) => pm.sendRequest({",
+                  "  url: pm.variables.replaceIn('{{gatewayUrl}}/cart/items/' + line.productId),",
+                  "  method: 'DELETE',",
+                  "  header: [{ key: 'Authorization', value: pm.variables.replaceIn('Bearer {{customerToken}}') }],",
+                  "}, (error, res) => pm.test('stale cart line removed: 204', () => pm.expect(error ? null : res.code).to.eql(204))));"
+                ]
+              }
+            }
           ],
-          "path": [
-            "reviews",
-            "{{reviewId2}}"
-          ]
-        }
-      }
-    },
-    {
-      "name": "DELETE nieistniejącej -> 404",
-      "event": [
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{gatewayUrl}}/cart/items",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"productId\": \"{{reviewProductId}}\", \"quantity\": 1}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
         {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('status 404', function () { pm.response.to.have.status(404); });"
-            ]
-          }
-        }
-      ],
-      "request": {
-        "method": "DELETE",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          },
-          {
-            "key": "X-User-Id",
-            "value": "0b5f5c1e-7f43-4b3c-9d2e-8a4b6a1c2d3e"
-          },
-          {
-            "key": "X-User-Roles",
-            "value": "ADMIN"
-          }
-        ],
-        "url": {
-          "raw": "{{baseUrl}}/reviews/{{reviewId}}",
-          "host": [
-            "{{baseUrl}}"
+          "name": "Buy the cart (card accepted)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A new Idempotency-Key for every purchase of every run.",
+                  "pm.variables.set('reviewOrderIdKey', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const order = pm.response.code === 201 ? pm.response.json() : { items: [] };",
+                  "pm.test('purchase: 201 PAID', () => {",
+                  "  pm.response.to.have.status(201);",
+                  "  pm.expect(order.status, 'status').to.eql('PAID');",
+                  "  pm.expect(order.userId, 'userId').to.eql(pm.environment.get('customerId'));",
+                  "  pm.expect(order.items.map((line) => [line.productId, line.quantity]), 'lines').to.eql([[pm.variables.get('reviewProductId'), 1]]);",
+                  "});",
+                  "pm.variables.set('reviewOrderId', order.id);",
+                  "console.log('order of this run: ' + order.id);"
+                ]
+              }
+            }
           ],
-          "path": [
-            "reviews",
-            "{{reviewId}}"
-          ]
-        }
-      }
-    },
-    {
-      "name": "DELETE /reviews/not-a-uuid -> 400",
-      "event": [
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{reviewOrderIdKey}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{gatewayUrl}}/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"shippingMethod\": \"COURIER\", \"shippingAddress\": {\"firstName\": \"Postman\", \"lastName\": \"Customer\", \"street\": \"ul. Testowa 1\", \"postalCode\": \"00-001\", \"city\": \"Warszawa\", \"countryCode\": \"PL\"}, \"payment\": {\"cardNumber\": \"4111111111111111\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
         {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('status 400', function () { pm.response.to.have.status(400); });",
-              "pm.test('VALIDATION_ERROR z requestId', function () { const j = pm.response.json(); pm.expect(j.error === 'VALIDATION_ERROR' && typeof j.requestId === 'string').to.be.true; });"
-            ]
-          }
-        }
-      ],
-      "request": {
-        "method": "DELETE",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          },
-          {
-            "key": "X-User-Id",
-            "value": "5c9d1a7e-3b2f-4e8a-b6d4-1f0e9a8c7b65"
-          },
-          {
-            "key": "X-User-Roles",
-            "value": "CUSTOMER"
-          }
-        ],
-        "url": {
-          "raw": "{{baseUrl}}/reviews/not-a-uuid",
-          "host": [
-            "{{baseUrl}}"
+          "name": "Review the bought product",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const review = pm.response.code === 201 ? pm.response.json() : {};",
+                  "pm.test('review of a bought product: 201', () => {",
+                  "  pm.response.to.have.status(201);",
+                  "  pm.expect(review.id, 'id').to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);",
+                  "  pm.expect(review.productId, 'productId').to.eql(pm.variables.get('reviewProductId'));",
+                  "  pm.expect(review.userId, 'userId').to.eql(pm.environment.get('customerId'));",
+                  "  pm.expect(review.rating, 'rating').to.eql(5);",
+                  "});",
+                  "pm.variables.set('reviewId', review.id);"
+                ]
+              }
+            }
           ],
-          "path": [
-            "reviews",
-            "not-a-uuid"
-          ]
-        }
-      }
-    },
-    {
-      "name": "GET summary po usunięciu -> brak oceny",
-      "event": [
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{gatewayUrl}}/reviews",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"productId\": \"{{reviewProductId}}\", \"rating\": 5, \"comment\": \"Postman review\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
         {
-          "listen": "test",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "pm.test('status 200', function () { pm.response.to.have.status(200); });",
-              "pm.test('brak opinii, ocena null', function () { const j = pm.response.json(); pm.expect(j.reviewCount === 0 && j.averageRating === null).to.be.true; });"
-            ]
-          }
-        }
-      ],
-      "request": {
-        "method": "GET",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "url": {
-          "raw": "{{baseUrl}}/reviews/summary/{{productId}}",
-          "host": [
-            "{{baseUrl}}"
+          "name": "List reviews of the product (public)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200, the one review of this run', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "  const page = pm.response.json();",
+                  "  pm.expect(page.total, 'total').to.eql(1);",
+                  "  pm.expect(page.items.map((review) => review.id), 'ids').to.eql([pm.variables.get('reviewId')]);",
+                  "});"
+                ]
+              }
+            }
           ],
-          "path": [
-            "reviews",
-            "summary",
-            "{{productId}}"
-          ]
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{gatewayUrl}}/reviews?productId={{reviewProductId}}"
+          }
+        },
+        {
+          "name": "Rating summary of the product (public)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200, average 5 of 1 review', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().reviewCount, 'reviewCount').to.eql(1);",
+                  "  pm.expect(pm.response.json().averageRating, 'averageRating').to.eql(5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{gatewayUrl}}/reviews/summary/{{reviewProductId}}"
+          }
+        },
+        {
+          "name": "Delete own review",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('own review deleted: 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{gatewayUrl}}/reviews/{{reviewId}}"
+          }
+        },
+        {
+          "name": "Review without a token → 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 UNAUTHORIZED', () => {",
+                  "  pm.response.to.have.status(401);",
+                  "  pm.expect(pm.response.json().error, 'error').to.eql('UNAUTHORIZED');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{gatewayUrl}}/reviews",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"productId\": \"{{reviewProductId}}\", \"rating\": 4}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Cancel the order after the review",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('order cancelled: 200 CANCELLED', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().status, 'status').to.eql('CANCELLED');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{customerToken}}"
+              }
+            ],
+            "url": "{{gatewayUrl}}/orders/{{reviewOrderId}}/cancel"
+          }
+        },
+        {
+          "name": "Delete own product (ADMIN)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('own product deleted by ADMIN: 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": "{{gatewayUrl}}/products/{{reviewProductId}}"
+          }
         }
-      }
+      ]
     }
   ]
 }

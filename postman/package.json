@@ -5,7 +5,8 @@
   "type": "module",
   "description": "Purchase scenario of the shop run with newman in a container (postman/run.sh)",
   "dependencies": {
-    "newman": "6.2.3"
+    "newman": "6.2.3",
+    "newman-reporter-html": "1.0.5"
   },
   "devDependencies": {
     "@types/newman": "5.3.6",
