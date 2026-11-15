@@ -16,6 +16,11 @@ P1 = "3f0c9b1e-6a52-4a8e-9c1f-0b2f7e1d5a77"
 P2 = "7d2b4c10-1e55-4f0a-8a31-5c6e9b0d2f44"
 P_UNKNOWN = "99999999-9999-4999-8999-999999999999"
 
+# identyfikatory zamówień też są UUID (Order tworzy je małymi literami)
+O1 = "a1b2c3d4-0000-4000-8000-000000000001"
+O2 = "a1b2c3d4-0000-4000-8000-000000000002"
+O3 = "a1b2c3d4-0000-4000-8000-000000000003"
+
 
 @pytest.fixture
 def engine():

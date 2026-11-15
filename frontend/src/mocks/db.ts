@@ -71,6 +71,13 @@ export interface MockFailure {
   remaining: number;
 }
 
+/** Order created with an Idempotency-Key: what the key was used with (Order compares the address and the method). */
+export interface MockOrderKey {
+  orderId: string;
+  /** JSON of shippingMethod and shippingAddress. */
+  data: string;
+}
+
 export interface MockState {
   accounts: MockAccount[];
   profiles: UserProfile[];
@@ -82,6 +89,8 @@ export interface MockState {
   reviews: Review[];
   shippingMethods: ShippingMethod[];
   orders: OrderDetail[];
+  /** Idempotency-Key of POST /orders per `<userId>:<key>`; missing in a state saved before stage 8. */
+  orderKeys?: Record<string, MockOrderKey>;
   shipments: MockShipment[];
   /** Refresh "cookie" of the mock Auth: the account that is logged in, or null. */
   session: { userId: string; rotation: number } | null;

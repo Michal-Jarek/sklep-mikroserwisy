@@ -17,10 +17,10 @@ Ten dokument zbiera zasady wiążące każdą usługę sklepu (D1–D20): co obo
 | [D7](#d7--format-i-kody-błędów) | Błąd ma format `{"status", "error", "message", "requestId"}` i kod z listy wspólnej albo z rejestru kodów domenowych. | wszystkie usługi, frontend |
 | [D8](#d8--profil-użytkownika-przy-rejestracji) | `POST /users` jest wewnętrzny i idempotentny po `id`: 201, powtórzenie 200, ten sam `id` z innymi danymi 409; formatu `email` User nie sprawdza (robi to Auth). | User, Auth |
 | [D9](#d9--własność-kodu-pr-i-dokumenty) | PR do `develop` z akceptacją code ownera; zmiana kontraktu wymaga zgody usług, które wołają. | wszyscy |
-| [D10](#d10--endpointy-wewnętrzne) | Endpoint wewnętrzny bez roli `SERVICE` → 403; nowy endpoint wewnętrzny zgłasza się Michałowi. | User, Cart, Inventory, Order i każda nowa usługa z takim endpointem |
+| [D10](#d10--endpointy-wewnętrzne) | Endpoint wewnętrzny bez roli `SERVICE` → 403; nowy endpoint wewnętrzny zgłasza się Michałowi. | User, Cart, Inventory, Order, Shipping i każda nowa usługa z takim endpointem |
 | [D11](#d11--tożsamość-i-nagłówki) | Usługa ufa `X-User-Id` i `X-User-Roles` od Gateway, nie sprawdza JWT, sama pilnuje własności danych. | wszystkie usługi |
 | [D12](#d12--ścieżki) | Ścieżki bez `/api/v1`, bez `/` na końcu i bez przekierowań; `HEAD` jak `GET`. | wszystkie usługi |
-| [D13](#d13--consul-rejestracja-i-wyszukiwanie) | Rejestracja w Consulu z własnym IP, unikalnym ID i checkiem `/health/ready`; start bez Consula, ponowna rejestracja, wyrejestrowanie przy SIGTERM. | wszystkie usługi |
+| [D13](#d13--consul-rejestracja-i-wyszukiwanie) | Rejestracja w Consulu z własnym IP, unikalnym ID i checkiem `/health/ready`; przy pierwszej rejestracji procesu sprzątanie własnego starego wpisu i osieroconych wpisów z tym samym adresem; start bez Consula, ponowna rejestracja, wyrejestrowanie przy SIGTERM. | wszystkie usługi |
 | [D14](#d14--konfiguracja-z-consul-kv) | Konfiguracja z `config/<usługa>/data` (YAML) przy starcie; zmienne środowiskowe > KV > wartości domyślne; w KV nigdy sekretów. | wszystkie usługi |
 | [D15](#d15--zdrowie-usługi) | `/health/live` bez zależności, `/health/ready` zależy od własnej bazy, nie od brokera ani innych usług. | wszystkie usługi |
 | [D16](#d16--logi) | Logi JSON na stdout z `requestId` i `userId`; nigdy hasła, tokeny ani pełne dane osobowe. | wszystkie usługi |
@@ -150,14 +150,14 @@ Kody, które istnieją dziś. Nowy kod domenowy → zgłoszenie Michałowi (dopi
 | Auth | 409 | `EMAIL_TAKEN` | e-mail już zarejestrowany |
 | Auth | 429 | `TOO_MANY_ATTEMPTS` | e-mail zablokowany na 15 min po 10 nieudanych logowaniach; z `Retry-After` |
 | Inventory | 409 | `INSUFFICIENT_STOCK` | za mało towaru do rezerwacji |
-| Order | 409 | `CART_EMPTY` | zamówienie z pustego koszyka — **propozycja v1** |
-| Order | 409 | `PRODUCT_UNAVAILABLE` | produkt z koszyka wycofany ze sklepu (Product odpowiada 404) — **propozycja v1** |
-| Order | 409 | `ORDER_NOT_CANCELLABLE` | anulowanie zamówienia po wysyłce albo w statusie innym niż `NEW`/`PAID` — **propozycja v1** |
-| Shipping | 409 | `INVALID_STATUS_TRANSITION` | zmiana statusu przesyłki inna niż o jeden krok naprzód — **propozycja v1** |
+| Order | 409 | `CART_EMPTY` | zamówienie z pustego koszyka |
+| Order | 409 | `PRODUCT_UNAVAILABLE` | produkt z koszyka wycofany ze sklepu (Product odpowiada 404) |
+| Order | 409 | `ORDER_NOT_CANCELLABLE` | anulowanie zamówienia po wysyłce albo w statusie innym niż `NEW`/`PAID` |
+| Shipping | 409 | `INVALID_STATUS_TRANSITION` | zmiana statusu przesyłki inna niż o jeden krok naprzód; także wewnętrzne `POST /shipments/cancel` dla przesyłki już nadanej (`SHIPPED` i dalej) |
 
 Pełna lista odpowiedzi Auth: [README Auth, sekcja „Endpointy”](../services/auth-service/README.md#endpointy).
 
-Kody oznaczone „propozycja v1” pochodzą z kontraktu usług bez implementacji (Order, Shipping); właściciel może je zmienić przed pierwszą implementacją w porozumieniu z Michałem. Wszystkie endpointy i kody, z których korzysta frontend: [frontend-api.md](frontend-api.md).
+Kody Order i Shipping istnieją od etapu 8 (implementacja Order i Shipping); zmiana to zmiana kontraktu (D9). Wszystkie endpointy i kody, z których korzysta frontend: [frontend-api.md](frontend-api.md).
 
 **Dlaczego.** Frontend i inne usługi rozpoznają błąd po `error`, nie po tekście `message`. W przeglądach PR #1 i #2 te same błędy miały różne kody (`BAD_REQUEST` i `VALIDATION_ERROR`, `INTERNAL_SERVER_ERROR` i `INTERNAL_ERROR`), a FastAPI domyślnie odpowiada 422 w innym formacie.
 
@@ -189,7 +189,7 @@ User przyjmuje `email` jako tekst do 254 znaków **bez własnej walidacji format
 
 ## D10 — Endpointy wewnętrzne
 
-**Zasada.** Endpoint wewnętrzny wołają tylko inne usługi. Wymaga roli `SERVICE` w `X-User-Roles`, inaczej **403 `FORBIDDEN`**. Gateway dodatkowo blokuje go z zewnątrz (404, reguła `blocked`). Dziś: `POST /users`, `DELETE /cart/{userId}`, `/inventory/reservations/**`, `GET /orders/purchased`. `GET /users/{id}`: rola `ADMIN` albo `SERVICE`. Nowy endpoint wewnętrzny → zgłoszenie Michałowi przed scaleniem PR (bez reguły w Gateway jest dostępny dla każdego zalogowanego klienta; usługa i tak odpowie 403, ale zgłoszenie jest obowiązkowe).
+**Zasada.** Endpoint wewnętrzny wołają tylko inne usługi. Wymaga roli `SERVICE` w `X-User-Roles`, inaczej **403 `FORBIDDEN`**. Gateway dodatkowo blokuje go z zewnątrz (404, reguła `blocked`). Dziś: `POST /users`, `DELETE /cart/{userId}`, `/inventory/reservations/**`, `GET /orders/purchased`, `POST /shipments/cancel` (Order pyta Shipping przed anulowaniem zamówienia). `GET /users/{id}`: rola `ADMIN` albo `SERVICE`. Nowy endpoint wewnętrzny → zgłoszenie Michałowi przed scaleniem PR (bez reguły w Gateway jest dostępny dla każdego zalogowanego klienta; usługa i tak odpowie 403, ale zgłoszenie jest obowiązkowe).
 
 **Dlaczego.** Dwie warstwy: reguła w Gateway ukrywa endpoint przed klientami, a sprawdzenie roli w usłudze chroni go także wtedy, gdy reguły zabraknie (Gateway nigdy nie przekazuje `SERVICE` od klienta). Rola **nie** chroni przed kimś, kto dociera do usługi z pominięciem Gateway — taki ktoś sam ustawi `X-User-Roles: SERVICE` ([D11](#d11--tożsamość-i-nagłówki)).
 
@@ -226,10 +226,11 @@ User przyjmuje `email` jako tekst do 254 znaków **bez własnej walidacji format
 - Rejestracja: nazwa = nazwa usługi; ID instancji unikalne (`<usługa>-<hostname>`); **adres = własny IP instancji**, nie nazwa usługi z compose (przy `--scale` wszystkie instancje miałyby ten sam adres); z VS Code `host.docker.internal`; port z tabeli usług.
 - Check HTTP `/health/ready` co 10 s, timeout 2 s, `DeregisterCriticalServiceAfter` 1 min.
 - Rejestracja po starcie serwera HTTP. **Start bez Consula**: usługa działa i ponawia rejestrację w tle. **Ponowna rejestracja**: co ok. 15 s usługa sprawdza, czy jej wpis istnieje z aktualnym adresem, i rejestruje się ponownie, gdy go nie ma (np. po restarcie Consula). Wyrejestrowanie przy SIGTERM.
+- **Pierwsza rejestracja procesu** (etap 8, decyzje Z5 i Z7): najpierw usługa wyrejestrowuje osierocone wpisy — tej samej nazwy (dokładnie), z tym samym adresem **i** portem, ale innym ID (zostawił je zabity kontener) — potem własny stary wpis z tym samym ID, jeśli jest, i rejestruje się z `"Status"` z bieżącej gotowości. Sprzątanie nigdy nie blokuje startu (błąd → `warning`, rejestracja dalej). Szczegóły: [patterns.md, „Pierwsza rejestracja procesu”](patterns.md#pierwsza-rejestracja-procesu-wpis-z-tym-samym-id-z5-i-osierocone-wpisy-z7).
 - Każda odpowiedź usługi ma nagłówek **`X-Instance-Id`** = ID instancji.
-- Wyszukiwanie innych usług: `/v1/health/service/<nazwa>?passing`, lista trzymana 10 s, instancje po kolei (round robin), przy błędzie Consula ostatnia znana lista, instancja bez połączenia wypada z listy do następnego odświeżenia (jak w Gateway). Adresów innych usług nie wpisuje się na sztywno.
+- Wyszukiwanie innych usług: `/v1/health/service/<nazwa>?passing`, lista trzymana 10 s, instancje po kolei (round robin), przy błędzie Consula ostatnia znana lista, instancja bez połączenia wypada z listy do następnego odświeżenia (jak w Gateway). Gdy Consul odpowie pustą listą, a w pamięci jest niepusta, Gateway, Order i Review używają ostatniej listy najwyżej 30 s od pierwszej pustej odpowiedzi (Z6); w Gateway i Order przerywane błędy Consula mogą ten czas wydłużyć bez limitu, w Review najwyżej o 10 s (znana różnica A7, [patterns.md, sekcja 4](patterns.md#4-wywołanie-innej-usługi)). Adresów innych usług nie wpisuje się na sztywno.
 
-**Dlaczego.** Gateway i inne usługi znajdują instancje tylko przez Consul. Bez ponownej rejestracji usługa znika z Consula po jego restarcie i jest niedostępna do restartu usługi; bez startu bez Consula kolejność startu kontenerów decyduje, czy usługa działa (przegląd PR #1 i #2). ID z nazwy hosta (`<usługa>-<hostname>`) jest takie samo po restarcie procesu w tym samym kontenerze, więc nowa rejestracja nadpisuje własny stary wpis. ID losowe zostawiłoby stary wpis obok nowego: przy nowym adresie do `DeregisterCriticalServiceAfter` (1 min), a przy tym samym adresie — dopóki instancja działa (check starego wpisu trafia do nowego procesu i przechodzi). `X-Instance-Id` pokazuje load balancing na prezentacji.
+**Dlaczego.** Gateway i inne usługi znajdują instancje tylko przez Consul. Bez ponownej rejestracji usługa znika z Consula po jego restarcie i jest niedostępna do restartu usługi; bez startu bez Consula kolejność startu kontenerów decyduje, czy usługa działa (przegląd PR #1 i #2). ID z nazwy hosta (`<usługa>-<hostname>`) jest takie samo po restarcie procesu w tym samym kontenerze, więc nowa rejestracja nadpisuje własny stary wpis. ID losowe zostawiłoby stary wpis obok nowego: przy nowym adresie do `DeregisterCriticalServiceAfter` (1 min), a przy tym samym adresie — dopóki instancja działa (check starego wpisu trafia do nowego procesu i przechodzi). Nowy kontener w compose ma jednak nowy hostname, czyli nowe ID, a często ten sam adres — dlatego od etapu 8 każda usługa przy starcie sama usuwa takie osierocone wpisy (Z7). `X-Instance-Id` pokazuje load balancing na prezentacji.
 
 **Jak sprawdzić / szczegóły.** Działający przykład w Pythonie: [patterns.md, sekcja 2](patterns.md#2-przykład-w-pythonie-consul-kv-logi-zdrowie); pokaz load balancingu: [patterns.md, sekcja 8](patterns.md#8-pokaz-load-balancingu); rejestracja i wyszukiwanie w Gateway: [README Gateway, „Rejestracja w Consulu”](../services/api-gateway/README.md#rejestracja-w-consulu).
 

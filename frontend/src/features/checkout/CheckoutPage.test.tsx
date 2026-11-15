@@ -246,6 +246,115 @@ describe('checkout page', () => {
     expect(document.activeElement).toBe(within(group).getAllByRole('radio')[0]);
   });
 
+  describe('Idempotency-Key (wytyczne 3.8)', () => {
+    const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    const RETRY_MESSAGE = 'Nie udało się potwierdzić zamówienia. Możesz bezpiecznie ponowić zakup — nie powstanie drugie zamówienie.';
+    const unavailable = () => HttpResponse.json({ status: 503, error: 'SERVICE_UNAVAILABLE', message: 'x', requestId: 'r' }, { status: 503 });
+
+    /** Keys of every POST /orders; `first` answers the first request instead of the mock Order. */
+    function recordOrderKeys(first?: () => Response): (string | null)[] {
+      const keys: (string | null)[] = [];
+      server.use(
+        http.post('*/api/v1/orders', ({ request }) => {
+          keys.push(request.headers.get('Idempotency-Key'));
+          if (keys.length === 1 && first) return first();
+        }),
+      );
+      return keys;
+    }
+
+    it('503: safe-retry message, "Spróbuj ponownie" sends the same key and the order is paid', async () => {
+      cartWith(MUG);
+      const keys = recordOrderKeys(unavailable);
+      const { user } = await renderAsCustomer('/checkout');
+
+      await placeOrder(user, '4111111111111111');
+      expect(await screen.findByText(RETRY_MESSAGE)).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: 'Spróbuj ponownie' }));
+
+      expect(await screen.findByText('Zamówienie opłacone')).toBeInTheDocument();
+      expect(keys).toHaveLength(2);
+      expect(keys[0]).toMatch(UUID);
+      expect(keys[1]).toBe(keys[0]);
+    });
+
+    it('lost answer (mock card ending with 503): the retry gets the same order, no second one', async () => {
+      cartWith(MUG);
+      const keys = recordOrderKeys();
+      const ordersBefore = loadState().orders.length;
+      const { user, router } = await renderAsCustomer('/checkout');
+
+      await placeOrder(user, '4111111111111503');
+      expect(await screen.findByText(RETRY_MESSAGE)).toBeInTheDocument();
+      expect(loadState().orders).toHaveLength(ordersBefore + 1);
+      await user.click(screen.getByRole('button', { name: 'Spróbuj ponownie' }));
+
+      expect(await screen.findByText('Zamówienie opłacone')).toBeInTheDocument();
+      expect(router.state.location.pathname).toBe(`/orders/${loadState().orders.at(-1)?.id}`);
+      expect(loadState().orders).toHaveLength(ordersBefore + 1);
+      expect(keys[1]).toBe(keys[0]);
+    });
+
+    it('network error: the next submit with the same data sends the same key', async () => {
+      cartWith(MUG);
+      const keys = recordOrderKeys(() => HttpResponse.error());
+      const { user } = await renderAsCustomer('/checkout');
+
+      await placeOrder(user, '4111111111111111');
+      expect(await screen.findByText(RETRY_MESSAGE)).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: 'Zamawiam i płacę' }));
+
+      expect(await screen.findByText('Zamówienie opłacone')).toBeInTheDocument();
+      expect(keys).toEqual([keys[0], keys[0]]);
+    });
+
+    it('a new key after 201 PAYMENT_FAILED, even with the same card again', async () => {
+      cartWith(MUG);
+      const keys = recordOrderKeys();
+      const { user } = await renderAsCustomer('/checkout');
+
+      await placeOrder(user, '4111111111111110');
+      expect(await screen.findByText(/^Płatność odrzucona/)).toBeInTheDocument();
+      await user.type(screen.getByLabelText('Numer karty'), '4111111111111110');
+      await user.click(screen.getByRole('button', { name: 'Zamawiam i płacę' }));
+
+      await vi.waitFor(() => expect(keys).toHaveLength(2));
+      expect(keys[1]).toMatch(UUID);
+      expect(keys[1]).not.toBe(keys[0]);
+      expect(loadState().orders.filter((o) => o.status === 'PAYMENT_FAILED' && o.items[0].productId === products.regular)).toHaveLength(2);
+    });
+
+    it('a new key after a 4xx (409 CONFLICT has its own message)', async () => {
+      cartWith(MUG);
+      const keys = recordOrderKeys(() => HttpResponse.json({ status: 409, error: 'CONFLICT', message: 'x', requestId: 'r' }, { status: 409 }));
+      const { user } = await renderAsCustomer('/checkout');
+
+      await placeOrder(user, '4111111111111111');
+      expect(await screen.findByText('Dane zamówienia zmieniły się od poprzedniej próby. Sprawdź je i złóż zamówienie ponownie.')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Spróbuj ponownie' })).not.toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: 'Zamawiam i płacę' }));
+
+      expect(await screen.findByText('Zamówienie opłacone')).toBeInTheDocument();
+      expect(keys[1]).toMatch(UUID);
+      expect(keys[1]).not.toBe(keys[0]);
+    });
+
+    it('a new key after 503 when the data changed (another shipping method)', async () => {
+      cartWith(MUG);
+      const keys = recordOrderKeys(unavailable);
+      const { user } = await renderAsCustomer('/checkout');
+
+      await placeOrder(user, '4111111111111111');
+      expect(await screen.findByText(RETRY_MESSAGE)).toBeInTheDocument();
+      await user.click(screen.getByLabelText(/^Odbiór osobisty/));
+      await user.click(screen.getByRole('button', { name: 'Zamawiam i płacę' }));
+
+      expect(await screen.findByText('Zamówienie opłacone')).toBeInTheDocument();
+      expect(keys[1]).toMatch(UUID);
+      expect(keys[1]).not.toBe(keys[0]);
+    });
+  });
+
   it('empty cart shows a message instead of the form', async () => {
     await renderAsCustomer('/checkout');
     expect(await screen.findByText('Koszyk jest pusty.', { exact: false })).toBeInTheDocument();

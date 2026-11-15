@@ -170,7 +170,7 @@ function OrderView({ order, shipments, paid }: { order: OrderDetail; shipments: 
         </Card>
       </div>
 
-      {cancel.isError && <ErrorAlert error={cancel.error} />}
+      {cancel.isError && <ErrorAlert error={cancel.error} context="cancel" />}
       {cancellable && (
         <CancelOrderButton pending={cancel.isPending} onConfirm={() => cancel.mutate(undefined, { onSuccess: () => toast.success('Zamówienie anulowane.') })} />
       )}

@@ -9,6 +9,12 @@ import { consulFetch, consulStatusError, describeError } from './consul-http';
 export const DISCOVERY_CACHE_MS = 10_000;
 // An empty list is reused only briefly (Z20): a service that starts after the Gateway is reachable within seconds.
 export const DISCOVERY_EMPTY_CACHE_MS = 2_000;
+// After a restart Consul restores registrations from its data directory but lists an instance as passing only after
+// its check has run again (1-2 s, at most the check interval), so for a moment it answers "no healthy instance" for
+// services that are up (Z6). An empty answer after a non-empty list is therefore not trusted at once: the last known
+// list is used (Consul asked every 2 s) until Consul has kept answering "empty" for this long. Counted from the first
+// empty answer of the series; a non-empty answer or a Consul error ends the series (an outage does not age the list).
+export const DISCOVERY_EMPTY_GRACE_MS = 30_000;
 
 /** One healthy instance of a service from Consul. */
 export interface Instance {
@@ -25,6 +31,11 @@ interface CacheEntry {
   pending?: Promise<void>;
   // Round robin counter, kept across refreshes.
   next: number;
+  // First empty answer of the current series while the last known list is used (DISCOVERY_EMPTY_GRACE_MS).
+  emptySince?: number;
+  // Set with the warning on entering the last-known-list mode, cleared with the info at the first non-empty answer
+  // (CR-37): also when the series ended by evict, by the 30 s limit or by a Consul error in between.
+  lastListMode?: boolean;
 }
 
 /**
@@ -60,7 +71,8 @@ export function parseHealthyInstances(body: unknown, serviceName: string): Insta
 /**
  * Healthy instances of the services behind the Gateway (decision 6): one request to Consul per
  * service at a time, list cached for 10 s (an empty one for 2 s), round robin per service. When Consul fails, the last
- * known list is used and Consul is asked again after 10 s (one warning per change of state).
+ * known list is used and Consul is asked again after 10 s (one warning per change of state). An empty answer after a
+ * non-empty list keeps the last known list for at most 30 s (DISCOVERY_EMPTY_GRACE_MS).
  */
 @Injectable()
 export class ServiceDiscovery {
@@ -122,19 +134,32 @@ export class ServiceDiscovery {
       if (!response.ok) {
         throw consulStatusError('Consul', response.status);
       }
-      entry.instances = parseHealthyInstances(await response.json(), serviceName);
-      this.metrics.refreshUpstreamInstances(
-        serviceName,
-        entry.instances.map((instance) => instance.id),
-      );
-      if (entry.instances.length === 0) {
-        cacheMs = DISCOVERY_EMPTY_CACHE_MS;
+      const instances = parseHealthyInstances(await response.json(), serviceName);
+      const graceMs = instances.length === 0 ? this.emptyGraceLeft(serviceName, entry) : 0;
+      if (graceMs > 0) {
+        // The last known list stays (metrics too); Consul is asked again within 2 s.
+        cacheMs = Math.min(DISCOVERY_EMPTY_CACHE_MS, graceMs);
+      } else {
+        if (instances.length > 0 && entry.lastListMode) {
+          entry.lastListMode = false;
+          this.logger.info({ targetService: serviceName }, 'Consul lists healthy instances again');
+        }
+        entry.emptySince = undefined;
+        entry.instances = instances;
+        this.metrics.refreshUpstreamInstances(
+          serviceName,
+          instances.map((instance) => instance.id),
+        );
+        if (instances.length === 0) {
+          cacheMs = DISCOVERY_EMPTY_CACHE_MS;
+        }
       }
       if (this.consulFailing) {
         this.consulFailing = false;
         this.logger.info({ targetService: serviceName }, 'Consul service discovery works again');
       }
     } catch (error) {
+      entry.emptySince = undefined;
       if (!this.consulFailing) {
         this.consulFailing = true;
         this.logger.warn(
@@ -145,5 +170,26 @@ export class ServiceDiscovery {
     } finally {
       entry.refreshAt = Date.now() + cacheMs;
     }
+  }
+
+  /**
+   * Consul answered with no healthy instance. Returns how long the last known list may still be used (> 0), or 0 when
+   * there is no non-empty list in memory (start, list emptied by evict) or the series of empty answers lasted 30 s.
+   */
+  private emptyGraceLeft(serviceName: string, entry: CacheEntry): number {
+    if (!entry.instances || entry.instances.length === 0) {
+      return 0;
+    }
+    const now = Date.now();
+    entry.emptySince ??= now;
+    if (!entry.lastListMode) {
+      entry.lastListMode = true;
+      this.logger.warn({ targetService: serviceName }, 'Consul lists no healthy instance, using the last known list');
+    }
+    const left = entry.emptySince + DISCOVERY_EMPTY_GRACE_MS - now;
+    if (left <= 0) {
+      this.logger.warn({ targetService: serviceName }, 'Consul still lists no healthy instance, last known list dropped');
+    }
+    return Math.max(left, 0);
   }
 }

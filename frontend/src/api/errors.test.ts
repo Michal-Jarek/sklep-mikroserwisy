@@ -78,6 +78,32 @@ describe('error messages', () => {
     expect(errorMessage(apiError(503, 'SERVICE_UNAVAILABLE'), 'review')).toBe(UNAVAILABLE);
   });
 
+  it('order: a safe retry for no answer, 408 and 502–504; its own CONFLICT; other codes as usual', () => {
+    const retry = 'Nie udało się potwierdzić zamówienia. Możesz bezpiecznie ponowić zakup — nie powstanie drugie zamówienie.';
+    for (const [status, code] of [[0, NETWORK_ERROR], [408, 'REQUEST_TIMEOUT'], [502, 'BAD_GATEWAY'], [503, 'SERVICE_UNAVAILABLE'], [504, 'GATEWAY_TIMEOUT']] as const) {
+      expect(errorMessage(apiError(status, code), 'order')).toBe(retry);
+    }
+    expect(errorMessage(apiError(409, 'CONFLICT'), 'order')).toBe('Dane zamówienia zmieniły się od poprzedniej próby. Sprawdź je i złóż zamówienie ponownie.');
+    expect(errorMessage(apiError(409, 'INSUFFICIENT_STOCK'), 'order')).toBe('Za mało sztuk w magazynie.');
+    expect(errorMessage(apiError(400, 'VALIDATION_ERROR'), 'order')).toBe('Sprawdź wprowadzone dane.');
+  });
+
+  it('cancel: parcel already shipped (409) and Shipping unavailable (503)', () => {
+    expect(errorMessage(apiError(409, 'ORDER_NOT_CANCELLABLE'), 'cancel')).toBe('Tego zamówienia nie można już anulować. Paczka mogła zostać już nadana.');
+    expect(errorMessage(apiError(503, 'SERVICE_UNAVAILABLE'), 'cancel')).toBe(
+      'Nie udało się teraz anulować zamówienia. Zamówienie się nie zmieniło — spróbuj ponownie za chwilę.',
+    );
+    expect(errorMessage(apiError(404, 'NOT_FOUND'), 'cancel')).toBe('Nie znaleziono.');
+  });
+
+  it.each([
+    [0, NETWORK_ERROR],
+    [502, 'BAD_GATEWAY'],
+    [504, 'GATEWAY_TIMEOUT'],
+  ])('cancel: after %i %s the order may already be cancelled', (status, code) => {
+    expect(errorMessage(apiError(status, code), 'cancel')).toBe('Nie wiemy, czy zamówienie zostało anulowane — sprawdź jego status powyżej.');
+  });
+
   it('a value that is not an ApiError gets the generic message', () => {
     expect(errorMessage(new TypeError('x is undefined'))).toBe(UNEXPECTED);
   });

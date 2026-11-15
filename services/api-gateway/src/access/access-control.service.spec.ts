@@ -161,6 +161,8 @@ describe('AccessControl: K36 matrix on the KV file from the repo', () => {
     'GET /orders/purchased?userId=u&productId=p',
     'GET /orders/purchased/x',
     'GET /orders/purchased',
+    'POST /shipments/cancel',
+    'GET /shipments/cancel',
   ];
 
   let cust: string;

@@ -1,0 +1,141 @@
+# Shipping Service (owner: Piotr): shipments in shipping_db, consumer of shipping.q and outbox relay (RabbitMQ),
+# internal POST /shipments/cancel for Order (blocked in the Gateway). Variables 1:1 with deploy/compose.yaml;
+# SHIPPING_DB_PASSWORD and RABBITMQ_PASSWORD from Secret shipping-service-secret (deploy/k8s/secrets.sh). Tables are
+# created at start under an advisory lock (no migration Job). Registers in Consul with the pod IP (SERVICE_ADDRESS)
+# and the pod name (INSTANCE_ID, also the RabbitMQ connection name).
+apiVersion: v1
+kind: Service
+metadata:
+  name: shipping-service
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: shipping-service
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: service
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: shipping-service
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: service
+  ports:
+    - {name: http, port: 8089, targetPort: http}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shipping-service
+  namespace: shop
+  labels:
+    app.kubernetes.io/name: shipping-service
+    app.kubernetes.io/part-of: shop
+    app.kubernetes.io/component: service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: shipping-service
+      app.kubernetes.io/part-of: shop
+      app.kubernetes.io/component: service
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: shipping-service
+        app.kubernetes.io/part-of: shop
+        app.kubernetes.io/component: service
+    spec:
+      automountServiceAccountToken: false
+      # No <SERVICE>_PORT=tcp://... variables from the other Services of the namespace.
+      enableServiceLinks: false
+      # preStop (10 s) + deregistration from Consul and closing the server on SIGTERM.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        # USER 10001 of the image.
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      # With NetworkPolicy active a new pod cannot connect for ~1-2 s: wait until consul:8500 answers
+      # (every 0.5 s, at most 30 s, then exit 1 and the pod restarts), so KV and registration work on the first try.
+      initContainers:
+        - name: wait-for-network
+          image: shipping-service:dev
+          imagePullPolicy: Never
+          command:
+            - python
+            - -c
+            - |
+              import socket, sys, time
+              start = time.monotonic()
+              while True:
+                  try:
+                      socket.create_connection(("consul", 8500), 1).close()
+                      print(f"consul:8500 reachable after {time.monotonic() - start:.1f} s")
+                      break
+                  except OSError as exc:
+                      if time.monotonic() - start > 30:
+                          print(f"consul:8500 not reachable after 30 s: {exc}", file=sys.stderr)
+                          sys.exit(1)
+                      time.sleep(0.5)
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {cpu: 100m, memory: 64Mi}
+      containers:
+        - name: shipping-service
+          image: shipping-service:dev
+          imagePullPolicy: Never
+          ports:
+            - {name: http, containerPort: 8089}
+          env:
+            # Full instance ID in Consul and the RabbitMQ connection name: the pod name.
+            - name: INSTANCE_ID
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            # Address registered in Consul.
+            - name: SERVICE_ADDRESS
+              valueFrom: {fieldRef: {fieldPath: status.podIP}}
+            - {name: DB_HOST, value: postgres}
+            - name: SHIPPING_DB_PASSWORD
+              valueFrom: {secretKeyRef: {name: shipping-service-secret, key: SHIPPING_DB_PASSWORD}}
+            - {name: RABBITMQ_HOST, value: rabbitmq}
+            - {name: RABBITMQ_PORT, value: "5672"}
+            - {name: RABBITMQ_USER, value: shipping-service}
+            - name: RABBITMQ_PASSWORD
+              valueFrom: {secretKeyRef: {name: shipping-service-secret, key: RABBITMQ_PASSWORD}}
+            - {name: CONSUL_URL, value: "http://consul:8500"}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            # The image sets PYTHONDONTWRITEBYTECODE; uvicorn writes nothing outside /tmp.
+            readOnlyRootFilesystem: true
+          resources:
+            requests: {cpu: 25m, memory: 96Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          # The HTTP server starts after the tables are created in PostgreSQL.
+          startupProbe:
+            httpGet: {path: /health/live, port: http}
+            periodSeconds: 2
+            failureThreshold: 60
+          livenessProbe:
+            httpGet: {path: /health/live, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: {path: /health/ready, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 3
+          lifecycle:
+            # Others keep the instance list from Consul for up to 10 s: serve while they switch over.
+            preStop:
+              sleep: {seconds: 10}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 16Mi}

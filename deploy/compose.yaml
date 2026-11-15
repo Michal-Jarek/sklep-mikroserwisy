@@ -501,6 +501,70 @@ services:
       retries: 20
       start_period: 10s
 
+  # Order Service (owner: Piotr). Tables are created by the service at startup (no migration container).
+  order-service:
+    image: order-service:dev
+    build: ../services/order-service
+    profiles: [full-shop]
+    environment:
+      DB_HOST: postgres
+      ORDER_DB_PASSWORD: ${ORDER_DB_PASSWORD:?Run deploy/create-secrets.sh}
+      # Consumer of order.q and outbox relay (docs/events.md): four variables, no URL with the password.
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USER: order-service
+      RABBITMQ_PASSWORD: ${ORDER_RABBITMQ_PASSWORD:?Run deploy/create-secrets.sh}
+      CONSUL_URL: http://consul:8500
+    networks: [backend]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      consul:
+        condition: service_healthy
+      consul-kv-seed:
+        condition: service_completed_successfully
+      # Start order only (queue and account exist); the consumer and the relay reconnect on their own later.
+      rabbitmq-setup:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8086/health/ready', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  # Shipping Service (owner: Piotr). Tables are created by the service at startup (no migration container).
+  shipping-service:
+    image: shipping-service:dev
+    build: ../services/shipping-service
+    profiles: [full-shop]
+    environment:
+      DB_HOST: postgres
+      SHIPPING_DB_PASSWORD: ${SHIPPING_DB_PASSWORD:?Run deploy/create-secrets.sh}
+      # Consumer of shipping.q and outbox relay (docs/events.md): four variables, no URL with the password.
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USER: shipping-service
+      RABBITMQ_PASSWORD: ${SHIPPING_RABBITMQ_PASSWORD:?Run deploy/create-secrets.sh}
+      CONSUL_URL: http://consul:8500
+    networks: [backend]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      consul:
+        condition: service_healthy
+      consul-kv-seed:
+        condition: service_completed_successfully
+      # Start order only (queue and account exist); the consumer and the relay reconnect on their own later.
+      rabbitmq-setup:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8089/health/ready', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
   # One-off: applies the Product Service database migrations (Alembic, with the demo catalog), then exits.
   product-migrate:
     image: product-service:dev

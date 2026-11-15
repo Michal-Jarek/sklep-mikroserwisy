@@ -67,7 +67,11 @@ async def test_discovery_registration_cache_round_robin_and_deregister():
         discovery.cache["product-service"].expires_at = 0
         assert await discovery.resolve("product-service") == "http://node-a:8083"
         await discovery.deregister()
-    assert requests[0].method == "PUT"
-    assert b'/health/ready' in requests[0].content
-    assert len([r for r in requests if "/health/service/" in r.url.path]) == 2
+    paths = [r.url.path for r in requests]
+    register = next(r for r in requests if r.url.path.endswith("/service/register"))
+    # before registration: stale entries (Z7), own entry of a previous process (Z5), own readiness (Status)
+    assert paths.index("/v1/health/service/cart-service") < paths.index("/v1/agent/service/instance") \
+        < paths.index("/health/ready") < paths.index("/v1/agent/service/register")
+    assert b'/health/ready' in register.content
+    assert len([r for r in requests if "/health/service/product-service" in r.url.path]) == 2
     assert requests[-1].url.path.endswith("deregister/instance")

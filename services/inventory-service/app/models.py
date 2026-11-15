@@ -19,7 +19,9 @@ class Base(DeclarativeBase):
 class InventoryItem(Base):
     """Stan magazynowy produktu. Dostępne = quantity - reserved."""
 
-    __tablename__ = "inventory_items"
+    # nowa nazwa tabeli: stara "inventory_items" miała product_id BIGINT, a create_all nie zmienia istniejących
+    # tabel, więc każda baza ze starą wersją naprawia się sama przy starcie (stara tabela zostaje nieużywana)
+    __tablename__ = "stock_items"
     __table_args__ = (
         CheckConstraint("quantity >= 0", name="ck_inventory_quantity_nonneg"),
         CheckConstraint("reserved >= 0", name="ck_inventory_reserved_nonneg"),
@@ -39,11 +41,12 @@ class InventoryItem(Base):
 class Reservation(Base):
     """Rezerwacja towaru dla jednego zamówienia (jeden wiersz na produkt)."""
 
-    __tablename__ = "reservations"
-    __table_args__ = (UniqueConstraint("order_id", "product_id", name="uq_reservation_order_product"),)
+    __tablename__ = "stock_reservations"  # dawniej "reservations" (powód jak przy stock_items)
+    # nazwa ograniczenia jest w PostgreSQL nazwą indeksu (wspólna dla schematu), więc inna niż w starej tabeli
+    __table_args__ = (UniqueConstraint("order_id", "product_id", name="uq_stock_reservation_order_product"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    order_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    order_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)  # UUID zamówienia małymi literami
     product_id: Mapped[str] = mapped_column(String(36), nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default=ACTIVE)

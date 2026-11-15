@@ -1,9 +1,9 @@
-# Inventory Service (owner: Aleksandra): stock and reservations in inventory_db. Variables 1:1 with
-# deploy/compose.yaml; DATABASE_URL (contains the password) and RABBITMQ_PASSWORD from Secret
-# inventory-service-secret (deploy/k8s/secrets.sh). The code reads only RABBITMQ_URL, which is not set (as in
-# compose): the event consumer stays off (decision 17); RABBITMQ_HOST/PORT/USER/PASSWORD are kept 1:1 (Z4).
-# The service creates its schema at start and waits for PostgreSQL without a time limit, hence the 120 s
-# startupProbe. It registers in Consul once at start with the pod IP (SERVICE_ADDRESS).
+# Inventory Service (owner: Aleksandra): stock and reservations in inventory_db, consumer of inventory.q (RabbitMQ).
+# Variables 1:1 with deploy/compose.yaml; DATABASE_URL (contains the password) and RABBITMQ_PASSWORD from Secret
+# inventory-service-secret (deploy/k8s/secrets.sh). The service creates its tables at start (stock_items,
+# stock_reservations, processed_events; old tables are not read), hence the 120 s startupProbe. It registers in
+# Consul with the pod IP (SERVICE_ADDRESS) and the pod name (INSTANCE_ID, also the RabbitMQ connection name) and
+# registers again when the entry disappears.
 apiVersion: v1
 kind: Service
 metadata:
@@ -97,9 +97,9 @@ spec:
             - {name: SERVICE_PORT, value: "8084"}
             - {name: CONSUL_HOST, value: consul}
             - {name: CONSUL_PORT, value: "8500"}
-            # Address registered in Consul (decision 5). No INSTANCE_ID: the code builds the ID as
-            # "inventory-service-" + instance id, so the pod name would give a doubled prefix; the hostname
-            # (= pod name) it uses by default is already unique.
+            # Full instance ID = pod name (decision 9); address registered in Consul = pod IP.
+            - name: INSTANCE_ID
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
             - name: SERVICE_ADDRESS
               valueFrom: {fieldRef: {fieldPath: status.podIP}}
             - name: DATABASE_URL
@@ -128,7 +128,7 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 2
             failureThreshold: 3
-          # Database ping (the driver has no connect timeout set; 3 s as for every service).
+          # Database ping with a 2 s limit inside the service; the broker does not affect readiness.
           readinessProbe:
             httpGet: {path: /health/ready, port: http}
             periodSeconds: 5

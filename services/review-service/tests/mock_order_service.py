@@ -3,11 +3,14 @@
     python tests/mock_order_service.py          # nasłuchuje na :8086
     export ORDER_SERVICE_URL=http://localhost:8086 CONSUL_ENABLED=false
 
-GET /orders/purchased?userId=&productId=  ->  {"purchased": true}, a dla productId=999 {"purchased": false}
+GET /orders/purchased?userId=&productId=  ->  {"purchased": true},
+a dla productId=99999999-9999-4999-8999-999999999999 {"purchased": false}
 """
 import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
+
+NOT_BOUGHT = "99999999-9999-4999-8999-999999999999"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -15,7 +18,7 @@ class Handler(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         if url.path == "/orders/purchased":
             product = parse_qs(url.query).get("productId", [""])[0]
-            body = {"purchased": product != "999"}
+            body = {"purchased": product != NOT_BOUGHT}
         elif url.path.startswith("/health"):
             body = {"status": "UP"}
         else:

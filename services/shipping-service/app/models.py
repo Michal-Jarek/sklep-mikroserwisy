@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import JSON, Column, Integer, String
+from sqlalchemy import JSON, Column, DateTime, Integer, String
 from sqlalchemy.orm import DeclarativeBase
 
 
@@ -12,7 +12,8 @@ class Base(DeclarativeBase):
 class Shipment(Base):
     __tablename__ = "shipments"
     order_id = Column(String(36), primary_key=True)
-    user_id = Column(String(36), nullable=False, index=True)
+    # Empty only in a placeholder from POST /shipments/cancel: the caller's X-User-Id may be an admin.
+    user_id = Column(String(36), index=True)
     # An early cancellation needs only an order reference, never a shipping label.
     id = Column(String(36), unique=True)
     tracking = Column(String(34), unique=True)
@@ -40,6 +41,8 @@ class Outbox(Base):
     __tablename__ = "shipping_outbox"
     seq = Column(Integer, primary_key=True)
     envelope = Column(JSON, nullable=False)
+    # Lease of the relay (naive UTC): the row is skipped by other relays until this time.
+    locked_until = Column(DateTime)
 
 
 def change_status(db, shipment, target, request_id):

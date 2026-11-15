@@ -1,28 +1,26 @@
+import asyncio
 import logging
+import uuid
 from datetime import datetime, timezone
 
-from bson import ObjectId
-from fastapi import APIRouter, Depends, Path, Query, Request, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 from pymongo.collection import Collection
 from pymongo.errors import DuplicateKeyError
 
 from app import db as database
 from app.db import get_reviews
 from app.errors import ApiError
+from app.ids import uuid_or_400
 from app.order_client import OrderClient, OrderServiceUnavailable, get_order_client
 from app.schemas import ReviewCreate, ReviewOut, ReviewPage, ReviewSummary
-from app.security import Principal, get_principal
+from app.security import Principal, logged_in
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 health = APIRouter(tags=["health"])
 
-
-def require_user(principal: Principal | None = Depends(get_principal)) -> Principal:
-    if principal is None or not principal.user_id:
-        raise ApiError(401, "UNAUTHORIZED", "Wymagane uwierzytelnienie")
-    return principal
+READY_DB_TIMEOUT = 1.5  # krócej niż timeout sprawdzenia w Consulu (2 s) i w Kubernetesie
 
 
 def _to_out(doc: dict) -> ReviewOut:
@@ -30,7 +28,7 @@ def _to_out(doc: dict) -> ReviewOut:
     if created.tzinfo is None:  # Mongo zwraca daty w UTC bez strefy
         created = created.replace(tzinfo=timezone.utc)
     return ReviewOut(
-        id=str(doc["_id"]),
+        id=doc["_id"],
         product_id=doc["productId"],
         user_id=doc["userId"],
         rating=doc["rating"],
@@ -40,29 +38,30 @@ def _to_out(doc: dict) -> ReviewOut:
 
 
 @health.get("/health/live")
-def live():
+async def live():
+    """Proces żyje: bez bazy i bez wątków, więc odpowiada także przy niedostępnej bazie."""
     return {"status": "UP"}
 
 
 @health.get("/health/ready")
-def ready():
+async def ready():
     try:
-        database.ping()
-    except Exception:
-        logger.warning("MongoDB niedostępny", exc_info=True)
+        await asyncio.wait_for(asyncio.to_thread(database.ping), READY_DB_TIMEOUT)
+    except Exception as exc:  # także TimeoutError: baza nie odpowiada
+        logger.warning("MongoDB niedostępny", extra={"fields": {"reason": type(exc).__name__}})
         raise ApiError(503, "SERVICE_UNAVAILABLE", "Baza danych niedostępna")
     return {"status": "UP"}
 
 
 @router.get("/reviews", response_model=ReviewPage, tags=["reviews"])
 def list_reviews(
-    product_id: int = Query(alias="productId", gt=0),
-    page: int = Query(1, ge=1),
+    product_id: str = Query(alias="productId"),
+    page: int = Query(1, ge=1, le=1_000_000),  # wyżej (page - 1) * size przekracza liczbę BSON → 500 (CR-15)
     size: int = Query(20, ge=1, le=100),
     reviews: Collection = Depends(get_reviews),
 ):
     """Opinie o produkcie, od najnowszych."""
-    query = {"productId": product_id}
+    query = {"productId": uuid_or_400(product_id, "productId")}
     cursor = reviews.find(query).sort([("createdAt", -1), ("_id", -1)]).skip((page - 1) * size).limit(size)
     return ReviewPage(
         items=[_to_out(d) for d in cursor],
@@ -73,8 +72,9 @@ def list_reviews(
 
 
 @router.get("/reviews/summary/{product_id}", response_model=ReviewSummary, tags=["reviews"])
-def summary(product_id: int = Path(gt=0), reviews: Collection = Depends(get_reviews)):
+def summary(product_id: str, reviews: Collection = Depends(get_reviews)):
     """Średnia ocena i liczba opinii (wołane przez Product Service). Brak opinii: averageRating = null."""
+    product_id = uuid_or_400(product_id, "productId")
     pipeline = [
         {"$match": {"productId": product_id}},
         {"$group": {"_id": "$productId", "avg": {"$avg": "$rating"}, "count": {"$sum": 1}}},
@@ -89,7 +89,7 @@ def summary(product_id: int = Path(gt=0), reviews: Collection = Depends(get_revi
 def create_review(
     body: ReviewCreate,
     request: Request,
-    principal: Principal = Depends(require_user),
+    principal: Principal = Depends(logged_in),
     reviews: Collection = Depends(get_reviews),
     orders: OrderClient = Depends(get_order_client),
 ):
@@ -97,18 +97,21 @@ def create_review(
     if reviews.find_one({"productId": body.product_id, "userId": principal.user_id}, {"_id": 1}):
         raise ApiError(409, "CONFLICT", "Opinia o tym produkcie została już dodana")
 
-    forward = {"X-Request-Id": request.state.request_id}
-    if request.headers.get("authorization"):
-        forward["Authorization"] = request.headers["authorization"]
+    # wywołanie w imieniu klienta (D11): jego X-User-Id, jego role + SERVICE, bieżący X-Request-Id
+    forward = {
+        "X-Request-Id": request.state.request_id,
+        "X-User-Id": principal.user_id,
+        "X-User-Roles": ",".join(sorted(principal.roles | {"SERVICE"})),
+    }
     try:
         purchased = orders.has_purchased(principal.user_id, body.product_id, forward)
-    except OrderServiceUnavailable as exc:
-        logger.warning("Nie można zweryfikować zakupu: %s", exc)
+    except OrderServiceUnavailable:
         raise ApiError(503, "SERVICE_UNAVAILABLE", "Nie można zweryfikować zakupu, spróbuj ponownie później")
     if not purchased:
         raise ApiError(403, "FORBIDDEN", "Opinię może dodać tylko osoba, która kupiła ten produkt")
 
     doc = {
+        "_id": str(uuid.uuid4()),
         "productId": body.product_id,
         "userId": principal.user_id,
         "rating": body.rating,
@@ -124,12 +127,12 @@ def create_review(
 
 @router.delete("/reviews/{review_id}", status_code=204, tags=["reviews"])
 def delete_review(
-    review_id: str = Path(min_length=1, max_length=64),
-    principal: Principal = Depends(require_user),
+    review_id: str,
+    principal: Principal = Depends(logged_in),
     reviews: Collection = Depends(get_reviews),
 ):
     """Usuwa opinię. Może to zrobić jej autor albo ADMIN."""
-    doc = reviews.find_one({"_id": ObjectId(review_id)}) if ObjectId.is_valid(review_id) else None
+    doc = reviews.find_one({"_id": uuid_or_400(review_id, "reviewId")})
     if doc is None:
         raise ApiError(404, "NOT_FOUND", "Opinia nie istnieje")
     if doc["userId"] != principal.user_id and "ADMIN" not in principal.roles:

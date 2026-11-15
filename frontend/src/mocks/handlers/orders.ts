@@ -2,14 +2,18 @@
 // Inventory, Shipping and the events do together: reserve stock, pay (card ending with 0 fails), clear the cart,
 // create the shipment PREPARING (hidden for mockConfig.shipmentDelayMs, like after the order.created event).
 // Cancelling changes the shipment to CANCELLED after the same delay (like after the order.cancelled event).
+// Idempotency-Key (wytyczne 3.1, 3.8): the same key and data give the same order, other data 409 CONFLICT,
+// a key that is not a UUID 400. A card ending with 503 (and a key) creates the order but answers 503, like Order
+// after a lost answer ("ponów z tym samym kluczem"): the retry with the same key gets the same order.
 import type { OrderDetail, OrderSummary, ShippingMethodCode } from '../../api/types';
 import { mockConfig, type MockState } from '../db';
-import { isAdmin, json, MockApiError, notFound, now, requireIdentity, route, type Identity } from '../http';
+import { errorResponse, isAdmin, json, MockApiError, notFound, now, requireIdentity, route, type Identity } from '../http';
 import { MONEY_PATTERN, parseMoney, toMoney } from '../money';
 import { newestFirst, objectWith, oneOf, pageOf, pageRequest, pathUuid, readBody, text } from '../validation';
 import { applyPlannedCancel } from './shipping';
 
 const ADDRESS_FIELDS = ['firstName', 'lastName', 'street', 'postalCode', 'city', 'countryCode'];
+const KEY_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function ownOrder(state: MockState, identity: Identity, orderId: string): OrderDetail {
   const order = state.orders.find((o) => o.id === orderId);
@@ -31,6 +35,10 @@ const summary = (o: OrderDetail): OrderSummary => ({
 export const orderHandlers = [
   route('POST', '/orders', (ctx) => {
     const body = readBody(ctx.body, ['shippingMethod', 'shippingAddress', 'payment']);
+    const key = ctx.request.headers.get('Idempotency-Key');
+    if (key !== null && !KEY_PATTERN.test(key)) {
+      throw new MockApiError(400, 'VALIDATION_ERROR', 'Idempotency-Key must be a UUID');
+    }
     const { state } = ctx;
     const shippingMethod = oneOf(body.shippingMethod, 'shippingMethod', state.shippingMethods.map((m) => m.code)) as ShippingMethodCode;
     const address = objectWith(body.shippingAddress, ADDRESS_FIELDS, 'shippingAddress');
@@ -51,7 +59,17 @@ export const orderHandlers = [
     }
     const paymentAccepted = !payment.cardNumber.endsWith('0');
 
-    const { userId } = requireIdentity(ctx);
+    const identity = requireIdentity(ctx);
+    const { userId } = identity;
+    const keyId = key === null ? null : `${userId}:${key.toLowerCase()}`;
+    const keyData = JSON.stringify({ shippingMethod, shippingAddress });
+    const used = keyId === null ? undefined : state.orderKeys?.[keyId];
+    if (used) {
+      if (used.data !== keyData) {
+        throw new MockApiError(409, 'CONFLICT', 'Idempotency-Key was used with different data');
+      }
+      return json(ownOrder(state, identity, used.orderId), 201);
+    }
     const cart = state.carts[userId] ?? [];
     if (cart.length === 0) {
       throw new MockApiError(409, 'CART_EMPTY', 'Cart is empty');
@@ -112,6 +130,13 @@ export const orderHandlers = [
         updatedAt: timestamp,
         visibleAt: new Date(Date.now() + mockConfig.shipmentDelayMs).toISOString(),
       });
+    }
+    if (keyId !== null) {
+      state.orderKeys = { ...state.orderKeys, [keyId]: { orderId: order.id, data: keyData } };
+      if (payment.cardNumber.endsWith('503')) {
+        // Returned, not thrown: the route wrapper saves the state only for a returned response.
+        return errorResponse(ctx.requestId, 503, 'SERVICE_UNAVAILABLE', 'Purchase not finished; retry with the same key');
+      }
     }
     return json(order, 201);
   }),

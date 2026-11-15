@@ -123,7 +123,36 @@ apply_configmap() {
   shift
   k create configmap "$name" "$@" --dry-run=client -o yaml | k apply -f -
 }
-apply_configmap consul-kv --from-file="$repo/deploy/consul/config" --from-file="$repo/deploy/consul/seed-kv.sh"
+# The Gateway reads its KV document (access rules, routes, limits) only at start. Its pod template carries the hash of
+# the ConfigMap consul-kv it was last started with (annotation shop-consul-kv-hash). After the Job consul-kv-seed has
+# written the KV (layer infra, see start_layer), a different hash is patched into the annotation, which is a rolling
+# restart like rollout restart. The state is kept in the cluster, so a run that stopped before consul-kv-seed (error,
+# timeout, Ctrl+C) is caught up by the next one (CR-17).
+kv_yaml=$(k create configmap consul-kv --from-file="$repo/deploy/consul/config" \
+  --from-file="$repo/deploy/consul/seed-kv.sh" --dry-run=client -o yaml)
+printf '%s\n' "$kv_yaml" | k apply -f -
+if command -v sha256sum >/dev/null 2>&1; then
+  kv_hash=$(printf '%s\n' "$kv_yaml" | sha256sum | cut -c1-16)
+else
+  kv_hash=$(printf '%s\n' "$kv_yaml" | shasum -a 256 | cut -c1-16)
+fi
+# 1 after consul-kv-seed of this run: Consul has the KV of the current files.
+kv_seeded=0
+# Exit 0 when the Gateway exists and its pod template has no hash or another one than the current KV files.
+gateway_kv_stale() {
+  local started
+  started=$(k get deployment api-gateway -o jsonpath='{.spec.template.metadata.annotations.shop-consul-kv-hash}' \
+    2>/dev/null) || return 1
+  [ "$started" != "$kv_hash" ]
+}
+# Only after consul-kv-seed: records the current hash in a stale Gateway, which restarts it with the new KV.
+restart_stale_gateway() {
+  if gateway_kv_stale; then
+    k patch deployment api-gateway --type merge \
+      -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"shop-consul-kv-hash\":\"$kv_hash\"}}}}}"
+    echo "api-gateway restarted: KV hash $kv_hash"
+  fi
+}
 apply_configmap consul-acl-setup --from-file="$dir/infra/consul-acl-setup.sh"
 # Read by consul-0 at start: a change applies after kubectl rollout restart statefulset/consul (README).
 apply_configmap consul-server-config --from-file="$dir/infra/consul-server.hcl"
@@ -285,6 +314,9 @@ start_layer() {
     for f in "${jobs[@]}"; do
       run_job "$layer" "$f"
     done
+    # After consul-kv-seed (above): the new KV is in Consul, so a restarted Gateway reads it.
+    kv_seeded=1
+    restart_stale_gateway
   fi
 }
 
@@ -301,4 +333,11 @@ for layer in $layers; do
   fi
   start_layer "$layer"
 done
+if [ "$kv_seeded" -eq 1 ]; then
+  # A Gateway created by this run after consul-kv-seed (layer platform) has no hash yet: it is recorded (one restart).
+  restart_stale_gateway
+elif gateway_kv_stale; then
+  echo "warning: the Gateway may run with other KV files than the repo; consul-kv-seed runs only in layer infra:" \
+    "run bash deploy/k8s/up.sh infra (it restarts the Gateway after the seed)" >&2
+fi
 echo "done: $target"

@@ -1,101 +1,102 @@
-import asyncio
+"""Incoming events (docs/events.md): envelope check and the effect of shipment.status_changed on the order.
+
+parse_envelope() raises InvalidEvent for anything a retry cannot fix (the consumer rejects it to order.dlq at once).
+handle() only works with the database; every exception there is temporary and is retried by the consumer.
+"""
 import json
 import logging
-from datetime import datetime
+from dataclasses import dataclass
 from uuid import UUID
 
-import aio_pika
-from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.orm import Session, sessionmaker
 
-from .models import Order, Outbox, Processed
-from .orders import PAID_STATES, update_status
+from . import store
+from .http_support import valid_request_id
+from .models import Order
 
-log = logging.getLogger("order.events")
+log = logging.getLogger("app.events")
+
+SHIPMENT_STATUSES = ("PREPARING", "SHIPPED", "IN_TRANSIT", "DELIVERED", "CANCELLED")
+# Order status after a shipment status, and the order statuses it may follow (statuses never go back).
+ORDER_STATUS_AFTER = {"SHIPPED": ("SHIPPED", ("PAID",)), "DELIVERED": ("DELIVERED", ("PAID", "SHIPPED"))}
 
 
-def handle(factory, body, key):
-    event = json.loads(body)
+class InvalidEvent(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class Event:
+    event_id: str
+    type: str
+    request_id: str
+    order_id: str | None = None
+    user_id: str | None = None
+    new_status: str | None = None
+
+
+def parse_envelope(body: bytes, routing_key: str | None) -> Event:
+    try:
+        event = json.loads(body)
+    except ValueError:
+        raise InvalidEvent("invalid JSON") from None
     if not isinstance(event, dict) or any(not isinstance(event.get(k), str)
-            for k in ("type", "eventId", "requestId", "occurredAt")):
-        raise ValueError("invalid envelope")
-    event_id = str(UUID(event["eventId"]))
-    if (type(event.get("version")) is not int or event["version"] != 1
-            or key != event["type"] or not isinstance(event.get("payload"), dict)):
-        raise ValueError("invalid envelope")
-    if key != "shipment.status_changed":
-        return
-    data = event["payload"]
-    status = data["newStatus"]
-    if status not in ("PREPARING", "IN_TRANSIT", "SHIPPED", "DELIVERED", "CANCELLED"):
-        raise ValueError("invalid shipment status")
-    order_id = str(UUID(data["orderId"]))
-    user_id = str(UUID(data["userId"]))
+                                          for k in ("type", "eventId", "requestId", "occurredAt")):
+        raise InvalidEvent("envelope fields")
+    try:
+        event_id = str(UUID(event["eventId"]))
+    except ValueError:
+        raise InvalidEvent("eventId is not a UUID") from None
+    if type(event.get("version")) is not int or event["version"] != 1 or not isinstance(event.get("payload"), dict):
+        raise InvalidEvent("version or payload")
+    # Broker permissions apply to the routing key, not to the body: only the key tells who could send the event.
+    if routing_key != event["type"]:
+        raise InvalidEvent("type differs from the routing key")
+    request_id = valid_request_id(event["requestId"])
+    if event["type"] != "shipment.status_changed":
+        return Event(event_id, event["type"], request_id)
+    payload = event["payload"]
+    if payload.get("newStatus") not in SHIPMENT_STATUSES:
+        raise InvalidEvent("newStatus")
+    try:
+        order_id, user_id = str(UUID(payload["orderId"])), str(UUID(payload["userId"]))
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise InvalidEvent("orderId or userId") from None
+    return Event(event_id, event["type"], request_id, order_id, user_id, payload["newStatus"])
+
+
+def handle(factory: sessionmaker, event: Event) -> str:
+    """Applies the event and stores its eventId in one transaction.
+
+    Returns "processed", "duplicate" (eventId seen before, no effect) or "ignored" (type not handled by Order).
+    """
+    if event.type != "shipment.status_changed":
+        return "ignored"
     with factory.begin() as db:
-        insert = sqlite_insert if db.get_bind().dialect.name == "sqlite" else pg_insert
-        result = db.execute(insert(Processed).values(id=event_id).on_conflict_do_nothing(index_elements=["id"]))
-        if not result.rowcount:
-            return
-        order = db.scalar(select(Order).where(Order.id == order_id).with_for_update())
-        if not order or order.user_id != user_id or order.status not in PAID_STATES:
-            return
-        if status == "PREPARING":
-            return
-        if status == "IN_TRANSIT":
-            return
-        if status == "CANCELLED":
-            # Order owns cancellation; a shipment can only be cancelled before dispatch.
-            if order.status in ("PAID", "PREPARING"):
-                from .orders import enqueue
-                from .security import Caller
-                update_status(order, status)
-                enqueue(db, "order.cancelled", order, Caller(UUID(user_id), frozenset(), event["requestId"]))
-        elif PAID_STATES.index(status) > PAID_STATES.index(order.status):
-            update_status(order, status)
+        if not store.mark_processed(db, event.event_id):
+            return "duplicate"
+        apply_shipment_status(db, event)
+    return "processed"
 
 
-async def receive(message, factory):
-    for delay in (0, 5, 30):
-        await asyncio.sleep(delay)
-        try:
-            await asyncio.to_thread(handle, factory, message.body, message.routing_key)
-        except (ValueError, KeyError, TypeError, AttributeError):
-            break
-        except Exception:
-            log.warning("Błąd zapisu zdarzenia")
-            continue
-        await message.ack()
+def apply_shipment_status(db: Session, event: Event) -> None:
+    order = db.get(Order, event.order_id)
+    if order is None or order.user_id != event.user_id:
+        log.warning("Shipment status for an unknown order", extra={"fields": {
+            "eventId": event.event_id, "type": event.type, "orderId": event.order_id}})
         return
-    await message.nack(requeue=False)
-
-
-async def broker(settings, factory):
-    while True:
-        try:
-            async with await aio_pika.connect(host=settings.rabbitmq_host, login="order-service",
-                    password=settings.order_rabbitmq_password, timeout=2) as connection:
-                channel = await connection.channel(publisher_confirms=True, on_return_raises=True)
-                await channel.set_qos(prefetch_count=10)
-                queue = await channel.get_queue("order.q", ensure=True)
-                exchange = await channel.get_exchange("shop.events", ensure=False)
-                async def consume(message):
-                    await receive(message, factory)
-                await queue.consume(consume)
-                while not connection.is_closed:
-                    with factory.begin() as db:
-                        row = db.scalar(select(Outbox).order_by(Outbox.seq).limit(1)
-                                        .with_for_update(skip_locked=True))
-                        if row:
-                            event = row.envelope
-                            await exchange.publish(aio_pika.Message(json.dumps(event).encode(),
-                                content_type="application/json", message_id=event["eventId"],
-                                timestamp=datetime.fromisoformat(event["occurredAt"]), type=event["type"], app_id="order-service",
-                                correlation_id=event["requestId"], delivery_mode=aio_pika.DeliveryMode.PERSISTENT),
-                                routing_key=event["type"], mandatory=True, timeout=2)
-                            db.delete(row)
-                    await asyncio.sleep(0 if row else 0.5)
-        except Exception:
-            log.warning("RabbitMQ lub outbox niedostępny; ponowienie za 2 s")
-            await asyncio.sleep(2)
-
+    if event.new_status == "CANCELLED":
+        # Self-repair: Shipping cancelled the shipment (POST /shipments/cancel), but the cancellation in Order
+        # did not get saved. The conditional change keeps exactly one order.cancelled per order.
+        if order.status in store.OPEN_STATES:
+            store.transition(db, order, store.OPEN_STATES, "CANCELLED", "order.cancelled", event.request_id)
+        return
+    if order.status == "CANCELLED" and event.new_status in ("SHIPPED", "IN_TRANSIT", "DELIVERED"):
+        log.error("Cancellation inconsistency: shipment dispatched for a cancelled order", extra={"fields": {
+            "eventId": event.event_id, "type": event.type, "orderId": order.id, "newStatus": event.new_status}})
+        return
+    if event.new_status in ORDER_STATUS_AFTER:
+        status, allowed = ORDER_STATUS_AFTER[event.new_status]
+        if order.status in allowed:
+            store.transition(db, order, allowed, status)
+    # PREPARING and IN_TRANSIT do not change the order status.

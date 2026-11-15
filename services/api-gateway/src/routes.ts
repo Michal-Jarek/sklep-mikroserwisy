@@ -40,6 +40,11 @@ export function consulDeregisterPath(serviceId: string): string {
   return `/v1/agent/service/deregister/${encodeURIComponent(serviceId)}`;
 }
 
+/** All instances of a service with their checks, no filter (cleanup of orphaned entries at startup, Z7). */
+export function consulServiceInstancesPath(serviceName: string): string {
+  return `/v1/health/service/${encodeURIComponent(serviceName)}`;
+}
+
 /** Healthy instances of a service (checks passing). */
 export function consulHealthyInstancesPath(serviceName: string): string {
   return `/v1/health/service/${encodeURIComponent(serviceName)}?passing`;

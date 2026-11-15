@@ -3,7 +3,10 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pymongo.errors import ConnectionFailure, ExecutionTimeout
 from starlette.exceptions import HTTPException as StarletteHTTPException
+
+from app.logging_config import request_id_var
 
 logger = logging.getLogger(__name__)
 
@@ -29,14 +32,11 @@ class ApiError(Exception):
 
 
 def _response(request: Request, status: int, error: str, message: str) -> JSONResponse:
+    request_id = getattr(request.state, "request_id", None)
     return JSONResponse(
         status_code=status,
-        content={
-            "status": status,
-            "error": error,
-            "message": message,
-            "requestId": getattr(request.state, "request_id", None),
-        },
+        content={"status": status, "error": error, "message": message, "requestId": request_id},
+        headers={"X-Request-Id": request_id} if request_id else None,  # także dla błędów 500 spoza middleware
     )
 
 
@@ -58,7 +58,20 @@ def register_error_handlers(app: FastAPI) -> None:
             parts.append(f"{loc}: {err['msg']}" if loc else err["msg"])
         return _response(request, 400, "VALIDATION_ERROR", "; ".join(parts) or "Niepoprawne dane wejściowe")
 
+    async def database_unavailable_handler(request: Request, exc: Exception):
+        logger.warning("Baza danych niedostępna", extra={"fields": {"reason": type(exc).__name__}})
+        return _response(request, 503, "SERVICE_UNAVAILABLE", "Baza danych niedostępna")
+
+    # ConnectionFailure obejmuje ServerSelectionTimeoutError, AutoReconnect i NetworkTimeout (baza nie odpowiada)
+    app.add_exception_handler(ConnectionFailure, database_unavailable_handler)
+    app.add_exception_handler(ExecutionTimeout, database_unavailable_handler)
+
     @app.exception_handler(Exception)
     async def unhandled_error_handler(request: Request, exc: Exception):
-        logger.exception("Nieobsłużony błąd")
+        # ten handler działa poza middleware, które ustawia requestId w logach, więc ustawiamy go jeszcze raz
+        token = request_id_var.set(getattr(request.state, "request_id", None))
+        try:
+            logger.exception("Nieobsłużony błąd")
+        finally:
+            request_id_var.reset(token)
         return _response(request, 500, "INTERNAL_ERROR", "Wystąpił błąd wewnętrzny")

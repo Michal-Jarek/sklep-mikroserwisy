@@ -55,7 +55,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// customerEmail comes from run.mjs; in the Postman app a unique address is generated here.",
+                  "// customerEmail comes from run.ts; in the Postman app a unique address is generated here.",
                   "// Collection variable only: in the Postman app an environment value would stay and be reused by shop-purchase.",
                   "if (!pm.variables.get('customerEmail')) {",
                   "    pm.collectionVariables.set('customerEmail', 'resilience-' + Date.now() + '@sklep.local');",

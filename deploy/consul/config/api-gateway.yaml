@@ -30,6 +30,7 @@ access:
   - { methods: [DELETE], path: /cart/*, access: blocked }
   - { methods: [ANY], path: /inventory/reservations/**, access: blocked }
   - { methods: [ANY], path: /orders/purchased/**, access: blocked }
+  - { methods: [ANY], path: /shipments/cancel, access: blocked }
   - { methods: [GET, HEAD], path: /users/me/**, access: authenticated }
   - { methods: [GET, HEAD], path: /users/*, access: ADMIN }
   - { methods: [GET, HEAD], path: /products/**, access: public }

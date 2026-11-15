@@ -4,7 +4,11 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import InterfaceError, OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 from starlette.exceptions import HTTPException as StarletteHTTPException
+
+from app.db import DatabaseTimeout
+from app.logging_config import request_id_var
 
 logger = logging.getLogger(__name__)
 
@@ -62,8 +66,15 @@ def register_error_handlers(app: FastAPI) -> None:
 
     app.add_exception_handler(OperationalError, database_unavailable_handler)
     app.add_exception_handler(InterfaceError, database_unavailable_handler)
+    app.add_exception_handler(PoolTimeout, database_unavailable_handler)  # wszystkie połączenia z puli zajęte
+    app.add_exception_handler(DatabaseTimeout, database_unavailable_handler)  # baza nie odpowiada
 
     @app.exception_handler(Exception)
     async def unhandled_error_handler(request: Request, exc: Exception):
-        logger.exception("Nieobsłużony błąd")
+        # ten handler działa poza middleware, które ustawia requestId w logach, więc ustawiamy go jeszcze raz
+        token = request_id_var.set(getattr(request.state, "request_id", None))
+        try:
+            logger.exception("Nieobsłużony błąd")
+        finally:
+            request_id_var.reset(token)
         return _response(request, 500, "INTERNAL_ERROR", "Wystąpił błąd wewnętrzny")

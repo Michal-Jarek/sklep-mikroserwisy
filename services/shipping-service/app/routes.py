@@ -1,18 +1,23 @@
+import logging
 from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from .database import session_dependency
 from .models import History, Shipment, change_status
-from .security import Caller, current_user
+from .security import Caller, current_user, service_caller
 
+log = logging.getLogger("shipping.routes")
 router = APIRouter()
 DB = Annotated[Session, Depends(session_dependency)]
 User = Annotated[Caller, Depends(current_user)]
+Service = Annotated[Caller, Depends(service_caller)]
 NEXT = {"PREPARING": "SHIPPED", "SHIPPED": "IN_TRANSIT", "IN_TRANSIT": "DELIVERED"}
 
 
@@ -22,6 +27,11 @@ Status = Literal["PREPARING", "SHIPPED", "IN_TRANSIT", "DELIVERED", "CANCELLED"]
 class Update(BaseModel):
     model_config = ConfigDict(extra="forbid")
     status: Status
+
+
+class Cancellation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    orderId: UUID
 
 
 def view(db, row):
@@ -40,6 +50,7 @@ def visible(user):
     return statement
 
 
+@router.head("/shipping/methods", include_in_schema=False)
 @router.get("/shipping/methods")
 def methods(request: Request):
     return [dict(code=code, name=name, price=price, currency="PLN", estimatedDays=days)
@@ -49,6 +60,7 @@ def methods(request: Request):
                 ("PICKUP", "Odbiór osobisty", "0.00", 1))]
 
 
+@router.head("/shipping/methods/{code}", include_in_schema=False)
 @router.get("/shipping/methods/{code}")
 def method(code: str, request: Request):
     for item in methods(request):
@@ -93,3 +105,24 @@ def update(shipment_id: UUID, data: Update, db: DB, user: User):
     change_status(db, shipment, data.status, user.request_id)
     db.commit()
     return view(db, shipment)
+
+
+@router.post("/shipments/cancel")
+def cancel(data: Cancellation, db: DB, caller: Service):
+    """Internal (SERVICE only): Order asks before cancelling an order. The row lock serializes this with
+    PATCH .../status and with order.created, so a shipment is never both cancelled and dispatched."""
+    order_id = str(data.orderId)
+    insert = sqlite_insert if db.get_bind().dialect.name == "sqlite" else pg_insert
+    # Placeholder without a user: X-User-Id of the caller may belong to an admin, order.created fills it in.
+    db.execute(insert(Shipment).values(order_id=order_id, status="NEW").on_conflict_do_nothing(index_elements=["order_id"]))
+    shipment = db.scalar(select(Shipment).where(Shipment.order_id == order_id).with_for_update())
+    if shipment.status in ("SHIPPED", "IN_TRANSIT", "DELIVERED"):
+        db.rollback()
+        raise HTTPException(409, {"error": "INVALID_STATUS_TRANSITION", "message": "Przesyłka została już nadana"})
+    if shipment.status == "NEW":
+        shipment.status = "CANCELLED"  # a late order.created creates the shipment as CANCELLED, one event (Z10)
+    elif shipment.status == "PREPARING":
+        change_status(db, shipment, "CANCELLED", caller.request_id)
+    db.commit()
+    log.info("Shipment cancelled", extra={"fields": {"orderId": order_id, "shipmentId": shipment.id}})
+    return dict(orderId=order_id, shipmentId=shipment.id, status="CANCELLED")

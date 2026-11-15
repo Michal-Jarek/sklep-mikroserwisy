@@ -3,14 +3,18 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic.alias_generators import to_camel
 
+from app.ids import UuidText
+
 
 class CamelModel(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
 
 class ReviewCreate(CamelModel):
-    product_id: int = Field(gt=0)
-    rating: int = Field(ge=1, le=5)
+    model_config = ConfigDict(extra="forbid")  # nieznane pola w treści to 400
+
+    product_id: UuidText  # zapisywany małymi literami
+    rating: int = Field(ge=1, le=5, strict=True)  # strict: 4.0, "4" i true to 400
     comment: str | None = Field(default=None, max_length=2000)
 
     @field_validator("comment")
@@ -24,7 +28,7 @@ class ReviewCreate(CamelModel):
 
 class ReviewOut(CamelModel):
     id: str
-    product_id: int
+    product_id: str
     user_id: str
     rating: int
     comment: str | None
@@ -39,6 +43,6 @@ class ReviewPage(CamelModel):
 
 
 class ReviewSummary(CamelModel):
-    product_id: int
+    product_id: str
     average_rating: float | None
     review_count: int

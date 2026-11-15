@@ -20,6 +20,7 @@ async def test_missing_registration_is_restored(monkeypatch):
         return httpx.Response(404 if request.method == 'GET' else 200)
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
         discovery = Discovery(client,'http://consul',True,'cart-service','id','pod',8085)
+        discovery.registered = True  # registered earlier; Consul has forgotten the instance since
         sleeps = 0
         async def tick(_):
             nonlocal sleeps
@@ -27,8 +28,8 @@ async def test_missing_registration_is_restored(monkeypatch):
             if sleeps == 2: raise asyncio.CancelledError()
         monkeypatch.setattr(asyncio, 'sleep', tick)
         with pytest.raises(asyncio.CancelledError): await discovery.maintain_registration()
-    assert [r.method for r in calls] == ['GET','PUT']
-    assert calls[1].url.path.endswith('/service/register')
+    assert [r.method for r in calls] == ['GET','GET','PUT']  # check, own readiness, register
+    assert calls[2].url.path.endswith('/service/register')
 
 async def test_dead_instance_is_skipped_until_refresh():
     def respond(request):

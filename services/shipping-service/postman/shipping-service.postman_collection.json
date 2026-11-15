@@ -1,6 +1,7 @@
 {
   "info": {
     "name": "Shipping Service",
+    "description": "Direct calls to shipping-service (port 8089) with the headers the Gateway adds (X-User-Id, X-User-Roles). Works out of the box against a running service: userId and adminId are fixed test UUIDs, every run cancels a new random orderId, so the collection can be run again without cleanup. Shipments themselves are created only from order.created events (RabbitMQ), see README.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -10,23 +11,19 @@
     },
     {
       "key": "userId",
-      "value": ""
+      "value": "11111111-0000-4000-8000-000000000001"
+    },
+    {
+      "key": "adminId",
+      "value": "adadadad-0000-4000-8000-0000000000ad"
     },
     {
       "key": "orderId",
       "value": ""
     },
     {
-      "key": "shipmentId",
-      "value": ""
-    },
-    {
-      "key": "adminId",
-      "value": ""
-    },
-    {
-      "key": "nextStatus",
-      "value": "SHIPPED"
+      "key": "missingId",
+      "value": "00000000-0000-4000-8000-000000000000"
     }
   ],
   "item": [
@@ -36,13 +33,65 @@
         "method": "GET",
         "url": "{{baseUrl}}/shipping/methods",
         "header": []
-      }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "pm.test('three methods with prices as text', () => { const b = pm.response.json(); pm.expect(b.map(m => m.code)).to.eql(['COURIER', 'PARCEL_LOCKER', 'PICKUP']); b.forEach(m => { pm.expect(m.price).to.be.a('string'); pm.expect(m.currency).to.eql('PLN'); pm.expect(m.estimatedDays).to.be.a('number'); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Metoda dostawy PARCEL_LOCKER",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/shipping/methods/PARCEL_LOCKER",
+        "header": []
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "pm.test('price 9.99 PLN', () => { pm.expect(pm.response.json().price).to.eql('9.99'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Nieznana metoda dostawy → 404",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/shipping/methods/DRONE",
+        "header": []
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 404', () => pm.response.to.have.status(404));",
+              "pm.test('error NOT_FOUND in the shop error format', () => { const b = pm.response.json(); pm.expect(b.error).to.eql('NOT_FOUND'); pm.expect(b).to.have.all.keys('status', 'error', 'message', 'requestId'); });"
+            ]
+          }
+        }
+      ]
     },
     {
       "name": "Przesyłki klienta",
       "request": {
         "method": "GET",
-        "url": "{{baseUrl}}/shipments?orderId={{orderId}}",
+        "url": "{{baseUrl}}/shipments?page=1&size=5",
         "header": [
           {
             "key": "X-User-Id",
@@ -58,18 +107,40 @@
         {
           "listen": "test",
           "script": {
+            "type": "text/javascript",
             "exec": [
-              "if (pm.response.code === 200 && pm.response.json().items.length) pm.collectionVariables.set('shipmentId', pm.response.json().items[0].id);"
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "pm.test('page of shipments', () => { const b = pm.response.json(); pm.expect(b).to.include.keys('items', 'page', 'size', 'total'); pm.expect(b.page).to.eql(1); b.items.forEach(s => pm.expect(s.userId).to.eql(pm.collectionVariables.get('userId'))); });"
             ]
           }
         }
       ]
     },
     {
-      "name": "Szczegóły",
+      "name": "Przesyłki bez nagłówków Gateway → 401",
       "request": {
         "method": "GET",
-        "url": "{{baseUrl}}/shipments/{{shipmentId}}",
+        "url": "{{baseUrl}}/shipments",
+        "header": []
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 401', () => pm.response.to.have.status(401));",
+              "pm.test('error UNAUTHORIZED in the shop error format', () => { const b = pm.response.json(); pm.expect(b.error).to.eql('UNAUTHORIZED'); pm.expect(b).to.have.all.keys('status', 'error', 'message', 'requestId'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Szczegóły nieistniejącej przesyłki → 404",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/shipments/{{missingId}}",
         "header": [
           {
             "key": "X-User-Id",
@@ -80,13 +151,62 @@
             "value": "CUSTOMER"
           }
         ]
-      }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 404', () => pm.response.to.have.status(404));",
+              "pm.test('error NOT_FOUND in the shop error format', () => { const b = pm.response.json(); pm.expect(b.error).to.eql('NOT_FOUND'); pm.expect(b).to.have.all.keys('status', 'error', 'message', 'requestId'); });"
+            ]
+          }
+        }
+      ]
     },
     {
-      "name": "Zmień status",
+      "name": "Zmiana statusu jako klient → 403",
       "request": {
         "method": "PATCH",
-        "url": "{{baseUrl}}/shipments/{{shipmentId}}/status",
+        "url": "{{baseUrl}}/shipments/{{missingId}}/status",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "{{userId}}"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "CUSTOMER"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"status\":\"SHIPPED\"}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 403', () => pm.response.to.have.status(403));",
+              "pm.test('error FORBIDDEN in the shop error format', () => { const b = pm.response.json(); pm.expect(b.error).to.eql('FORBIDDEN'); pm.expect(b).to.have.all.keys('status', 'error', 'message', 'requestId'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Zmiana statusu nieistniejącej przesyłki (ADMIN) → 404",
+      "request": {
+        "method": "PATCH",
+        "url": "{{baseUrl}}/shipments/{{missingId}}/status",
         "header": [
           {
             "key": "X-User-Id",
@@ -103,9 +223,284 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\"status\":\"{{nextStatus}}\"}"
+          "raw": "{\"status\":\"SHIPPED\"}"
         }
-      }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 404', () => pm.response.to.have.status(404));",
+              "pm.test('error NOT_FOUND in the shop error format', () => { const b = pm.response.json(); pm.expect(b.error).to.eql('NOT_FOUND'); pm.expect(b).to.have.all.keys('status', 'error', 'message', 'requestId'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Anulowanie bez roli SERVICE → 403",
+      "request": {
+        "method": "POST",
+        "url": "{{baseUrl}}/shipments/cancel",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "{{userId}}"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "CUSTOMER"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "description": "Internal endpoint: only callers with the SERVICE role (Order). The Gateway blocks it from outside (404).",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"orderId\":\"{{orderId}}\"}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.set('orderId', pm.variables.replaceIn('{{$guid}}'));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 403', () => pm.response.to.have.status(403));",
+              "pm.test('error FORBIDDEN in the shop error format', () => { const b = pm.response.json(); pm.expect(b.error).to.eql('FORBIDDEN'); pm.expect(b).to.have.all.keys('status', 'error', 'message', 'requestId'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Anulowanie przed utworzeniem przesyłki (SERVICE) → 200",
+      "request": {
+        "method": "POST",
+        "url": "{{baseUrl}}/shipments/cancel",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "{{userId}}"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "CUSTOMER,SERVICE"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"orderId\":\"{{orderId}}\"}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "pm.test('placeholder cancelled, no public shipment', () => { const b = pm.response.json(); pm.expect(b).to.eql({orderId: pm.collectionVariables.get('orderId'), shipmentId: null, status: 'CANCELLED'}); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Ponowne anulowanie → 200",
+      "request": {
+        "method": "POST",
+        "url": "{{baseUrl}}/shipments/cancel",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "{{userId}}"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "CUSTOMER,SERVICE"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"orderId\":\"{{orderId}}\"}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "pm.test('still CANCELLED', () => pm.expect(pm.response.json().status).to.eql('CANCELLED'));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Anulowanie ze złym UUID → 400",
+      "request": {
+        "method": "POST",
+        "url": "{{baseUrl}}/shipments/cancel",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "{{userId}}"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "CUSTOMER,SERVICE"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"orderId\":\"not-a-uuid\"}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 400', () => pm.response.to.have.status(400));",
+              "pm.test('error VALIDATION_ERROR in the shop error format', () => { const b = pm.response.json(); pm.expect(b.error).to.eql('VALIDATION_ERROR'); pm.expect(b).to.have.all.keys('status', 'error', 'message', 'requestId'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Anulowanie z nieznanym polem → 400",
+      "request": {
+        "method": "POST",
+        "url": "{{baseUrl}}/shipments/cancel",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "{{userId}}"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "CUSTOMER,SERVICE"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"orderId\":\"{{orderId}}\",\"reason\":\"x\"}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 400', () => pm.response.to.have.status(400));",
+              "pm.test('error VALIDATION_ERROR in the shop error format', () => { const b = pm.response.json(); pm.expect(b.error).to.eql('VALIDATION_ERROR'); pm.expect(b).to.have.all.keys('status', 'error', 'message', 'requestId'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Anulowanie bez order.created nie pokazuje przesyłki (ADMIN)",
+      "description": "The placeholder of an early cancellation is not a public shipment. A later order.created for this orderId would create the shipment as CANCELLED with one event null -> CANCELLED (Z10); this collection sends no events, so the page stays empty.",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/shipments?orderId={{orderId}}",
+        "header": [
+          {
+            "key": "X-User-Id",
+            "value": "{{adminId}}"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "ADMIN"
+          }
+        ]
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+              "pm.test('total 0', () => pm.expect(pm.response.json().total).to.eql(0));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Zdrowie: live",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/health/live",
+        "header": []
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Zdrowie: ready",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/health/ready",
+        "header": []
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+            ]
+          }
+        }
+      ]
     }
   ]
 }

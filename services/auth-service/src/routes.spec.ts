@@ -2,6 +2,7 @@ import {
   CONSUL_REGISTER_PATH,
   consulDeregisterPath,
   consulHealthyInstancesPath,
+  consulServiceInstancesPath,
   consulKvRawPath,
   consulServicePath,
   PATHS,
@@ -36,6 +37,7 @@ describe('routes', () => {
     expect(consulDeregisterPath('auth-service-a1')).toBe('/v1/agent/service/deregister/auth-service-a1');
     expect(consulServicePath('a/b c')).toBe('/v1/agent/service/a%2Fb%20c');
     expect(consulHealthyInstancesPath('user-service')).toBe('/v1/health/service/user-service?passing');
+    expect(consulServiceInstancesPath('user-service')).toBe('/v1/health/service/user-service');
     expect(consulKvRawPath('config/auth-service/data')).toBe('/v1/kv/config/auth-service/data?raw');
   });
 });

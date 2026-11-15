@@ -1,6 +1,6 @@
 # Frontend
 
-Sklep w przeglądarce: aplikacja React (Vite, TypeScript, React Router, TanStack Query, Tailwind CSS i shadcn/ui). Rozmawia tylko z API Gateway pod `/api/v1/…` – ten sam adres co aplikacja, więc bez CORS. Logowanie, rejestracja, odświeżanie sesji i wylogowanie działają na prawdziwym Auth przez Gateway. Usługi, których jeszcze nie ma w Docker Compose, w trybie deweloperskim zastępują atrapy MSW zgodne z kontraktem [`docs/frontend-api.md`](../docs/frontend-api.md).
+Sklep w przeglądarce: aplikacja React (Vite, TypeScript, React Router, TanStack Query, Tailwind CSS i shadcn/ui). Rozmawia tylko z API Gateway pod `/api/v1/…` – ten sam adres co aplikacja, więc bez CORS. Logowanie, rejestracja, odświeżanie sesji i wylogowanie działają na prawdziwym Auth przez Gateway. W trybie deweloperskim (`npm run dev:mocks` albo zmienna `VITE_API_MOCKS`) usługi można zastąpić atrapami MSW zgodnymi z kontraktem [`docs/frontend-api.md`](../docs/frontend-api.md).
 
 ## Wymagania
 
@@ -21,7 +21,7 @@ Komunikat o podatnościach (`npm audit`) po `npm ci` nie przerywa instalacji –
 
 ## Uruchomienie z Gateway i Auth z Docker Compose
 
-1. Z katalogu głównego repozytorium uruchom platformę (Gateway, Auth, frontend w obrazie). Przy pierwszym uruchomieniu najpierw `bash deploy/create-secrets.sh` ([deploy/README.md](../deploy/README.md), „Pierwsze uruchomienie”); po `git pull` dodaj `--build`, żeby przebudować obrazy:
+1. Z katalogu głównego repozytorium uruchom platformę (Gateway, Auth, User, frontend w obrazie) albo cały sklep (profil `full-shop` zamiast `platform`). Przy pierwszym uruchomieniu najpierw `bash deploy/create-secrets.sh` ([deploy/README.md](../deploy/README.md), „Pierwsze uruchomienie”); po `git pull` dodaj `--build`, żeby przebudować obrazy:
 
    ```bash
    docker compose -f deploy/compose.yaml --profile platform up -d --wait
@@ -37,7 +37,7 @@ Komunikat o podatnościach (`npm audit`) po `npm ci` nie przerywa instalacji –
 
    Aplikacja: `http://127.0.0.1:5173`. Serwer Vite przekazuje `/api` do `API_PROXY_TARGET` (domyślnie Gateway `http://127.0.0.1:8080`).
 
-Konto klienta zakłada się przez „Zarejestruj”. Usługi, których nie ma w compose (Product, Cart, User, Order…), odpowiadają przez Gateway `503` – strony pokazują wtedy „Usługa jest chwilowo niedostępna. Spróbuj ponownie za chwilę.”. Wybrane zasoby można zastąpić atrapami, a resztę zostawić Gateway (zmienna `VITE_API_MOCKS`, sekcja „Zmienne”).
+Konto klienta zakłada się przez „Zarejestruj”. Przy samym profilu `platform` usługi spoza niego (Product, Cart, Order, Shipping…) odpowiadają przez Gateway `503` – strony pokazują wtedy „Usługa jest chwilowo niedostępna. Spróbuj ponownie za chwilę.”. Wybrane zasoby można zastąpić atrapami, a resztę zostawić Gateway (zmienna `VITE_API_MOCKS`, sekcja „Zmienne”). Cały sklep na prawdziwych usługach: `docker compose -f deploy/compose.yaml --profile full-shop up -d --wait` ([deploy/README.md](../deploy/README.md), „Profil full-shop”).
 
 ## Tryb atrap (bez Dockera)
 
@@ -94,7 +94,14 @@ docker run --rm --ipc=host -v "$PWD/frontend:/src:ro" -v "$PWD/frontend/test-res
     && cd /work && npm ci --no-audit --no-fund && npx playwright test --project=mocked --output /out/mocked'
 ```
 
-Projekt `compose` wymaga działającej platformy (poprzednia sekcja). Kontener jest w sieci `sklep_edge` i otwiera sklep pod `http://frontend:8080`:
+Projekt `compose` wymaga całego sklepu w profilu `full-shop` (`purchase.spec.ts` potrzebuje Cart, Inventory, Order i Shipping) i stanów magazynowych ze scenariusza Postman (warunek wstępny niżej):
+
+```bash
+docker compose -f deploy/compose.yaml --profile full-shop up -d --wait --build
+bash postman/run.sh compose
+```
+
+Kontener jest w sieci `sklep_edge` i otwiera sklep pod `http://frontend:8080`:
 
 ```bash
 for f in frontend/e2e/compose/*.spec.ts; do
@@ -123,10 +130,10 @@ Pliki projektu `compose`:
 | `session-login.spec.ts`, `session-refresh.spec.ts`, `session-storage.spec.ts`, `session-tabs.spec.ts` | sesja: rejestracja, logowanie, odświeżanie, wylogowanie, karty |
 | `auth-errors.spec.ts` | błędy logowania, limit prób |
 | `shop-flow.spec.ts` | rejestracja → logowanie → katalog → strona produktu `Algorytmy` → „Dodaj do koszyka” → koszyk (ilość 1, suma = cena) |
-| `missing-services.spec.ts` | Order i Shipping nie działają: historia zamówień i sposoby dostawy przy zamówieniu pokazują „Usługa jest chwilowo niedostępna…” z kodem zgłoszenia, katalog działa |
+| `purchase.spec.ts` | zakup przez UI: koszyk → zamówienie z nowym adresem (Kurier, karta testowa) → strona zamówienia „Opłacone” → przesyłka „W przygotowaniu” → anulowanie (sprzątanie rezerwacji) |
 | `auth-unavailable.spec.ts` | start aplikacji przy zatrzymanym Auth (tylko z `E2E_AUTH_STOPPED=1`, opis niżej) |
 
-- **Warunek wstępny `shop-flow.spec.ts` i `missing-services.spec.ts`:** produkt `Algorytmy` musi mieć stan magazynowy (po poprawce identyfikatorów UUID w Inventory koszyk odrzuca produkt bez stanu kodem `409`). Stany ustawia scenariusz Postman — przed testami uruchom `bash postman/run.sh compose` (`postman/README.md`).
+- **Warunek wstępny `shop-flow.spec.ts` i `purchase.spec.ts`:** produkty `Algorytmy` i `Deska do krojenia` (`a0000000-0000-4000-8000-000000000003`) muszą mieć stan magazynowy (po poprawce identyfikatorów UUID w Inventory koszyk odrzuca produkt bez stanu kodem `409`). Stany ustawia scenariusz Postman — przed testami uruchom `bash postman/run.sh compose` (`postman/README.md`).
 - **`auth-unavailable.spec.ts`** bez zmiennej `E2E_AUTH_STOPPED=1` jest pomijany (`skipped`). Playwright w kontenerze nie zatrzyma Auth, więc robi się to ręcznie i po teście uruchamia Auth z powrotem:
 
   ```bash
@@ -188,7 +195,7 @@ Innych zmiennych `VITE_*` nie ma – wszystko, co zaczyna się od `VITE_`, trafi
 
 ## Atrapy
 
-Usługi, których jeszcze nie ma w Docker Compose (User, Cart, Product, Inventory, Review, Order, Shipping), frontend w trybie deweloperskim zastępuje atrapami [MSW](https://mswjs.io) (`src/mocks/`). Atrapy zachowują się zgodnie z kontraktem [docs/frontend-api.md](../docs/frontend-api.md): te same ścieżki, pola, kody błędów, reguły dostępu Gateway (brak tokenu → 401, brak roli ADMIN → 403) i własność danych. Test `src/api/contract.test.ts` pilnuje, że dokument, lista wywołań klienta (`src/api/paths.ts`) i atrapy mają te same endpointy.
+W trybie deweloperskim frontend może zastąpić usługi sklepu (wszystkie albo wybrane, sekcja „Tryby”) atrapami [MSW](https://mswjs.io) (`src/mocks/`) — do pracy bez Dockera i do testów. Atrapy zachowują się zgodnie z kontraktem [docs/frontend-api.md](../docs/frontend-api.md): te same ścieżki, pola, kody błędów, reguły dostępu Gateway (brak tokenu → 401, brak roli ADMIN → 403) i własność danych. Test `src/api/contract.test.ts` pilnuje, że dokument, lista wywołań klienta (`src/api/paths.ts`) i atrapy mają te same endpointy.
 
 Atrapy działają tylko w serwerze deweloperskim Vite i w testach. Build produkcyjny (`npm run build`, obraz Docker) ich nie zawiera — nie ma w nim MSW ani pliku `mockServiceWorker.js` (adres `/mockServiceWorker.js` zwraca wtedy `index.html`, jak każda nieznana ścieżka). Atrapy działają tylko w przeglądarce (service worker): `curl` na `127.0.0.1:5173/api/…` je omija i trafia przez proxy do Gateway.
 
@@ -200,7 +207,7 @@ Atrapy działają tylko w serwerze deweloperskim Vite i w testach. Build produkc
 | `all` | `npm run dev:mocks` | wszystko, także logowanie (atrapa Auth); Docker nie jest potrzebny. Żądanie `/api/`, którego atrapy nie znają, kończy się błędem sieci i ostrzeżeniem w konsoli |
 | lista zasobów, np. `users,cart,products,categories,inventory,reviews,orders,shipping,shipments` | `VITE_API_MOCKS=users,cart,products,categories,inventory,reviews,orders,shipping,shipments npm run dev` | tylko podane zasoby (pierwszy segment ścieżki po `/api/v1`); reszta, np. `auth`, idzie do prawdziwego Gateway |
 
-Tryb listy służy do pracy z prawdziwym logowaniem: Auth i Gateway działają w Docker Compose, a brakujące usługi odpowiadają z atrap. Atrapy czytają tożsamość z tokenu w nagłówku `Authorization` bez sprawdzania podpisu (sprawdzają tylko `iss`, `aud` i `exp`; podpis sprawdza Gateway). Prawdziwe konto, którego atrapy nie znają, dostaje przy pierwszym wywołaniu User profil zastępczy („Klient Testowy”), pusty koszyk i pustą historię zamówień. Konto `admin@sklep.local` nie ma profilu (`/account` pokazuje komunikat dla administratora).
+Tryb listy służy do pracy z prawdziwym logowaniem: Auth i Gateway działają w Docker Compose, a wybrane usługi odpowiadają z atrap. Atrapy czytają tożsamość z tokenu w nagłówku `Authorization` bez sprawdzania podpisu (sprawdzają tylko `iss`, `aud` i `exp`; podpis sprawdza Gateway). Prawdziwe konto, którego atrapy nie znają, dostaje przy pierwszym wywołaniu User profil zastępczy („Klient Testowy”), pusty koszyk i pustą historię zamówień. Konto `admin@sklep.local` nie ma profilu (`/account` pokazuje komunikat dla administratora).
 
 Tryb listy działa tylko dla spójnych zestawów: zasób na atrapie nie może być zależnością prawdziwej usługi. Prawdziwa usługa woła swoje zależności bezpośrednio przez Consul, z pominięciem przeglądarki i atrap. Przykład: prawdziwy Cart woła Product, więc Cart bez atrapy przy Product na atrapie odpowie 503 (a atrapa koszyka odrzuca produkty spoza atrap). Kolejność zastępowania atrap prawdziwymi usługami (etap 6b): Product → Inventory, Cart → Shipping → Order → Review.
 
@@ -232,7 +239,7 @@ Rejestracja w trybie `all` zakłada nowe konto w atrapach (z profilem). Token at
 
 Zamówienia klienta: dostarczone (Kubek ×2, Termos), wysłane (przesyłka `SHIPPED` — nie do anulowania), opłacone (przesyłka `PREPARING` — do anulowania), z płatnością nieudaną. Koszyk klienta na starcie jest pusty.
 
-Płatność testowa: numer karty kończący się cyfrą `0` → `PAYMENT_FAILED` (koszyk zostaje), inny → `PAID` (koszyk pusty). Przesyłka nowego zamówienia pojawia się po około 3 sekundach (tak jak po zdarzeniu `order.created`); do tego czasu strona zamówienia pokazuje „W przygotowaniu”. Każda odpowiedź atrapy przychodzi z opóźnieniem 100–300 ms.
+Płatność testowa: numer karty kończący się cyfrą `0` → `PAYMENT_FAILED` (koszyk zostaje), na `503` → zamówienie powstaje, ale odpowiedź to `503` (jak zakup przerwany po stronie Order; ponowienie z tym samym `Idempotency-Key` zwraca to zamówienie), inny → `PAID` (koszyk pusty). Przesyłka nowego zamówienia pojawia się po około 3 sekundach (tak jak po zdarzeniu `order.created`); do tego czasu strona zamówienia pokazuje „W przygotowaniu”. Każda odpowiedź atrapy przychodzi z opóźnieniem 100–300 ms.
 
 ### Stan atrap i czyszczenie
 

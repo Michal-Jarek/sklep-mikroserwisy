@@ -38,6 +38,12 @@ kubectl --context rancher-desktop -n shop get pods
 ```
 Wszystkie pody `Running` i `READY 1/1`, pody Jobów (`consul-kv-seed-…`, `rabbitmq-setup-…`, `*-migrate-…`) `Completed` (Joby znikają same 10 minut po zakończeniu).
 
+Stany magazynowe 24 produktów startowych ustawia scenariusz Postmana — uruchom go raz po pierwszym starcie (wymaga `mkcert -install`, [postman/README.md](../../postman/README.md#środowisko-k8s)):
+```bash
+bash postman/run.sh k8s
+```
+Bez tego produkt ma 0 sztuk i koszyk odmawia dodania (`409`), więc zakupu w `https://shop.localhost` nie da się przejść. Klaster postawiony przed etapem 8 ma jeszcze stare dane Inventory i Review — usunięcie: sekcja [„Usunięcie starych danych Inventory i Review”](#usunięcie-starych-danych-inventory-i-review-etap-8).
+
 ### Warstwy
 
 `bash deploy/k8s/up.sh [infra|platform|services|monitoring|all] [--build]` (bez argumentu: `all`). Warstwa to katalog `deploy/k8s/<warstwa>/`; `all` = `infra` → `platform` → `services` → `monitoring`.
@@ -46,7 +52,7 @@ Wszystkie pody `Running` i `READY 1/1`, pody Jobów (`consul-kv-seed-…`, `rabb
 |---|---|---|
 | `infra` | `consul`, `consul-guard` (2 repliki), `postgres`, `mongo`, `redis-gateway`, `redis-cart`, `rabbitmq`, `mailpit` | `consul-kv-seed`, `rabbitmq-setup` (po obciążeniach) |
 | `platform` (jak profil compose `platform`) | `api-gateway` (2 repliki), `auth-service`, `user-service`, `frontend`, Ingress | `auth-migrate`, `user-migrate` (przed obciążeniami) |
-| `services` | `cart-service`, `inventory-service`, `review-service`, `product-service`, `notification-service` | `product-migrate` (przed obciążeniami) |
+| `services` | `cart-service`, `inventory-service`, `review-service`, `product-service`, `notification-service`, `order-service`, `shipping-service` | `product-migrate` (przed obciążeniami) |
 | `monitoring` | `prometheus`, `grafana`, `kube-state-metrics`; przed nimi obiekty całego klastra z `cluster/prometheus-kubelet.yaml` | — |
 
 Kolejność kroków `up.sh`: przestrzeń `shop` (`namespace.yaml`) → Secrety (`secrets.sh`) → ConfigMapy z plików `deploy/` → NetworkPolicy (`network/*.yaml`, jeśli są, i szablon `network/node-access.yaml.tpl`) → warstwy. Na każdą warstwę skrypt czeka najwyżej 5 minut (`rollout status` obciążeń, `Complete` Jobów).
@@ -57,7 +63,7 @@ Bez monitoringu (np. maszyna wirtualna z mniejszą pamięcią): `bash deploy/k8s
 
 Kody wyjścia: `0` – gotowe; `1` – błąd (Job zakończony błędem – skrypt wypisuje ostatnie 20 linii logu każdego jego kontenera, także `wait-for-network`; brak obrazu w Dockerze – sprawdzane tylko pody sklepu, z etykietą `app.kubernetes.io/part-of: shop`; przekroczony czas – skrypt wypisuje listę podów); `2` – złe argumenty, brak `kubectl`, brak kontekstu `rancher-desktop` (w `kubectl`, a przy `--build` także w Dockerze) albo klaster nie odpowiada. Warstwa bez plików: przy `all` komunikat `skipping <warstwa>: no manifests` i przejście dalej, przy jawnie podanej warstwie – ten sam komunikat i kod 1.
 
-Ponowne uruchomienie jest bezpieczne: niezmienione obiekty zostają (`unchanged`), Joby są usuwane i tworzone od nowa, więc KV w Consulu i topologia RabbitMQ zawsze odpowiadają plikom w repo.
+Ponowne uruchomienie jest bezpieczne: niezmienione obiekty zostają (`unchanged`), Joby są usuwane i tworzone od nowa, więc KV w Consulu i topologia RabbitMQ zawsze odpowiadają plikom w repo. Gateway czyta swój dokument KV (trasy, reguły dostępu, limity) tylko przy starcie. Szablon poda Gateway ma adnotację `shop-consul-kv-hash` z sumą kontrolną ConfigMapy `consul-kv`, z którą Gateway ostatnio wystartował. Po zakończeniu Joba `consul-kv-seed` `up.sh` porównuje ją z sumą bieżących plików `deploy/consul/config/` i przy różnicy wpisuje nową (`kubectl patch`), co jest restartem jak `rollout restart` (w wyjściu `api-gateway restarted: KV hash …`). Stan jest zapisany w klastrze, więc przebieg przerwany przed `consul-kv-seed` (błąd, przekroczony czas, Ctrl+C) nadrabia następne `up.sh infra` albo `up.sh all`. Gateway utworzony w tym samym przebiegu (pierwsze `up.sh all`) i Gateway sprzed tej zmiany (bez adnotacji) restartują się raz, żeby zapisać sumę. Przy warstwie bez `infra` skrypt tylko ostrzega (`warning: the Gateway may run with other KV files …`): KV wgrywa `consul-kv-seed` z warstwy `infra`. Pozostałe usługi też czytają KV tylko przy starcie — po zmianie ich pliku: `kubectl --context rancher-desktop -n shop rollout restart deployment/<usługa>`.
 
 | Zmiana | Polecenie |
 |---|---|
@@ -94,7 +100,7 @@ deploy/k8s/
   platform/        auth-migrate.yaml (Job), auth-service.yaml, api-gateway.yaml, user-migrate.yaml (Job),
                    user-service.yaml, frontend.yaml, ingress.yaml
   services/        cart-service.yaml, inventory-service.yaml, review-service.yaml, product-migrate.yaml (Job),
-                   product-service.yaml, notification-service.yaml
+                   product-service.yaml, notification-service.yaml, order-service.yaml, shipping-service.yaml
   monitoring/      prometheus.yaml, grafana.yaml, kube-state-metrics.yaml
   cluster/         prometheus-kubelet.yaml (ClusterRole i ClusterRoleBinding; stosuje up.sh w warstwie monitoring)
   network/         NetworkPolicy całej przestrzeni (*.yaml) i szablon node-access.yaml.tpl (adresy wstawia up.sh)
@@ -245,6 +251,27 @@ k logs job/rabbitmq-setup                                             # wynik os
 ```
 Joby znikają 10 minut po zakończeniu (`ttlSecondsAfterFinished: 600`); później `k logs job/…` kończy się `NotFound`. Ponowne `bash deploy/k8s/up.sh infra` uruchamia `consul-kv-seed` i `rabbitmq-setup` od nowa.
 
+### Usunięcie starych danych Inventory i Review (etap 8)
+
+Dotyczy tylko klastra postawionego przed etapem 8 (każdy ma własny Rancher Desktop i własne PVC). Od etapu 8 Inventory trzyma dane w tabelach `stock_items` i `stock_reservations`, a Review w kolekcji `product_reviews`. Stare tabele `inventory_items`, `reservations` (w `inventory_db`) i kolekcja `reviews` (w `review_db`) zostają na wolumenach — kod usług ich nie czyta i nie usuwa. Najpierw warstwa `services` z obrazami etapu 8 (`bash deploy/k8s/up.sh services --build`), potem raz:
+```bash
+k() { kubectl --context rancher-desktop -n shop "$@"; }
+
+# PostgreSQL: usuwa stare tabele tylko wtedy, gdy nowe Inventory już założyło stock_items
+k exec -i postgres-0 -- sh -c 'PGPASSWORD="$INVENTORY_DB_PASSWORD" psql -h "$(hostname -i)" -U inventory_service -d inventory_db -v ON_ERROR_STOP=1' <<'SQL'
+DO $$
+BEGIN
+  IF to_regclass('stock_items') IS NULL THEN
+    RAISE EXCEPTION 'stock_items missing: start the stage 8 Inventory first';
+  END IF;
+  DROP TABLE IF EXISTS reservations, inventory_items;
+END $$;
+SQL
+# MongoDB: usuwa reviews tylko wtedy, gdy nowe Review już założyło product_reviews
+k exec mongo-0 -- mongosh --quiet --nodb --eval 'const c = new Mongo("mongodb://127.0.0.1:27017"); const db = c.getDB("review_db"); db.auth("review_service", process.env.REVIEW_DB_PASSWORD); print(db.getCollectionNames().includes("product_reviews") ? db.reviews.drop() : "product_reviews missing: start the stage 8 Review first")'
+```
+Wynik: `DO` (także gdy tabel już nie było — wtedy z komunikatem `NOTICE: … does not exist, skipping`) i `true`. Gdy nowa usługa jeszcze nie wystartowała, nic nie jest usuwane: PostgreSQL odpowiada `ERROR: stock_items missing: start the stage 8 Inventory first` (kod 3), MongoDB wypisuje `product_reviews missing: start the stage 8 Review first`. Sprawdzenie: `k exec postgres-0 -- sh -c 'PGPASSWORD="$INVENTORY_DB_PASSWORD" psql -h "$(hostname -i)" -U inventory_service -d inventory_db -c "\dt"'` — tylko `processed_events`, `stock_items`, `stock_reservations`. To samo w compose: [deploy/README.md](../README.md#usunięcie-starych-danych-inventory-i-review-etap-8).
+
 ## Porty na laptopie (`port-forward`)
 
 W klastrze nic poza Ingressem nie ma portu na laptopie. Panele i Swagger otwiera się na czas pracy przez `kubectl port-forward` (działa do Ctrl+C). Porty są inne niż w compose, żeby oba środowiska mogły działać naraz.
@@ -379,7 +406,7 @@ Zmiana `consul-server.hcl`: `bash deploy/k8s/up.sh infra`, potem `k rollout rest
 
 **Zaufany proxy (decyzja 10).** `TRUSTED_PROXIES=10.42.0.0/16` (zakres adresów podów k3s): Traefik łączy się z Gateway z adresu swojego poda, więc nazwa Service nie zadziała. Gateway bierze ostatni wpis `X-Forwarded-For` dopisany przez Traefika, więc nagłówek od klienta z zewnątrz nie zmienia wyniku. Zakres jest bezpieczny tylko razem z NetworkPolicy „do Gateway wchodzi tylko Traefik (i Consul na health check)” — bez niej każdy pod w `shop` mógłby wprost podać dowolny `X-Forwarded-For` i obejść limit logowań na adres. Drogę przez health checki Consula (Consul też łączy się z Gateway) zamyka pośrednik `consul-guard`: check może być tylko zwykłym `GET` na `/health/*` poda, który go rejestruje (sekcja „Pośrednik przed Consulem”). Przez `kubectl port-forward` liczy się adres połączenia (127.0.0.1 w podzie), nagłówek jest pomijany.
 
-**Zmiana konfiguracji w KV** (`deploy/consul/config/<usługa>.yaml`): usługi czytają KV tylko przy starcie, więc po `bash deploy/k8s/up.sh infra` potrzebny jest restart, np. `kubectl --context rancher-desktop -n shop rollout restart deploy/api-gateway`. Po zmianie kodu: `bash deploy/k8s/up.sh platform --build`.
+**Zmiana konfiguracji w KV** (`deploy/consul/config/<usługa>.yaml`): usługi czytają KV tylko przy starcie. Gateway `bash deploy/k8s/up.sh infra` restartuje sam (adnotacja `shop-consul-kv-hash`, wyżej), pozostałe usługi po `up.sh infra` trzeba zrestartować, np. `kubectl --context rancher-desktop -n shop rollout restart deploy/order-service`. Po zmianie kodu: `bash deploy/k8s/up.sh platform --build`.
 
 **Swagger Auth i User** — tylko przez `port-forward` (tabela „Porty na laptopie”), np. `kubectl --context rancher-desktop -n shop port-forward svc/auth-service 18081:8081` → http://127.0.0.1:18081/docs.
 
@@ -440,16 +467,18 @@ curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' http://shop.localhost/p
 |---|---|---|---|
 | Job `product-migrate` | `services/product-migrate.yaml` | `10001:10001` | `alembic upgrade head` na `product_db` (to samo polecenie co w compose); `up.sh services` usuwa go i tworzy od nowa, czeka na `Complete`, dopiero potem stawia obciążenia; znika 10 min po zakończeniu |
 | Deployment + Service `cart-service:8085` | `services/cart-service.yaml` | `1000:1000` | `REDIS_URL` (z hasłem) z `cart-service-secret` |
-| Deployment + Service `inventory-service:8084` | `services/inventory-service.yaml` | `10001:10001` | `DATABASE_URL` (z hasłem) i `RABBITMQ_PASSWORD` z `inventory-service-secret`; odbiorca zdarzeń wyłączony (brak `RABBITMQ_URL`, jak w compose) |
+| Deployment + Service `inventory-service:8084` | `services/inventory-service.yaml` | `10001:10001` | `DATABASE_URL` (z hasłem) i `RABBITMQ_PASSWORD` z `inventory-service-secret`; odbiorca `inventory.q` |
 | Deployment + Service `review-service:8088` | `services/review-service.yaml` | `10001:10001` | `MONGODB_URL` (z hasłem) z `review-service-secret` |
 | Deployment + Service `product-service:8083`, HPA | `services/product-service.yaml` | `10001:10001` | `DB_PASSWORD` z `product-service-secret`; HPA 1–3 |
 | Deployment + Service `notification-service:8087` | `services/notification-service.yaml` | `10001:10001` | `DB_PASSWORD`, `RABBITMQ_PASSWORD` z `notification-service-secret` |
+| Deployment + Service `order-service:8086` | `services/order-service.yaml` | `10001:10001` | `ORDER_DB_PASSWORD`, `RABBITMQ_PASSWORD` z `order-service-secret`; odbiorca `order.q` i przekaźnik outboxu; tabele zakłada przy starcie (bez Joba migracji) |
+| Deployment + Service `shipping-service:8089` | `services/shipping-service.yaml` | `10001:10001` | `SHIPPING_DB_PASSWORD`, `RABBITMQ_PASSWORD` z `shipping-service-secret`; odbiorca `shipping.q` i przekaźnik outboxu; tabele zakłada przy starcie (bez Joba migracji) |
 
-- Każda usługa ma 1 replikę, zmienne 1:1 z wpisu w `deploy/compose.yaml` i dodatkowo `SERVICE_ADDRESS` (adres poda, rejestrowany w Consulu). `INSTANCE_ID` (nazwa poda) mają Cart, Product i Notification — ich kod buduje bez niego ID `<usługa>-<hostname>`, a nazwa poda już zaczyna się od nazwy usługi (podwójny przedrostek); z `INSTANCE_ID` ID w Consulu i nagłówek `X-Instance-Id` to sama nazwa poda, np. `product-service-5c7889b54d-jnnj5`. Inventory i Review nie dostają `INSTANCE_ID` (decyzja 5): ich kod zawsze dokleja `<usługa>-` do ID, więc w Consulu mają `inventory-service-inventory-service-<…>` i `review-service-review-service-<…>` (z `INSTANCE_ID` byłoby tak samo); nagłówek `X-Instance-Id` to nazwa poda.
+- Każda usługa ma 1 replikę, zmienne 1:1 z wpisu w `deploy/compose.yaml` i dodatkowo `SERVICE_ADDRESS` (adres poda, rejestrowany w Consulu). Każda usługa ma też `INSTANCE_ID` = nazwa poda (`metadata.name`): kod bez tej zmiennej buduje ID `<usługa>-<hostname>`, a nazwa poda już zaczyna się od nazwy usługi (podwójny przedrostek); z `INSTANCE_ID` ID w Consulu i nagłówek `X-Instance-Id` to sama nazwa poda, np. `product-service-5c7889b54d-jnnj5`. Inventory, Order i Shipping używają jej też jako nazwy połączenia z RabbitMQ (przekaźnik outboxu Order i Shipping: `<nazwa poda>-relay`).
 - **Kontener inicjujący `wait-for-network` (Z12, Z13).** Przy aktywnych NetworkPolicy nowy pod przez ok. 1–2 s po starcie nie może nawiązać połączeń (k3s dodaje adres poda do reguł z opóźnieniem). Cart, Product i Notification czytają konfigurację z Consul KV tylko przy starcie — bez czekania działałyby po cichu na wartościach domyślnych (w logu `Configuration from Consul KV not loaded, using defaults` albo `Consul KV unavailable; using local configuration`), a pierwsza próba Joba migracji kończyła się `Connection refused`. Dlatego każda usługa warstwy `services` i `user-service` ma kontener inicjujący, który w obrazie usługi (`python -c`) co 0,5 s próbuje połączenia TCP z `consul:8500`, a Joby migracji — z `postgres:5432` (Joby infrastruktury: sekcja „Konwencje platformy”); najwyżej 30 s, potem kod 1 (pod usługi restartuje się, Job robi kolejną próbę). Wypisuje czas oczekiwania: `k logs <pod> -c wait-for-network`. Ten sam `securityContext` co kontener główny, zasoby 10m/16Mi (requests) i 100m/64Mi (limits) — sam interpreter Pythona, kilka sekund.
 - `runAsGroup: 10001` dla obrazów z `USER 10001`: Dockerfile nie podaje grupy (obrazy Inventory i Review mają grupę `999`, Product i Notification — `0`); pliki aplikacji są do odczytu dla wszystkich, więc grupa nie ma znaczenia, a `10001` unika grupy `root`.
-- **`readOnlyRootFilesystem: true` we wszystkich pięciu usługach, ich kontenerach `wait-for-network` i w `product-migrate`, z `emptyDir` na `/tmp` — bez wyjątków** (sprawdzone w klastrze: wszystkie pody gotowe, 0 restartów, w logach 0 błędów zapisu). `kubectl apply --dry-run=server -f deploy/k8s/services/`: 0 ostrzeżeń Pod Security (`restricted`).
-- Inventory i Review przy starcie zakładają schemat/indeksy w bazie, zanim serwer HTTP zacznie odpowiadać, więc mają czas do 120 s (`startupProbe`, jak każda usługa). Review bez MongoDB przy starcie kończy proces i pod restartuje się, aż baza odpowie; Inventory czeka na PostgreSQL bez limitu czasu. Obie rejestrują się w Consulu tylko raz, przy starcie: wpis usunięty z Consula (np. restart Consula z pustym wolumenem) wraca dopiero po restarcie poda (`k rollout restart deploy/inventory-service deploy/review-service`).
+- **`readOnlyRootFilesystem: true` we wszystkich siedmiu usługach, ich kontenerach `wait-for-network` i w `product-migrate`, z `emptyDir` na `/tmp` — bez wyjątków** (sprawdzone w klastrze: wszystkie pody gotowe, 0 restartów, w logach 0 błędów zapisu). `kubectl apply --dry-run=server -f deploy/k8s/services/`: 0 ostrzeżeń Pod Security (`restricted`).
+- Inventory, Review, Order i Shipping przy starcie zakładają tabele/indeksy w bazie, zanim serwer HTTP zacznie odpowiadać, więc mają czas do 120 s (`startupProbe`, jak każda usługa). Review i Shipping bez bazy przy starcie kończą proces i pod restartuje się, aż baza odpowie; Inventory i Order czekają na PostgreSQL. `create_all` nie zmienia istniejących tabel: zmiana kolumn w Order albo Shipping to nowa nazwa tabeli albo migracja (README usług). Wszystkie cztery co 15 s sprawdzają swój wpis w Consulu i rejestrują się ponownie, gdy zniknie (np. restart Consula z pustym wolumenem).
 
 ### Swagger usług zespołu (tylko `port-forward`)
 
@@ -459,8 +488,10 @@ Ingress wystawia tylko `/api` (Gateway) i frontend, więc dokumentacja OpenAPI u
 k port-forward svc/product-service 18083:8083        # http://127.0.0.1:18083/docs
 k port-forward svc/inventory-service 18084:8084      # http://127.0.0.1:18084/docs
 k port-forward svc/cart-service 18085:8085           # http://127.0.0.1:18085/docs
+k port-forward svc/order-service 18086:8086          # http://127.0.0.1:18086/docs
 k port-forward svc/notification-service 18087:8087   # http://127.0.0.1:18087/docs
 k port-forward svc/review-service 18088:8088         # http://127.0.0.1:18088/docs
+k port-forward svc/shipping-service 18089:8089       # http://127.0.0.1:18089/docs
 ```
 
 ## Metryki (Prometheus i Grafana)
@@ -567,7 +598,7 @@ Wykresy z `rate()` (żądania/s, błędy, czas, przepływ wiadomości) potrzebuj
 
 Polecenia z funkcjami `k` i `api` z sekcji „Pokazy” i z otwartym panelem (port-forward Grafany i Prometheusa — „Jak otworzyć”). Przed pokazami przez Ingress wyzerować limity Gateway (`FLUSHALL` z „Pokazów”), inaczej część żądań dostanie `429`, i puścić jeden przebieg rozgrzewający `bash postman/run.sh k8s` (tworzy serie metryk — akapit wyżej), a pokazy zacząć ≥ 30 s po nim. Ruch scenariusza najpewniej widać na panelu „Żądania od startu Gateway”. Każdy pokaz kończy się przywróceniem stanu.
 
-**Ruch scenariusza zakupu.** `bash postman/run.sh k8s` (ok. 45 żądań w kilka sekund). Po 15–30 s na „Żądania/s na usługę” są skoki dla Auth, User, Product, Cart, Inventory, Review i Order (do etapu 8 Order to jedno żądanie z odpowiedzią `404`, a kroki Order i Shipping są pomijane), na „Błędy 4xx/s” — `400`, `401`, `403`, `404`, `409` z kroków, które sprawdzają odmowy, na „Rozkład żądań na instancje” — nazwy podów, a w wierszu RabbitMQ — przepływ po rejestracji (zdarzenie `user.registered`). Zmierzone (etap 9b): po jednym przebiegu na panelu „Żądania od startu Gateway” 7 usług; na wykresach „/s” zaraz po starcie Gateway tylko usługi z kilkoma żądaniami na przebieg (Cart, User, Product), na klastrze po kilku przebiegach — wszystkie 7. Wyraźniejsze wykresy dają 2 przebiegi w odstępie ok. 30 s; trzeci w tej samej minucie dostaje `429` na logowaniu (limit 5 logowań na minutę — „Problemy”) i widać go na „Błędy 4xx/s” jako `429`.
+**Ruch scenariusza zakupu.** `bash postman/run.sh k8s` (ok. 90 żądań w kilkanaście sekund; od etapu 8 scenariusz przechodzi też zakup, anulowanie i przesyłkę). Po 15–30 s na „Żądania/s na usługę” są skoki dla Auth, User, Product, Cart, Inventory, Review, Order i Shipping, na „Błędy 4xx/s” — `400`, `401`, `403`, `404`, `409` z kroków, które sprawdzają odmowy, na „Rozkład żądań na instancje” — nazwy podów, a w wierszu RabbitMQ — przepływ po rejestracji (zdarzenie `user.registered`). Zmierzone (etap 9b, przed dodaniem Order i Shipping — od etapu 8 dochodzą te dwie usługi): po jednym przebiegu na panelu „Żądania od startu Gateway” 7 usług; na wykresach „/s” zaraz po starcie Gateway tylko usługi z kilkoma żądaniami na przebieg (Cart, User, Product), na klastrze po kilku przebiegach — wszystkie 7. Wyraźniejsze wykresy dają 2 przebiegi w odstępie ok. 30 s; trzeci w tej samej minucie dostaje `429` na logowaniu (limit 5 logowań na minutę — „Problemy”) i widać go na „Błędy 4xx/s” jako `429`.
 
 **Zatrzymana usługa → `503` w ciągu minuty.** Review do zera replik, pętla publicznego `GET /reviews` przez Ingress, powrót:
 ```bash
@@ -575,7 +606,7 @@ k scale deploy/review-service --replicas=0
 for i in $(seq 90); do echo "$(date +%T) $(api '/reviews?productId=9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d' -o /dev/null -w '%{http_code}')"; sleep 1; done
 k scale deploy/review-service --replicas=1 && k rollout status deploy/review-service
 ```
-Pętla wypisuje `503` po kilku sekundach (Gateway odświeża listę instancji z Consula). Na panelu: „Instancje widziane przez Gateway” dla `review-service` spada do `0`, „Błędy 5xx/s” pokazują słupki `review-service 503`, „Odsetek 5xx” dochodzi do 100 %, w tabeli „Repliki wdrożeń” `review-service` ma `0`/`0`. Wyłącznik zostaje zamknięty — brak instancji nie liczy się jako awaria (sekcja „Circuit breaker” w README Gateway). Zmierzone: pierwsze `503` po 10 s od `scale`, pierwsza wartość > 0 na wykresie 5xx po kolejnych 20 s, instancje `0` po 25 s. Po `scale … --replicas=1` Review rejestruje się w Consulu przy starcie: po ok. 7 s pętla dostaje znowu odpowiedź usługi (nie `503`), instancje wracają do `1`. Gdy po powrocie Gateway dalej odpowiada `503` — wiersz „Inventory albo Review nie ma w Consulu” w „Problemach”.
+Pętla wypisuje `503` po kilku sekundach (Gateway odświeża listę instancji z Consula). Na panelu: „Instancje widziane przez Gateway” dla `review-service` spada do `0`, „Błędy 5xx/s” pokazują słupki `review-service 503`, „Odsetek 5xx” dochodzi do 100 %, w tabeli „Repliki wdrożeń” `review-service` ma `0`/`0`. Wyłącznik zostaje zamknięty — brak instancji nie liczy się jako awaria (sekcja „Circuit breaker” w README Gateway). Zmierzone: pierwsze `503` po 10 s od `scale`, pierwsza wartość > 0 na wykresie 5xx po kolejnych 20 s, instancje `0` po 25 s. Po `scale … --replicas=1` Review rejestruje się w Consulu przy starcie: po ok. 7 s pętla dostaje znowu odpowiedź usługi (nie `503`), instancje wracają do `1`. Gdy po powrocie Gateway dalej odpowiada `503` — wiersz „Inventory, Review, Order albo Shipping nie ma w Consulu” w „Problemach”.
 
 **Otwarty wyłącznik.** Zamrożenie kontenera Review (`docker pause` — proces stoi, połączenia się nawiązują, odpowiedzi nie ma), 24 równoległe żądania, odmrożenie:
 ```bash
@@ -607,7 +638,7 @@ Usługi ufają nagłówkom `X-User-Id` i `X-User-Roles` tylko dlatego, że do us
 | `dns.yaml` | `allow-dns`: wszystkie pody → CoreDNS (`kube-system`, `k8s-app: kube-dns`) 53/UDP i 53/TCP |
 | `infra.yaml` | Consul (serwer i `consul-guard`), PostgreSQL, MongoDB, oba Redisy, RabbitMQ, Mailpit oraz Joby `consul-kv-seed` i `rabbitmq-setup` |
 | `platform.yaml` | Gateway, frontend, Auth, User oraz Joby `auth-migrate` i `user-migrate` |
-| `services.yaml` | Cart, Product (+ Job `product-migrate`), Inventory, Review, Notification oraz Order i Shipping (przygotowane na etap 8) |
+| `services.yaml` | Cart, Product (+ Job `product-migrate`), Inventory, Review, Notification, Order i Shipping |
 | `monitoring.yaml` | Prometheus, Grafana, kube-state-metrics |
 | `node-access.yaml.tpl` | szablon, nie manifest (`kubectl apply -f network/` go pomija): `prometheus-node` i `kube-state-metrics-api` — po jednej regule wyjścia `ipBlock` do kubeleta węzła i do API Kubernetesa; adresy wstawia `up.sh` przy każdym uruchomieniu (sekcja „Wyjątki”) |
 
@@ -634,8 +665,8 @@ Porty usług: Gateway 8080, Auth 8081, User 8082, Product 8083, Inventory 8084, 
 | `inventory-service` | `api-gateway`, `product-service`, `cart-service`, `order-service`, `consul` — 8084 | `postgres` 5432, `rabbitmq` 5672, `consul` 8500 |
 | `review-service` | `api-gateway`, `product-service`, `consul` — 8088 | `mongo` 27017, `consul` 8500, `order-service` 8086 |
 | `notification-service` | `api-gateway`, `consul` — 8087 | `mongo` 27017, `rabbitmq` 5672, `mailpit` 1025, `consul` 8500, `user-service` 8082 |
-| `order-service` (etap 8) | `api-gateway`, `review-service`, `consul` — 8086 | `postgres` 5432, `rabbitmq` 5672, `consul` 8500, `cart-service` 8085, `inventory-service` 8084, `shipping-service` 8089, `product-service` 8083 |
-| `shipping-service` (etap 8) | `api-gateway`, `order-service`, `consul` — 8089 | `postgres` 5432, `rabbitmq` 5672, `consul` 8500 |
+| `order-service` | `api-gateway`, `review-service`, `consul` — 8086 | `postgres` 5432, `rabbitmq` 5672, `consul` 8500, `cart-service` 8085, `inventory-service` 8084, `shipping-service` 8089, `product-service` 8083 |
+| `shipping-service` | `api-gateway`, `order-service`, `consul` — 8089 | `postgres` 5432, `rabbitmq` 5672, `consul` 8500 |
 | `consul-guard` (Service `consul`) | każdy pod z etykietą `app.kubernetes.io/part-of: shop` — 8500 | `consul` 8500 |
 | `consul` (serwer, Service `consul-server`) | `consul-guard`, Job `consul-kv-seed` — 8500 | każda usługa na swoim porcie 8080–8089 (health check HTTP na adres poda; pośrednik dopuszcza tylko `GET` na `/health/*` rejestrującego poda) |
 | `postgres` | usługi z bazą w PostgreSQL (Auth, User, Product, Inventory, Order, Shipping) i Joby migracji — 5432 | — |
@@ -644,13 +675,12 @@ Porty usług: Gateway 8080, Auth 8081, User 8082, Product 8083, Inventory 8084, 
 | `rabbitmq` | `auth-service`, `notification-service`, `inventory-service`, `order-service`, `shipping-service` — 5672; Job `rabbitmq-setup` — 15672; `prometheus` — 15692 (metryki) | — |
 | `mailpit` | `notification-service` — 1025 | — |
 | Joby `consul-kv-seed` / `rabbitmq-setup` | — | `consul` (serwer) 8500 / `rabbitmq` 15672 |
-| Joby `auth-migrate`, `user-migrate`, `product-migrate` (oraz `order-migrate`, `shipping-migrate` — etap 8) | — | `postgres` 5432 |
+| Joby `auth-migrate`, `user-migrate`, `product-migrate` | — | `postgres` 5432 |
 | `prometheus` | `grafana` — 9090 | `api-gateway` 9080, `rabbitmq` 15692, `kube-state-metrics` 9180; kubelet węzła 10250 (`ipBlock`, szablon) |
 | `grafana` | — (tylko `port-forward` z węzła) | `prometheus` 9090 |
 | `kube-state-metrics` | `prometheus` — 9180 | API Kubernetesa: adres i port z EndpointSlice usługi `kubernetes` (`ipBlock`, szablon) |
 
-- **Order i Shipping** mają reguły z góry (pody powstaną w etapie 8). Joby `order-migrate` i `shipping-migrate` są w regułach według konwencji nazw `<usługa>-migrate`; jeśli etap 8 nie użyje Jobów migracji (np. migracja przy starcie usługi), te dwie polityki i wpisy w `postgres` można usunąć.
-- Inventory ma wyjście do RabbitMQ, choć jego odbiorca zdarzeń jest dziś wyłączony (decyzja 17) — reguła odpowiada tabeli połączeń architektury.
+- **Order i Shipping** nie mają Jobów migracji (tabele zakłada usługa przy starcie), więc nie mają też polityk dla Jobów migracji. Wewnętrzny `POST /shipments/cancel` woła tylko Order (reguła `order-service` → `shipping-service` 8089); z zewnątrz Gateway odpowiada na niego 404.
 - Panel RabbitMQ (15672), interfejs Mailpit (8025), Consul UI, Swagger usług, Grafana (3000) i Prometheus (9090) działają tylko przez `kubectl port-forward` — ruch z węzła (niżej), reguły go nie blokują.
 - **Zmiana tabeli połączeń** (nowa ścieżka między usługami) to decyzja Michała: nowa usługa albo nowe wywołanie = dopisanie reguły wyjścia u wołającego i wejścia u wołanego w tym samym pliku, z komentarzem.
 - `up.sh` stosuje `network/` (i szablon z adresami) **przed** warstwami, więc przy starcie od zera Joby i pody od początku działają pod regułami (DNS i reguły Jobów muszą być w katalogu od pierwszego uruchomienia). `down.sh` usuwa wszystkie NetworkPolicy z `shop`.
@@ -812,7 +842,7 @@ Pokazy load balancingu Gateway (2 repliki na zmianę: `X-Gateway-Instance-Id`) �
 | `502 {"error":"BAD_GATEWAY",…}` z nagłówkiem `server: nginx` na `/api/…` | Nie ma Service `api-gateway` (np. sama warstwa `platform` w trakcie startu): Traefik pomija regułę `/api` bez Service i kieruje żądanie do frontendu, którego nginx nie znajduje Gateway – `bash deploy/k8s/up.sh platform`. |
 | `503 no available server` na `/api/…` | Żadna replika Gateway nie jest gotowa (decyzja 14) – `kubectl --context rancher-desktop -n shop get pods -l app.kubernetes.io/name=api-gateway`. |
 | pojedyncze `502 Bad Gateway` zwykłym tekstem na `/api/…` | Proces repliki Gateway zakończył się nagle (awaria, restart kontenera) – Traefik zwraca 502 dla żądań w toku; `kubectl --context rancher-desktop -n shop get pods -l app.kubernetes.io/name=api-gateway` (kolumna RESTARTS) i log poprzedniego kontenera (`logs --previous`). |
-| Inventory albo Review nie ma w Consulu (Gateway odpowiada `503` na `/api/v1/inventory/…`, `/api/v1/reviews/…`), choć pod działa | Po przerwie bazy (PostgreSQL albo MongoDB) dłuższej niż ok. minuta Consul usuwa ich krytyczny wpis, a obie usługi rejestrują się tylko raz przy starcie (ich kod zmienia właścicielka — decyzja 17 etapu 7). Obejście: `kubectl --context rancher-desktop -n shop rollout restart deploy/inventory-service deploy/review-service`. |
+| Inventory, Review, Order albo Shipping nie ma w Consulu (Gateway odpowiada `503` na `/api/v1/inventory/…`, `/api/v1/reviews/…`, …), choć pod działa | Po przerwie bazy (PostgreSQL albo MongoDB) dłuższej niż ok. minuta Consul usuwa krytyczny wpis usługi. Od etapu 8 każda z tych usług co 15 s sprawdza swój wpis i rejestruje się ponownie (sekcja „Usługi zespołu”), więc wpis wraca sam w ≤ 15 s od powrotu bazy. Gdy po minucie dalej go nie ma: log usługi (`kubectl --context rancher-desktop -n shop logs deploy/<usługa> \| grep -i consul`) i odmowy `consul-guard` (wiersz „Usługa nie rejestruje się w Consulu …”); obejście `kubectl --context rancher-desktop -n shop rollout restart deploy/<usługa>`. |
 | Nowa usługa albo nowe wywołanie kończy się `connection refused` (w logu usługi: błąd połączenia, circuit breaker otwarty) | Brak reguły w `deploy/k8s/network/` — trzeba dopisać wyjście u wołającego **i** wejście u wołanego (zmiana tabeli połączeń = decyzja Michała). Sprawdzenie: `k describe netpol <wołający>` i `k describe netpol <wołany>`. |
 | Health check w Consulu `critical` z `connection refused`, a `/health/ready` w podzie odpowiada | Brak `consul` w regule wejścia usługi albo portu usługi w regule wyjścia `consul` (`network/infra.yaml`). |
 | Job albo pod nie rozwiązuje nazw (`Name does not resolve`, `getaddrinfo`) | Brak `dns.yaml` w klastrze (`k get netpol allow-dns`) albo inna etykieta CoreDNS: `kubectl --context rancher-desktop -n kube-system get pods --show-labels` (oczekiwane `k8s-app=kube-dns`). |

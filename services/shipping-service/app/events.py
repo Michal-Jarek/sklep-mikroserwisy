@@ -1,20 +1,30 @@
-import asyncio
+"""Incoming events: envelope rules (docs/events.md) and their effect in shipping_db."""
 import json
 import logging
-from datetime import datetime
+import re
 from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
-import aio_pika
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from .models import Outbox, Processed, Shipment, change_status
+from .models import Processed, Shipment, change_status
 
 log = logging.getLogger("shipping.events")
 Text = Annotated[str, Field(min_length=1, max_length=200)]
+REQUEST_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")  # the same rule as X-Request-Id in the Gateway
+DISPATCHED = ("SHIPPED", "IN_TRANSIT", "DELIVERED")
+
+
+class InvalidEvent(ValueError):
+    """A message that will never succeed: it goes to the DLQ at once, without retries."""
+
+    def __init__(self, reason: str, event_id: str | None = None, request_id: str | None = None):
+        super().__init__(reason)
+        self.event_id = event_id
+        self.request_id = request_id
 
 
 class Address(BaseModel):
@@ -35,33 +45,65 @@ class Creation(BaseModel):
     shippingAddress: Address
 
 
-def handle(factory, body, key):
-    event = json.loads(body)
-    if not isinstance(event, dict) or any(not isinstance(event.get(k), str)
-            for k in ("type", "eventId", "requestId", "occurredAt")):
-        raise ValueError("invalid envelope")
-    event_id = str(UUID(event["eventId"]))
-    if (type(event.get("version")) is not int or event["version"] != 1
-            or event["type"] != key or not isinstance(event.get("payload"), dict)):
-        raise ValueError("invalid envelope")
+class Reference(BaseModel):
+    orderId: UUID
+    userId: UUID
+
+
+def parse_envelope(body: bytes, routing_key: str) -> dict:
+    """Checks the envelope; every problem raises InvalidEvent. Returns it with eventId and requestId normalized."""
+    try:
+        event = json.loads(body)
+    except (ValueError, TypeError):
+        raise InvalidEvent("body is not JSON") from None
+    if not isinstance(event, dict):
+        raise InvalidEvent("envelope is not an object")
+    request_id = event.get("requestId")
+    if not isinstance(request_id, str) or not REQUEST_ID.fullmatch(request_id):
+        request_id = str(uuid4())
+    raw_id = event.get("eventId")
+    try:
+        event_id = str(UUID(raw_id))
+    except (ValueError, TypeError, AttributeError):
+        raise InvalidEvent("eventId is not a UUID", str(raw_id)[:64] if raw_id is not None else None,
+                           request_id) from None
+    if (event.get("type") != routing_key or type(event.get("version")) is not int or event["version"] != 1
+            or not isinstance(event.get("occurredAt"), str) or not isinstance(event.get("payload"), dict)):
+        raise InvalidEvent("invalid envelope", event_id, request_id)
+    return {**event, "eventId": event_id, "requestId": request_id}
+
+
+def handle(factory, event: dict) -> tuple[str, str | None]:
+    """Applies one event in a single transaction together with its eventId (idempotent).
+
+    Returns (outcome, orderId); outcome is "processed", "duplicate" (eventId seen before) or "ignored" (other type).
+    """
+    key = event["type"]
     if key not in ("order.created", "order.cancelled"):
-        return
-    payload = event["payload"]
-    order_id = str(UUID(payload["orderId"]))
-    user_id = str(UUID(payload["userId"]))
-    creation = Creation.model_validate(payload) if key == "order.created" else None
+        return "ignored", None
+    try:
+        model = Creation if key == "order.created" else Reference
+        data = model.model_validate(event["payload"])
+    except ValidationError:
+        raise InvalidEvent("invalid payload", event["eventId"]) from None
+    creation = data if key == "order.created" else None
+    order_id, user_id = str(data.orderId), str(data.userId)
 
     with factory.begin() as db:
         insert = sqlite_insert if db.get_bind().dialect.name == "sqlite" else pg_insert
-        seen = db.execute(insert(Processed).values(id=event_id).on_conflict_do_nothing(index_elements=["id"]))
-        if not seen.rowcount:
-            return
+        # RETURNING, not rowcount: SQLAlchemy with psycopg reports rowcount -1 for this insert (also on conflict).
+        new = db.scalar(insert(Processed).values(id=event["eventId"]).on_conflict_do_nothing(index_elements=["id"])
+                        .returning(Processed.id))
+        if new is None:
+            return "duplicate", order_id
         # Creating a row before locking also serializes creation vs. cancellation of a new order.
         db.execute(insert(Shipment).values(order_id=order_id, user_id=user_id, status="NEW")
                    .on_conflict_do_nothing(index_elements=["order_id"]))
         shipment = db.scalar(select(Shipment).where(Shipment.order_id == order_id).with_for_update())
-        if shipment.user_id != user_id:
-            raise ValueError("inconsistent userId for order")
+        if shipment.user_id is None:
+            shipment.user_id = user_id  # placeholder written by POST /shipments/cancel
+        elif shipment.user_id != user_id:
+            raise InvalidEvent("inconsistent userId for order", event["eventId"])
         if creation and shipment.status == "NEW":
             shipment.id = str(uuid4())
             shipment.destination = creation.shippingAddress.model_dump()
@@ -70,54 +112,24 @@ def handle(factory, body, key):
             shipment.currency = creation.currency
             shipment.status = None  # First public state has no predecessor.
             change_status(db, shipment, "PREPARING", event["requestId"])
+        elif creation and shipment.status == "CANCELLED" and shipment.id is None:
+            # Z10: cancelled before the shipment existed (placeholder). The shipment is created as CANCELLED with one
+            # event null -> CANCELLED, so Order cancels the order if it missed the answer of POST /shipments/cancel.
+            # No delivery address is kept for a parcel that will never be sent.
+            shipment.id = str(uuid4())
+            shipment.method = creation.shippingMethod
+            shipment.cost = creation.shippingCost
+            shipment.currency = creation.currency
+            shipment.status = None
+            change_status(db, shipment, "CANCELLED", event["requestId"])
         elif not creation:
             if shipment.status == "NEW":
                 shipment.status = "CANCELLED"
             elif shipment.status == "PREPARING":
                 change_status(db, shipment, "CANCELLED", event["requestId"])
-async def receive(message, factory):
-    for delay in (0, 5, 30):
-        await asyncio.sleep(delay)
-        try:
-            await asyncio.to_thread(handle, factory, message.body, message.routing_key)
-        except (ValueError, KeyError, TypeError, AttributeError):
-            break
-        except Exception:
-            log.warning("Błąd zapisu zdarzenia")
-            continue
-        await message.ack()
-        return
-    await message.nack(requeue=False)
-
-
-async def broker(settings, factory):
-    while True:
-        try:
-            async with await aio_pika.connect(host=settings.rabbitmq_host, login="shipping-service",
-                    password=settings.shipping_rabbitmq_password, timeout=2) as connection:
-                channel = await connection.channel(publisher_confirms=True, on_return_raises=True)
-                await channel.set_qos(prefetch_count=10)
-                queue = await channel.get_queue("shipping.q", ensure=True)
-                exchange = await channel.get_exchange("shop.events", ensure=False)
-                async def consume(message):
-                    await receive(message, factory)
-                await queue.consume(consume)
-                while not connection.is_closed:
-                    with factory.begin() as db:
-                        row = db.scalar(select(Outbox).order_by(Outbox.seq).limit(1)
-                                        .with_for_update(skip_locked=True))
-                        if row:
-                            event = row.envelope
-                            await exchange.publish(aio_pika.Message(json.dumps(event).encode(),
-                                content_type="application/json", message_id=event["eventId"],
-                                timestamp=datetime.fromisoformat(event["occurredAt"]), type=event["type"], app_id="shipping-service",
-                                correlation_id=event["requestId"], delivery_mode=aio_pika.DeliveryMode.PERSISTENT),
-                                routing_key=event["type"], mandatory=True, timeout=2)
-                            db.delete(row)
-                    await asyncio.sleep(0 if row else 0.5)
-        except Exception:
-            log.warning("RabbitMQ lub outbox niedostępny; ponowienie za 2 s")
-            await asyncio.sleep(2)
-
-
-
+            elif shipment.status in DISPATCHED:
+                # With POST /shipments/cancel (Order asks first) this should never happen.
+                log.error("Cancellation inconsistency: order.cancelled for a dispatched shipment, ignored",
+                          extra={"fields": {"eventId": event["eventId"], "type": key, "orderId": order_id,
+                                            "status": shipment.status}})
+    return "processed", order_id

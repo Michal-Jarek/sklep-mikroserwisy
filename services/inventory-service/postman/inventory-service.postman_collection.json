@@ -16,7 +16,15 @@
     },
     {
       "key": "orderId",
-      "value": "postman-order"
+      "value": "a1b2c3d4-0000-4000-8000-000000000001"
+    },
+    {
+      "key": "orderIdBig",
+      "value": "a1b2c3d4-0000-4000-8000-000000000002"
+    },
+    {
+      "key": "orderIdZero",
+      "value": "a1b2c3d4-0000-4000-8000-000000000003"
     }
   ],
   "item": [
@@ -266,7 +274,11 @@
           "script": {
             "type": "text/javascript",
             "exec": [
-              "pm.collectionVariables.set('orderId', 'postman-' + Date.now());"
+              "// orderId to UUID; nowe przy każdym przebiegu, więc kolekcję można uruchamiać wiele razy",
+              "pm.collectionVariables.set('orderId', pm.variables.replaceIn('{{$guid}}'));",
+              "pm.collectionVariables.set('orderIdBig', pm.variables.replaceIn('{{$guid}}'));",
+              "pm.collectionVariables.set('orderIdZero', pm.variables.replaceIn('{{$guid}}'));",
+              "pm.collectionVariables.set('orderIdUpper', pm.collectionVariables.get('orderId').toUpperCase());"
             ]
           }
         }
@@ -537,6 +549,53 @@
       }
     },
     {
+      "name": "POST ta sama rezerwacja, orderId wielkimi literami -> 200",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+              "pm.test('orderId małymi literami', function () { const j = pm.response.json(); pm.expect(j.orderId === pm.collectionVariables.get('orderId')).to.be.true; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "SERVICE"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/inventory/reservations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "inventory",
+            "reservations"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"orderId\": \"{{orderIdUpper}}\",\n  \"items\": [\n    {\n      \"productId\": \"{{productId}}\",\n      \"quantity\": 3\n    }\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
       "name": "GET stan po rezerwacji",
       "event": [
         {
@@ -608,7 +667,7 @@
         },
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"orderId\": \"{{orderId}}-duza\",\n  \"items\": [\n    {\n      \"productId\": \"{{productId}}\",\n      \"quantity\": 100\n    }\n  ]\n}",
+          "raw": "{\n  \"orderId\": \"{{orderIdBig}}\",\n  \"items\": [\n    {\n      \"productId\": \"{{productId}}\",\n      \"quantity\": 100\n    }\n  ]\n}",
           "options": {
             "raw": {
               "language": "json"
@@ -654,7 +713,101 @@
         },
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"orderId\": \"{{orderId}}-zero\",\n  \"items\": [\n    {\n      \"productId\": \"{{productId}}\",\n      \"quantity\": 0\n    }\n  ]\n}",
+          "raw": "{\n  \"orderId\": \"{{orderIdZero}}\",\n  \"items\": [\n    {\n      \"productId\": \"{{productId}}\",\n      \"quantity\": 0\n    }\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "POST rezerwacja z orderId niebędącym UUID -> 400",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 400', function () { pm.response.to.have.status(400); });",
+              "pm.test('VALIDATION_ERROR', function () { const j = pm.response.json(); pm.expect(j.error === 'VALIDATION_ERROR').to.be.true; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "SERVICE"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/inventory/reservations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "inventory",
+            "reservations"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"orderId\": \"not-a-uuid\",\n  \"items\": [\n    {\n      \"productId\": \"{{productId}}\",\n      \"quantity\": 3\n    }\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "POST rezerwacja z nieznanym polem -> 400",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 400', function () { pm.response.to.have.status(400); });",
+              "pm.test('VALIDATION_ERROR', function () { const j = pm.response.json(); pm.expect(j.error === 'VALIDATION_ERROR').to.be.true; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-User-Roles",
+            "value": "SERVICE"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/inventory/reservations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "inventory",
+            "reservations"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"orderId\": \"{{orderIdZero}}\",\n  \"items\": [\n    {\n      \"productId\": \"{{productId}}\",\n      \"quantity\": 1\n    }\n  ],\n  \"comment\": \"nieznane pole\"\n}",
           "options": {
             "raw": {
               "language": "json"

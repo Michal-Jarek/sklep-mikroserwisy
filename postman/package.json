@@ -2,8 +2,14 @@
   "name": "shop-scenario",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "description": "Purchase scenario of the shop run with newman in a container (postman/run.sh)",
   "dependencies": {
     "newman": "6.2.3"
+  },
+  "devDependencies": {
+    "@types/newman": "5.3.6",
+    "@types/node": "22.20.5",
+    "typescript": "6.0.3"
   }
 }

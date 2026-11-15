@@ -45,11 +45,18 @@ export function useOrder(orderId: string) {
   });
 }
 
+export interface CreateOrderVariables {
+  order: CreateOrderRequest;
+  /** UUID; the same key with the same data gives the same order (wytyczne 3.8, src/features/checkout/idempotency.ts). */
+  idempotencyKey: string;
+}
+
 /** POST /orders: Order takes the items from the cart; 201 with status PAID or PAYMENT_FAILED. */
 export function useCreateOrder() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (body: CreateOrderRequest) => apiRequest<OrderDetail>(paths.orders.list, { method: 'POST', body }),
+    mutationFn: ({ order, idempotencyKey }: CreateOrderVariables) =>
+      apiRequest<OrderDetail>(paths.orders.list, { method: 'POST', body: order, headers: { 'Idempotency-Key': idempotencyKey } }),
     onSuccess: (order) => {
       queryClient.setQueryData(orderKeys.detail(order.id), order);
       return Promise.all([
@@ -60,7 +67,10 @@ export function useCreateOrder() {
   });
 }
 
-/** POST /orders/{orderId}/cancel; 409 ORDER_NOT_CANCELLABLE refreshes the order and the shipment. */
+/**
+ * POST /orders/{orderId}/cancel. 409 ORDER_NOT_CANCELLABLE, no answer and 5xx refresh the order and the shipment:
+ * after 0, 502 or 504 the order may already be cancelled.
+ */
 export function useCancelOrder(orderId: string) {
   const queryClient = useQueryClient();
   const refreshShipments = () => queryClient.invalidateQueries({ queryKey: shipmentKeys.lists() });
@@ -71,7 +81,7 @@ export function useCancelOrder(orderId: string) {
       return Promise.all([refreshShipments(), queryClient.invalidateQueries({ queryKey: orderKeys.lists() })]);
     },
     onError: (error) => {
-      if (error instanceof ApiError && error.status === 409) {
+      if (error instanceof ApiError && (error.status === 409 || error.status === 0 || error.status >= 500)) {
         return Promise.all([queryClient.invalidateQueries({ queryKey: orderKeys.detail(orderId) }), refreshShipments()]);
       }
     },
