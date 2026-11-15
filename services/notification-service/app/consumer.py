@@ -155,8 +155,8 @@ def parse_event(body: bytes, routing_key: str | None) -> tuple[dict, Payload | N
 
 
 def short_number(order_id: uuid.UUID) -> str:
-    """Order number shown to the customer: the first 8 characters of the UUID, in capitals."""
-    return str(order_id)[:8].upper()
+    """Order number shown to the customer: the last 8 characters of the UUID, in capitals (as in the shop pages)."""
+    return str(order_id)[-8:].upper()
 
 
 class Consumer:

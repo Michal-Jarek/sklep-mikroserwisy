@@ -2,11 +2,13 @@
 
 import asyncio
 import socket
+import uuid
 
 import httpx
 import pytest
 
 from app.config import Settings
+from app.consumer import short_number
 
 from .conftest import CUSTOMER, FakeMessage, envelope, order_cancelled, order_created, registered, shipment
 
@@ -14,6 +16,11 @@ from .conftest import CUSTOMER, FakeMessage, envelope, order_cancelled, order_cr
 def deliver(consumer, message):
     asyncio.run(consumer.on_message(message))
     return message
+
+
+def test_short_number_matches_the_shop_pages():
+    # The shop shows the last 8 characters of the order UUID (frontend shortOrderId); e-mails must show the same.
+    assert short_number(uuid.UUID("2eeebc9a-2cd2-4e2d-a342-61a7661233a1")) == "661233A1"
 
 
 # ----- e-mails -----
@@ -42,7 +49,7 @@ def test_order_confirmation_uses_user_service(consumer, mailer, user):
     assert deliver(consumer, FakeMessage(event)).result == "ack"
     [mail] = mailer.sent
     assert mail.to == "anna.nowak@example.com" and mail.subject == "Potwierdzenie zamówienia"
-    assert "5D7E9F1A" in mail.text and "Kubek ceramiczny x 2" in mail.text
+    assert "9D0E1F2A" in mail.text and "Kubek ceramiczny x 2" in mail.text
     assert "54.97 PLN" in mail.text and "kurier" in mail.text
     [request] = user.requests
     assert request.url.path == f"/users/{CUSTOMER}"
